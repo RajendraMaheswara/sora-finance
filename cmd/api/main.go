@@ -14,7 +14,23 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
+
+	httpSwagger "github.com/swaggo/http-swagger"
+    _ "sora-finance-api/docs"
 )
+
+// @title           Sora Finance API
+// @version         1.0
+// @description     REST API untuk aplikasi keuangan Sora (hanya GET endpoints)
+// @termsOfService  http://swagger.io/terms/
+// @contact.name    API Support
+// @contact.url     http://www.swagger.io/support
+// @contact.email   support@swagger.io
+// @license.name    Apache 2.0
+// @license.url     http://www.apache.org/licenses/LICENSE-2.0.html
+// @host            localhost:8080
+// @BasePath        /api
+// @schemes         http
 
 func main() {
 	// Load .env
@@ -50,28 +66,23 @@ func main() {
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
+	r.Get("/swagger/*", httpSwagger.Handler(
+        httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
+    ))
+
 	r.Route("/api/monthly-summaries", func(r chi.Router) {
 		r.Get("/", summaryHandler.GetAll)
-		r.Post("/", summaryHandler.Create)
 		r.Get("/{id}", summaryHandler.GetByID)
-		r.Put("/{id}", summaryHandler.Update)
-		r.Delete("/{id}", summaryHandler.Delete)
 	})
 
 	r.Route("/api/stores", func(r chi.Router) {
 		r.Get("/", storeHandler.GetAll)
-		r.Post("/", storeHandler.Create)
 		r.Get("/{id}", storeHandler.GetByID)
-		r.Put("/{id}", storeHandler.Update)
-		r.Delete("/{id}", storeHandler.Delete)
 	})
 
 	r.Route("/api/users", func(r chi.Router) {
 		r.Get("/", userHandler.GetAll)
-		r.Post("/", userHandler.Create)
 		r.Get("/{id}", userHandler.GetByID)
-		r.Put("/{id}", userHandler.Update)
-		r.Delete("/{id}", userHandler.Delete)
 	})
 
 	port := os.Getenv("SERVER_PORT")

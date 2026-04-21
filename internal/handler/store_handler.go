@@ -1,13 +1,10 @@
 package handler
 
 import (
-	"encoding/json"
 	"net/http"
-	"sora-finance-api/internal/models"
 	"sora-finance-api/internal/service"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 )
 
 type StoreHandler struct {
@@ -18,6 +15,14 @@ func NewStoreHandler(service *service.StoreService) *StoreHandler {
 	return &StoreHandler{service: service}
 }
 
+// GetAll godoc
+// @Summary      Get all stores
+// @Description  Mengembalikan daftar semua toko
+// @Tags         Stores
+// @Produce      json
+// @Success      200  {array}  models.Store
+// @Failure      500  {object}  map[string]interface{}
+// @Router       /stores [get]
 func (h *StoreHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	stores, err := h.service.GetAll(r.Context())
 	if err != nil {
@@ -27,6 +32,16 @@ func (h *StoreHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, stores)
 }
 
+// GetByID godoc
+// @Summary      Get store by ID
+// @Description  Mengembalikan satu toko berdasarkan ID
+// @Tags         Stores
+// @Produce      json
+// @Param        id   path      string  true  "UUID"
+// @Success      200  {object}  models.Store
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]interface{}
+// @Router       /stores/{id} [get]
 func (h *StoreHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	store, err := h.service.GetByID(r.Context(), id)
@@ -39,43 +54,4 @@ func (h *StoreHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondWithJSON(w, http.StatusOK, store)
-}
-
-func (h *StoreHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var req models.Store
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	created, err := h.service.Create(r.Context(), &req)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	respondWithJSON(w, http.StatusCreated, created)
-}
-
-func (h *StoreHandler) Update(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	var req models.Store
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "invalid request body", http.StatusBadRequest)
-		return
-	}
-	if err := h.service.Update(r.Context(), id, &req); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *StoreHandler) Delete(w http.ResponseWriter, r *http.Request) {
-	id := chi.URLParam(r, "id")
-	// Untuk demo, hardcode deleted_by; di production ambil dari JWT
-	deletedBy := uuid.MustParse("00000000-0000-0000-0000-000000000001")
-	if err := h.service.Delete(r.Context(), id, deletedBy); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }

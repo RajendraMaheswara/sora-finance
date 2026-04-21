@@ -1,0 +1,296 @@
+basePath: /api
+definitions:
+  models.MonthlySummary:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      date:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      id:
+        type: string
+      m_store_id:
+        type: string
+      total_cash:
+        type: number
+      total_cost_and_expense:
+        type: number
+      total_debit:
+        type: number
+      total_discount:
+        type: number
+      total_ewallet:
+        type: number
+      total_hpp:
+        type: number
+      total_income:
+        type: number
+      total_net_income:
+        type: number
+      total_regulation_customer:
+        type: number
+      total_regulation_outlet:
+        type: number
+      total_rounding:
+        type: number
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.Store:
+    properties:
+      coins:
+        type: integer
+      created_at:
+        type: string
+      created_by:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      expired_date:
+        type: string
+      id:
+        type: string
+      is_active:
+        type: boolean
+      is_tutorial_completed:
+        type: boolean
+      m_subscription_type_id:
+        type: integer
+      name:
+        type: string
+      tutorial_step:
+        type: integer
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.User:
+    properties:
+      address:
+        type: string
+      avatar_url:
+        type: string
+      city_of_birth:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      date_of_birth:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      email:
+        type: string
+      email_verified_at:
+        type: string
+      id:
+        type: string
+      is_active:
+        type: boolean
+      is_email_verified:
+        type: boolean
+      is_phone_verified:
+        type: boolean
+      m_role_access_id:
+        type: string
+      m_role_id:
+        type: string
+      m_store_id:
+        type: string
+      m_user_verification_type_id:
+        type: integer
+      name:
+        type: string
+      nip:
+        type: string
+      password:
+        description: omit from response
+        type: string
+      phone:
+        type: string
+      phone_verified_at:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+      username:
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    email: support@swagger.io
+    name: API Support
+    url: http://www.swagger.io/support
+  description: REST API untuk aplikasi keuangan Sora (hanya GET endpoints)
+  license:
+    name: Apache 2.0
+    url: http://www.apache.org/licenses/LICENSE-2.0.html
+  termsOfService: http://swagger.io/terms/
+  title: Sora Finance API
+  version: "1.0"
+paths:
+  /monthly-summaries:
+    get:
+      description: Mengembalikan daftar semua ringkasan keuangan bulanan
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.MonthlySummary'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all monthly summaries
+      tags:
+      - MonthlySummaries
+  /monthly-summaries/{id}:
+    get:
+      description: Mengembalikan satu ringkasan keuangan bulanan berdasarkan ID
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.MonthlySummary'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get monthly summary by ID
+      tags:
+      - MonthlySummaries
+  /stores:
+    get:
+      description: Mengembalikan daftar semua toko
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Store'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all stores
+      tags:
+      - Stores
+  /stores/{id}:
+    get:
+      description: Mengembalikan satu toko berdasarkan ID
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Store'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get store by ID
+      tags:
+      - Stores
+  /users:
+    get:
+      description: Mengembalikan daftar semua user (password dihilangkan)
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.User'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all users
+      tags:
+      - Users
+  /users/{id}:
+    get:
+      description: Mengembalikan satu user berdasarkan ID (password dihilangkan)
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.User'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get user by ID
+      tags:
+      - Users
+schemes:
+- http
+swagger: "2.0"
