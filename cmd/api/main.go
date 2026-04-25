@@ -15,8 +15,9 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/joho/godotenv"
 
+	_ "sora-finance-api/docs"
+
 	httpSwagger "github.com/swaggo/http-swagger"
-    _ "sora-finance-api/docs"
 )
 
 // @title           Sora Finance API
@@ -46,9 +47,12 @@ func main() {
 	}
 	defer pool.Close()
 	log.Println("Database connected")
-	
 
 	// Init repository, service, handler
+	salesDailyRepo := repository.NewSalesDailySummaryRepository(pool)
+	salesDailyService := service.NewSalesDailySummaryService(salesDailyRepo)
+	salesDailyHandler := handler.NewSalesDailySummaryHandler(salesDailyService)
+
 	repo := repository.NewMonthlySummaryRepository(pool)
 	svc := service.NewMonthlySummaryService(repo)
 	summaryHandler := handler.NewMonthlySummaryHandler(svc)
@@ -61,14 +65,35 @@ func main() {
 	userService := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userService)
 
+	customerRepo := repository.NewCustomerRepository(pool)
+	customerService := service.NewCustomerService(customerRepo)
+	customerHandler := handler.NewCustomerHandler(customerService)
+
+	orderRepo := repository.NewOrderRepository(pool)
+	orderService := service.NewOrderService(orderRepo)
+	orderHandler := handler.NewOrderHandler(orderService)
+
+	foodIngredientRepo := repository.NewFoodIngredientRepository(pool)
+	foodIngredientService := service.NewFoodIngredientService(foodIngredientRepo)
+	foodIngredientHandler := handler.NewFoodIngredientHandler(foodIngredientService)
+
+	ingredientStockHistoryRepo := repository.NewIngredientStockHistoryRepository(pool)
+	ingredientStockHistoryService := service.NewIngredientStockHistoryService(ingredientStockHistoryRepo)
+	ingredientStockHistoryHandler := handler.NewIngredientStockHistoryHandler(ingredientStockHistoryService)
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 
 	r.Get("/swagger/*", httpSwagger.Handler(
-        httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
-    ))
+		httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
+	))
+
+	r.Route("/api/sales-daily-summaries", func(r chi.Router) {
+		r.Get("/", salesDailyHandler.GetAll)
+		r.Get("/{id}", salesDailyHandler.GetByID)
+	})
 
 	r.Route("/api/monthly-summaries", func(r chi.Router) {
 		r.Get("/", summaryHandler.GetAll)
@@ -83,6 +108,26 @@ func main() {
 	r.Route("/api/users", func(r chi.Router) {
 		r.Get("/", userHandler.GetAll)
 		r.Get("/{id}", userHandler.GetByID)
+	})
+
+	r.Route("/api/customers", func(r chi.Router) {
+		r.Get("/", customerHandler.GetAll)
+		r.Get("/{id}", customerHandler.GetByID)
+	})
+
+	r.Route("/api/orders", func(r chi.Router) {
+		r.Get("/", orderHandler.GetAll)
+		r.Get("/{id}", orderHandler.GetByID)
+	})
+
+	r.Route("/api/food-ingredients", func(r chi.Router) {
+		r.Get("/", foodIngredientHandler.GetAll)
+		r.Get("/{id}", foodIngredientHandler.GetByID)
+	})
+
+	r.Route("/api/ingredient-stock-histories", func(r chi.Router) {
+		r.Get("/", ingredientStockHistoryHandler.GetAll)
+		r.Get("/{id}", ingredientStockHistoryHandler.GetByID)
 	})
 
 	port := os.Getenv("SERVER_PORT")

@@ -1,5 +1,116 @@
 basePath: /api
 definitions:
+  models.Customer:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      id:
+        type: string
+      m_store_id:
+        type: string
+      name:
+        type: string
+      phone:
+        type: string
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.FoodIngredient:
+    properties:
+      code:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      deleted_note:
+        type: string
+      deleted_reason:
+        type: string
+      id:
+        type: string
+      m_food_unit_id:
+        type: string
+      m_store_id:
+        type: string
+      name:
+        type: string
+      note:
+        type: string
+      stock_limit:
+        type: number
+      unit_price:
+        type: number
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.IngredientStockHistory:
+    properties:
+      added:
+        type: number
+      created_at:
+        type: string
+      created_by:
+        type: string
+      current_stock:
+        type: number
+      date:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      deleted_note:
+        type: string
+      deleted_reason:
+        type: string
+      id:
+        type: string
+      journal:
+        type: number
+      m_food_ingredient_id:
+        type: string
+      m_store_id:
+        type: string
+      note:
+        type: string
+      previous_stock:
+        type: number
+      reduced:
+        type: number
+      remaining_capital:
+        type: number
+      status:
+        type: string
+      stock_change:
+        type: number
+      total_remaining_capital:
+        type: number
+      total_unit_price:
+        type: number
+      type:
+        type: string
+      unit_price:
+        type: number
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
   models.MonthlySummary:
     properties:
       created_at:
@@ -37,6 +148,114 @@ definitions:
       total_regulation_outlet:
         type: number
       total_rounding:
+        type: number
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.Order:
+    properties:
+      cancelled_at:
+        type: string
+      cancelled_by:
+        type: string
+      cancelled_note:
+        type: string
+      cancelled_reason:
+        type: string
+      created_at:
+        type: string
+      created_by:
+        type: string
+      customer_name:
+        type: string
+      customer_phone:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      deleted_note:
+        type: string
+      deleted_reason:
+        type: string
+      id:
+        type: string
+      m_cashier_id:
+        type: string
+      m_customer_id:
+        type: string
+      m_menu_online_order_type_id:
+        type: integer
+      m_order_payment_status_id:
+        type: integer
+      m_order_status_id:
+        type: integer
+      m_store_id:
+        type: string
+      m_store_payment_method_id:
+        type: string
+      m_store_regulation_ids:
+        items:
+          type: string
+        type: array
+      m_table_id:
+        type: string
+      order_number:
+        type: string
+      rounding_price:
+        type: number
+      sub_total:
+        type: number
+      total_admin_debit_fee:
+        type: number
+      total_admin_ewallet_fee:
+        type: number
+      total_item_price:
+        type: number
+      total_paid:
+        type: number
+      total_price:
+        type: number
+      total_regulation:
+        type: number
+      total_return:
+        type: number
+      updated_at:
+        type: string
+      updated_by:
+        type: string
+    type: object
+  models.SalesDailySummary:
+    properties:
+      created_at:
+        type: string
+      created_by:
+        type: string
+      date:
+        type: string
+      deleted_at:
+        type: string
+      deleted_by:
+        type: string
+      id:
+        type: string
+      m_store_id:
+        type: string
+      total_discount:
+        type: number
+      total_hpp:
+        type: number
+      total_omzet:
+        type: number
+      total_profit:
+        type: number
+      total_regulation:
+        type: number
+      total_rounding:
+        type: number
+      total_transaction:
         type: number
       updated_at:
         type: string
@@ -144,6 +363,153 @@ info:
   title: Sora Finance API
   version: "1.0"
 paths:
+  /customers:
+    get:
+      description: Mengembalikan daftar semua customer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Customer'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all customers
+      tags:
+      - Customers
+  /customers/{id}:
+    get:
+      description: Mengembalikan satu customer berdasarkan ID
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Customer'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get customer by ID
+      tags:
+      - Customers
+  /food-ingredients:
+    get:
+      description: Mengembalikan daftar semua bahan makanan
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.FoodIngredient'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all food ingredients
+      tags:
+      - Food Ingredients
+  /food-ingredients/{id}:
+    get:
+      description: Mengembalikan satu bahan makanan berdasarkan ID
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.FoodIngredient'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get food ingredient by ID
+      tags:
+      - Food Ingredients
+  /ingredient-stock-histories:
+    get:
+      description: Mengembalikan daftar semua riwayat stok bahan
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.IngredientStockHistory'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all ingredient stock histories
+      tags:
+      - Ingredient Stock Histories
+  /ingredient-stock-histories/{id}:
+    get:
+      description: Mengembalikan satu riwayat stok bahan berdasarkan ID
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.IngredientStockHistory'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get ingredient stock history by ID
+      tags:
+      - Ingredient Stock Histories
   /monthly-summaries:
     get:
       description: Mengembalikan daftar semua ringkasan keuangan bulanan
@@ -163,7 +529,7 @@ paths:
             type: object
       summary: Get all monthly summaries
       tags:
-      - MonthlySummaries
+      - Monthly Summaries
   /monthly-summaries/{id}:
     get:
       description: Mengembalikan satu ringkasan keuangan bulanan berdasarkan ID
@@ -192,7 +558,105 @@ paths:
             type: object
       summary: Get monthly summary by ID
       tags:
-      - MonthlySummaries
+      - Monthly Summaries
+  /orders:
+    get:
+      description: Mengembalikan daftar semua order
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.Order'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all orders
+      tags:
+      - Orders
+  /orders/{id}:
+    get:
+      description: Mengembalikan satu order berdasarkan ID
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Order'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get order by ID
+      tags:
+      - Orders
+  /sales-daily-summaries:
+    get:
+      description: Mengembalikan daftar semua ringkasan penjualan harian
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/models.SalesDailySummary'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get all sales daily summaries
+      tags:
+      - Sales Daily Summaries
+  /sales-daily-summaries/{id}:
+    get:
+      description: Mengembalikan satu ringkasan penjualan harian berdasarkan ID
+      parameters:
+      - description: UUID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.SalesDailySummary'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Get sales daily summary by ID
+      tags:
+      - Sales Daily Summaries
   /stores:
     get:
       description: Mengembalikan daftar semua toko

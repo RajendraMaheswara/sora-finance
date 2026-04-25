@@ -15,6 +15,14 @@ func NewUserHandler(service *service.UserService) *UserHandler {
 	return &UserHandler{service: service}
 }
 
+// GetAll godoc
+// @Summary      Get all users
+// @Description  Mengembalikan daftar semua user (password dihilangkan)
+// @Tags         Users
+// @Produce      json
+// @Success      200  {array}  models.User
+// @Failure      500  {object}  map[string]interface{}
+// @Router       /users [get]
 func (h *UserHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	users, err := h.service.GetAll(r.Context())
 	if err != nil {
@@ -28,6 +36,16 @@ func (h *UserHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusOK, users)
 }
 
+// GetByID godoc
+// @Summary      Get user by ID
+// @Description  Mengembalikan satu user berdasarkan ID (password dihilangkan)
+// @Tags         Users
+// @Produce      json
+// @Param        id   path      string  true  "UUID"
+// @Success      200  {object}  models.User
+// @Failure      400  {object}  map[string]interface{}
+// @Failure      404  {object}  map[string]interface{}
+// @Router       /users/{id} [get]
 func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	user, err := h.service.GetByID(r.Context(), id)

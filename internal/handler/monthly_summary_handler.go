@@ -11,7 +11,6 @@ type MonthlySummaryHandler struct {
 	service *service.MonthlySummaryService
 }
 
-
 func NewMonthlySummaryHandler(service *service.MonthlySummaryService) *MonthlySummaryHandler {
 	return &MonthlySummaryHandler{service: service}
 }
@@ -19,7 +18,7 @@ func NewMonthlySummaryHandler(service *service.MonthlySummaryService) *MonthlySu
 // GetAll godoc
 // @Summary      Get all monthly summaries
 // @Description  Mengembalikan daftar semua ringkasan keuangan bulanan
-// @Tags         MonthlySummaries
+// @Tags         Monthly Summaries
 // @Produce      json
 // @Success      200  {array}  models.MonthlySummary
 // @Failure      500  {object}  map[string]interface{}
@@ -36,7 +35,7 @@ func (h *MonthlySummaryHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 // GetByID godoc
 // @Summary      Get monthly summary by ID
 // @Description  Mengembalikan satu ringkasan keuangan bulanan berdasarkan ID
-// @Tags         MonthlySummaries
+// @Tags         Monthly Summaries
 // @Produce      json
 // @Param        id   path      string  true  "UUID"
 // @Success      200  {object}  models.MonthlySummary
