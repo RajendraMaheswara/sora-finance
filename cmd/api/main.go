@@ -48,15 +48,6 @@ func main() {
 	defer pool.Close()
 	log.Println("Database connected")
 
-	// Init repository, service, handler
-	salesDailyRepo := repository.NewSalesDailySummaryRepository(pool)
-	salesDailyService := service.NewSalesDailySummaryService(salesDailyRepo)
-	salesDailyHandler := handler.NewSalesDailySummaryHandler(salesDailyService)
-
-	repo := repository.NewMonthlySummaryRepository(pool)
-	svc := service.NewMonthlySummaryService(repo)
-	summaryHandler := handler.NewMonthlySummaryHandler(svc)
-
 	storeRepo := repository.NewStoreRepository(pool)
 	storeService := service.NewStoreService(storeRepo)
 	storeHandler := handler.NewStoreHandler(storeService)
@@ -69,17 +60,9 @@ func main() {
 	customerService := service.NewCustomerService(customerRepo)
 	customerHandler := handler.NewCustomerHandler(customerService)
 
-	orderRepo := repository.NewOrderRepository(pool)
-	orderService := service.NewOrderService(orderRepo)
-	orderHandler := handler.NewOrderHandler(orderService)
-
-	foodIngredientRepo := repository.NewFoodIngredientRepository(pool)
-	foodIngredientService := service.NewFoodIngredientService(foodIngredientRepo)
-	foodIngredientHandler := handler.NewFoodIngredientHandler(foodIngredientService)
-
-	ingredientStockHistoryRepo := repository.NewIngredientStockHistoryRepository(pool)
-	ingredientStockHistoryService := service.NewIngredientStockHistoryService(ingredientStockHistoryRepo)
-	ingredientStockHistoryHandler := handler.NewIngredientStockHistoryHandler(ingredientStockHistoryService)
+	testRepo := repository.NewTestTableRepository(pool)
+	testService := service.NewTestTableService(testRepo)
+	testHandler := handler.NewTestTableHandler(testService)
 
 	// Router
 	r := chi.NewRouter()
@@ -89,16 +72,6 @@ func main() {
 	r.Get("/swagger/*", httpSwagger.Handler(
 		httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
 	))
-
-	r.Route("/api/sales-daily-summaries", func(r chi.Router) {
-		r.Get("/", salesDailyHandler.GetAll)
-		r.Get("/{id}", salesDailyHandler.GetByID)
-	})
-
-	r.Route("/api/monthly-summaries", func(r chi.Router) {
-		r.Get("/", summaryHandler.GetAll)
-		r.Get("/{id}", summaryHandler.GetByID)
-	})
 
 	r.Route("/api/stores", func(r chi.Router) {
 		r.Get("/", storeHandler.GetAll)
@@ -115,19 +88,9 @@ func main() {
 		r.Get("/{id}", customerHandler.GetByID)
 	})
 
-	r.Route("/api/orders", func(r chi.Router) {
-		r.Get("/", orderHandler.GetAll)
-		r.Get("/{id}", orderHandler.GetByID)
-	})
-
-	r.Route("/api/food-ingredients", func(r chi.Router) {
-		r.Get("/", foodIngredientHandler.GetAll)
-		r.Get("/{id}", foodIngredientHandler.GetByID)
-	})
-
-	r.Route("/api/ingredient-stock-histories", func(r chi.Router) {
-		r.Get("/", ingredientStockHistoryHandler.GetAll)
-		r.Get("/{id}", ingredientStockHistoryHandler.GetByID)
+	r.Route("/api/test-table", func(r chi.Router) {
+		r.Get("/", testHandler.GetAll)
+		r.Get("/{id}", testHandler.GetByID)
 	})
 
 	port := os.Getenv("SERVER_PORT")
