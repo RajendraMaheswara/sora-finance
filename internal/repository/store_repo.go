@@ -18,6 +18,7 @@ func NewStoreRepository(db *pgxpool.Pool) *StoreRepository {
 	return &StoreRepository{db: db}
 }
 
+// GetAll mengambil semua store yang belum dihapus (soft delete)
 func (r *StoreRepository) GetAll(ctx context.Context) ([]models.Store, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, m_subscription_type_id, coins, expired_date, is_active, name,
@@ -48,6 +49,7 @@ func (r *StoreRepository) GetAll(ctx context.Context) ([]models.Store, error) {
 	return stores, nil
 }
 
+// GetByID mengambil satu store berdasarkan UUID
 func (r *StoreRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Store, error) {
 	var s models.Store
 	err := r.db.QueryRow(ctx, `

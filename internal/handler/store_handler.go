@@ -16,8 +16,8 @@ func NewStoreHandler(service *service.StoreService) *StoreHandler {
 }
 
 // GetAll godoc
-// @Summary      Get all stores
-// @Description  Mengembalikan daftar semua toko
+// @Summary      Dapatkan semua store
+// @Description  Mengembalikan daftar semua store yang aktif
 // @Tags         Stores
 // @Produce      json
 // @Success      200  {array}  models.Store
@@ -33,11 +33,11 @@ func (h *StoreHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetByID godoc
-// @Summary      Get store by ID
-// @Description  Mengembalikan satu toko berdasarkan ID
+// @Summary      Dapatkan store berdasarkan ID
+// @Description  Mengembalikan satu store berdasarkan UUID
 // @Tags         Stores
 // @Produce      json
-// @Param        id   path      string  true  "UUID"
+// @Param        id   path      string  true  "UUID store"
 // @Success      200  {object}  models.Store
 // @Failure      400  {object}  map[string]interface{}
 // @Failure      404  {object}  map[string]interface{}
