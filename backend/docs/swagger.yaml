@@ -175,7 +175,7 @@ paths:
       - Customers
   /stores:
     get:
-      description: Mengembalikan daftar semua toko
+      description: Mengembalikan daftar semua store yang aktif
       produces:
       - application/json
       responses:
@@ -190,14 +190,14 @@ paths:
           schema:
             additionalProperties: true
             type: object
-      summary: Get all stores
+      summary: Dapatkan semua store
       tags:
       - Stores
   /stores/{id}:
     get:
-      description: Mengembalikan satu toko berdasarkan ID
+      description: Mengembalikan satu store berdasarkan UUID
       parameters:
-      - description: UUID
+      - description: UUID store
         in: path
         name: id
         required: true
@@ -219,7 +219,7 @@ paths:
           schema:
             additionalProperties: true
             type: object
-      summary: Get store by ID
+      summary: Dapatkan store berdasarkan ID
       tags:
       - Stores
   /users:

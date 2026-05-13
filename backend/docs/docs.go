@@ -99,14 +99,14 @@ const docTemplate = `{
         },
         "/stores": {
             "get": {
-                "description": "Mengembalikan daftar semua toko",
+                "description": "Mengembalikan daftar semua store yang aktif",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Stores"
                 ],
-                "summary": "Get all stores",
+                "summary": "Dapatkan semua store",
                 "responses": {
                     "200": {
                         "description": "OK",
@@ -129,18 +129,18 @@ const docTemplate = `{
         },
         "/stores/{id}": {
             "get": {
-                "description": "Mengembalikan satu toko berdasarkan ID",
+                "description": "Mengembalikan satu store berdasarkan UUID",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "Stores"
                 ],
-                "summary": "Get store by ID",
+                "summary": "Dapatkan store berdasarkan ID",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "UUID",
+                        "description": "UUID store",
                         "name": "id",
                         "in": "path",
                         "required": true
