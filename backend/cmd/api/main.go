@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -106,6 +109,34 @@ func main() {
 		r.Get("/", testHandler.GetAll)
 		r.Get("/{id}", testHandler.GetByID)
 	})
+
+	// --- RUTE TEST JEMBATAN GOLANG KE PYTHON ---
+	r.Get("/api/test-bridge", func(w http.ResponseWriter, req *http.Request) {
+		// 1. Siapkan data dummy yang mau dikirim ke Python
+		dataKePython := map[string]interface{}{
+			"pesan":          "Halo Python, aku Golang! Tolong proses data ini.",
+			"data_penjualan": []int{500, 600, 700, 800},
+		}
+
+		// Ubah data menjadi format JSON
+		jsonData, _ := json.Marshal(dataKePython)
+
+		// 2. Tembak/Kirim HTTP POST ke server Python
+		resp, err := http.Post("http://127.0.0.1:5000/api/predict", "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			http.Error(w, "Gagal menghubungi Python: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer resp.Body.Close()
+
+		// 3. Baca balasan/hasil ramalan dari Python
+		balasanDariPython, _ := io.ReadAll(resp.Body)
+
+		// 4. Teruskan balasan tersebut ke Browser/Flutter
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(balasanDariPython)
+	})
+	// -------------------------------------------
 
 	port := os.Getenv("SERVER_PORT")
 	if port == "" {
