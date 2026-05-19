@@ -64,6 +64,110 @@ func main() {
 	testService := service.NewTestTableService(testRepo)
 	testHandler := handler.NewTestTableHandler(testService)
 
+	foodIngredientRepo := repository.NewFoodIngredientRepository(pool)
+	foodIngredientService := service.NewFoodIngredientService(foodIngredientRepo)
+	foodIngredientHandler := handler.NewFoodIngredientHandler(foodIngredientService)
+
+	menuIngredientRepo := repository.NewMenuIngredientRepository(pool)
+	menuIngredientService := service.NewMenuIngredientService(menuIngredientRepo)
+	menuIngredientHandler := handler.NewMenuIngredientHandler(menuIngredientService)
+
+	menuOfferDetailRepo := repository.NewMenuOfferDetailRepository(pool)
+	menuOfferDetailService := service.NewMenuOfferDetailService(menuOfferDetailRepo)
+	menuOfferDetailHandler := handler.NewMenuOfferDetailHandler(menuOfferDetailService)
+
+	menuOfferRepo := repository.NewMenuOfferRepository(pool)
+	menuOfferService := service.NewMenuOfferService(menuOfferRepo)
+	menuOfferHandler := handler.NewMenuOfferHandler(menuOfferService)
+
+	menuOnlineOrderRepo := repository.NewMenuOnlineOrderRepository(pool)
+	menuOnlineOrderService := service.NewMenuOnlineOrderService(menuOnlineOrderRepo)
+	menuOnlineOrderHandler := handler.NewMenuOnlineOrderHandler(menuOnlineOrderService)
+
+	menuPackagingIngredientRepo := repository.NewMenuPackagingIngredientRepository(pool)
+	menuPackagingIngredientService := service.NewMenuPackagingIngredientService(menuPackagingIngredientRepo)
+	menuPackagingIngredientHandler := handler.NewMenuPackagingIngredientHandler(menuPackagingIngredientService)
+
+	menuPackagingRepo := repository.NewMenuPackagingRepository(pool)
+	menuPackagingService := service.NewMenuPackagingService(menuPackagingRepo)
+	menuPackagingHandler := handler.NewMenuPackagingHandler(menuPackagingService)
+
+	menuVariantIngredientRepo := repository.NewMenuVariantIngredientRepository(pool)
+	menuVariantIngredientService := service.NewMenuVariantIngredientService(menuVariantIngredientRepo)
+	menuVariantIngredientHandler := handler.NewMenuVariantIngredientHandler(menuVariantIngredientService)
+
+	menuVariantRepo := repository.NewMenuVariantRepository(pool)
+	menuVariantService := service.NewMenuVariantService(menuVariantRepo)
+	menuVariantHandler := handler.NewMenuVariantHandler(menuVariantService)
+
+	menuRepo := repository.NewMenuRepository(pool)
+	menuService := service.NewMenuService(menuRepo)
+	menuHandler := handler.NewMenuHandler(menuService)
+
+	paymentMethodRepo := repository.NewPaymentMethodRepository(pool)
+	paymentMethodService := service.NewPaymentMethodService(paymentMethodRepo)
+	paymentMethodHandler := handler.NewPaymentMethodHandler(paymentMethodService)
+
+	storeDiscountRepo := repository.NewStoreDiscountRepository(pool)
+	storeDiscountService := service.NewStoreDiscountService(storeDiscountRepo)
+	storeDiscountHandler := handler.NewStoreDiscountHandler(storeDiscountService)
+
+	storeOperationalHourRepo := repository.NewStoreOperationalHourRepository(pool)
+	storeOperationalHourService := service.NewStoreOperationalHourService(storeOperationalHourRepo)
+	storeOperationalHourHandler := handler.NewStoreOperationalHourHandler(storeOperationalHourService)
+
+	storePaymentMethodRepo := repository.NewStorePaymentMethodRepository(pool)
+	storePaymentMethodService := service.NewStorePaymentMethodService(storePaymentMethodRepo)
+	storePaymentMethodHandler := handler.NewStorePaymentMethodHandler(storePaymentMethodService)
+
+	subscriptionTypeRepo := repository.NewSubscriptionTypeRepository(pool)
+	subscriptionTypeService := service.NewSubscriptionTypeService(subscriptionTypeRepo)
+	subscriptionTypeHandler := handler.NewSubscriptionTypeHandler(subscriptionTypeService)
+
+	financeDailyDiscountSummaryRepo := repository.NewFinanceDailyDiscountSummaryRepository(pool)
+	financeDailyDiscountSummaryService := service.NewFinanceDailyDiscountSummaryService(financeDailyDiscountSummaryRepo)
+	financeDailyDiscountSummaryHandler := handler.NewFinanceDailyDiscountSummaryHandler(financeDailyDiscountSummaryService)
+
+	financeDailyHppSummaryRepo := repository.NewFinanceDailyHppSummaryRepository(pool)
+	financeDailyHppSummaryService := service.NewFinanceDailyHppSummaryService(financeDailyHppSummaryRepo)
+	financeDailyHppSummaryHandler := handler.NewFinanceDailyHppSummaryHandler(financeDailyHppSummaryService)
+
+	financeDailyRegulationSummaryRepo := repository.NewFinanceDailyRegulationSummaryRepository(pool)
+	financeDailyRegulationSummaryService := service.NewFinanceDailyRegulationSummaryService(financeDailyRegulationSummaryRepo)
+	financeDailyRegulationSummaryHandler := handler.NewFinanceDailyRegulationSummaryHandler(financeDailyRegulationSummaryService)
+
+	financeDailySummaryRepo := repository.NewFinanceDailySummaryRepository(pool)
+	financeDailySummaryService := service.NewFinanceDailySummaryService(financeDailySummaryRepo)
+	financeDailySummaryHandler := handler.NewFinanceDailySummaryHandler(financeDailySummaryService)
+
+	financeMonthlySummaryRepo := repository.NewFinanceMonthlySummaryRepository(pool)
+	financeMonthlySummaryService := service.NewFinanceMonthlySummaryService(financeMonthlySummaryRepo)
+	financeMonthlySummaryHandler := handler.NewFinanceMonthlySummaryHandler(financeMonthlySummaryService)
+
+	ingredientStockHistoryRepo := repository.NewIngredientStockHistoryRepository(pool)
+	ingredientStockHistoryService := service.NewIngredientStockHistoryService(ingredientStockHistoryRepo)
+	ingredientStockHistoryHandler := handler.NewIngredientStockHistoryHandler(ingredientStockHistoryService)
+
+	orderItemRepo := repository.NewOrderItemRepository(pool)
+	orderItemService := service.NewOrderItemService(orderItemRepo)
+	orderItemHandler := handler.NewOrderItemHandler(orderItemService)
+
+	orderRepo := repository.NewOrderRepository(pool)
+	orderService := service.NewOrderService(orderRepo)
+	orderHandler := handler.NewOrderHandler(orderService)
+
+	salesDailySummaryRepo := repository.NewSalesDailySummaryRepository(pool)
+	salesDailySummaryService := service.NewSalesDailySummaryService(salesDailySummaryRepo)
+	salesDailySummaryHandler := handler.NewSalesDailySummaryHandler(salesDailySummaryService)
+
+	salesMenuSummaryRepo := repository.NewSalesMenuSummaryRepository(pool)
+	salesMenuSummaryService := service.NewSalesMenuSummaryService(salesMenuSummaryRepo)
+	salesMenuSummaryHandler := handler.NewSalesMenuSummaryHandler(salesMenuSummaryService)
+
+	salesMonthlySummaryRepo := repository.NewSalesMonthlySummaryRepository(pool)
+	salesMonthlySummaryService := service.NewSalesMonthlySummaryService(salesMonthlySummaryRepo)
+	salesMonthlySummaryHandler := handler.NewSalesMonthlySummaryHandler(salesMonthlySummaryService)
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -105,6 +209,136 @@ func main() {
 	r.Route("/api/test-table", func(r chi.Router) {
 		r.Get("/", testHandler.GetAll)
 		r.Get("/{id}", testHandler.GetByID)
+	})
+
+	r.Route("/api/food-ingredients", func(r chi.Router) {
+		r.Get("/", foodIngredientHandler.GetAll)
+		r.Get("/{id}", foodIngredientHandler.GetByID)
+	})
+
+	r.Route("/api/menu-ingredients", func(r chi.Router) {
+		r.Get("/", menuIngredientHandler.GetAll)
+		r.Get("/{id}", menuIngredientHandler.GetByID)
+	})
+
+	r.Route("/api/menu-offer-details", func(r chi.Router) {
+		r.Get("/", menuOfferDetailHandler.GetAll)
+		r.Get("/{id}", menuOfferDetailHandler.GetByID)
+	})
+
+	r.Route("/api/menu-offers", func(r chi.Router) {
+		r.Get("/", menuOfferHandler.GetAll)
+		r.Get("/{id}", menuOfferHandler.GetByID)
+	})
+
+	r.Route("/api/menu-online-orders", func(r chi.Router) {
+		r.Get("/", menuOnlineOrderHandler.GetAll)
+		r.Get("/{id}", menuOnlineOrderHandler.GetByID)
+	})
+
+	r.Route("/api/menu-packaging-ingredients", func(r chi.Router) {
+		r.Get("/", menuPackagingIngredientHandler.GetAll)
+		r.Get("/{id}", menuPackagingIngredientHandler.GetByID)
+	})
+
+	r.Route("/api/menu-packagings", func(r chi.Router) {
+		r.Get("/", menuPackagingHandler.GetAll)
+		r.Get("/{id}", menuPackagingHandler.GetByID)
+	})
+
+	r.Route("/api/menu-variant-ingredients", func(r chi.Router) {
+		r.Get("/", menuVariantIngredientHandler.GetAll)
+		r.Get("/{id}", menuVariantIngredientHandler.GetByID)
+	})
+
+	r.Route("/api/menu-variants", func(r chi.Router) {
+		r.Get("/", menuVariantHandler.GetAll)
+		r.Get("/{id}", menuVariantHandler.GetByID)
+	})
+
+	r.Route("/api/menus", func(r chi.Router) {
+		r.Get("/", menuHandler.GetAll)
+		r.Get("/{id}", menuHandler.GetByID)
+	})
+
+	r.Route("/api/payment-methods", func(r chi.Router) {
+		r.Get("/", paymentMethodHandler.GetAll)
+		r.Get("/{id}", paymentMethodHandler.GetByID)
+	})
+
+	r.Route("/api/store-discounts", func(r chi.Router) {
+		r.Get("/", storeDiscountHandler.GetAll)
+		r.Get("/{id}", storeDiscountHandler.GetByID)
+	})
+
+	r.Route("/api/store-operational-hours", func(r chi.Router) {
+		r.Get("/", storeOperationalHourHandler.GetAll)
+		r.Get("/{id}", storeOperationalHourHandler.GetByID)
+	})
+
+	r.Route("/api/store-payment-methods", func(r chi.Router) {
+		r.Get("/", storePaymentMethodHandler.GetAll)
+		r.Get("/{id}", storePaymentMethodHandler.GetByID)
+	})
+
+	r.Route("/api/subscription-types", func(r chi.Router) {
+		r.Get("/", subscriptionTypeHandler.GetAll)
+		r.Get("/{id}", subscriptionTypeHandler.GetByID)
+	})
+
+	r.Route("/api/finance-daily-discount-summaries", func(r chi.Router) {
+		r.Get("/", financeDailyDiscountSummaryHandler.GetAll)
+		r.Get("/{id}", financeDailyDiscountSummaryHandler.GetByID)
+	})
+
+	r.Route("/api/finance-daily-hpp-summaries", func(r chi.Router) {
+		r.Get("/", financeDailyHppSummaryHandler.GetAll)
+		r.Get("/{id}", financeDailyHppSummaryHandler.GetByID)
+	})
+
+	r.Route("/api/finance-daily-regulation-summaries", func(r chi.Router) {
+		r.Get("/", financeDailyRegulationSummaryHandler.GetAll)
+		r.Get("/{id}", financeDailyRegulationSummaryHandler.GetByID)
+	})
+
+	r.Route("/api/finance-daily-summaries", func(r chi.Router) {
+		r.Get("/", financeDailySummaryHandler.GetAll)
+		r.Get("/{id}", financeDailySummaryHandler.GetByID)
+	})
+
+	r.Route("/api/finance-monthly-summaries", func(r chi.Router) {
+		r.Get("/", financeMonthlySummaryHandler.GetAll)
+		r.Get("/{id}", financeMonthlySummaryHandler.GetByID)
+	})
+
+	r.Route("/api/ingredient-stock-histories", func(r chi.Router) {
+		r.Get("/", ingredientStockHistoryHandler.GetAll)
+		r.Get("/{id}", ingredientStockHistoryHandler.GetByID)
+	})
+
+	r.Route("/api/order-items", func(r chi.Router) {
+		r.Get("/", orderItemHandler.GetAll)
+		r.Get("/{id}", orderItemHandler.GetByID)
+	})
+
+	r.Route("/api/orders", func(r chi.Router) {
+		r.Get("/", orderHandler.GetAll)
+		r.Get("/{id}", orderHandler.GetByID)
+	})
+
+	r.Route("/api/sales-daily-summaries", func(r chi.Router) {
+		r.Get("/", salesDailySummaryHandler.GetAll)
+		r.Get("/{id}", salesDailySummaryHandler.GetByID)
+	})
+
+	r.Route("/api/sales-menu-summaries", func(r chi.Router) {
+		r.Get("/", salesMenuSummaryHandler.GetAll)
+		r.Get("/{id}", salesMenuSummaryHandler.GetByID)
+	})
+
+	r.Route("/api/sales-monthly-summaries", func(r chi.Router) {
+		r.Get("/", salesMonthlySummaryHandler.GetAll)
+		r.Get("/{id}", salesMonthlySummaryHandler.GetByID)
 	})
 
 	port := os.Getenv("SERVER_PORT")
