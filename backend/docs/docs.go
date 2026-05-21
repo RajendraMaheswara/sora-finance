@@ -97,6 +97,1831 @@ const docTemplate = `{
                 }
             }
         },
+        "/finance-daily-discount-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua finance daily discount summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailyDiscountSummaries"
+                ],
+                "summary": "Get all finance daily discount summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.FinanceDailyDiscountSummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-daily-discount-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu finance daily discount summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailyDiscountSummaries"
+                ],
+                "summary": "Get finance daily discount summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.FinanceDailyDiscountSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-daily-hpp-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua finance daily hpp summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailyHppSummaries"
+                ],
+                "summary": "Get all finance daily hpp summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.FinanceDailyHppSummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-daily-hpp-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu finance daily hpp summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailyHppSummaries"
+                ],
+                "summary": "Get finance daily hpp summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.FinanceDailyHppSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-daily-regulation-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua finance daily regulation summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailyRegulationSummaries"
+                ],
+                "summary": "Get all finance daily regulation summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.FinanceDailyRegulationSummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-daily-regulation-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu finance daily regulation summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailyRegulationSummaries"
+                ],
+                "summary": "Get finance daily regulation summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.FinanceDailyRegulationSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-daily-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua finance daily summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailySummaries"
+                ],
+                "summary": "Get all finance daily summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.FinanceDailySummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-daily-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu finance daily summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceDailySummaries"
+                ],
+                "summary": "Get finance daily summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.FinanceDailySummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-monthly-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua finance monthly summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceMonthlySummaries"
+                ],
+                "summary": "Get all finance monthly summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.FinanceMonthlySummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/finance-monthly-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu finance monthly summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FinanceMonthlySummaries"
+                ],
+                "summary": "Get finance monthly summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.FinanceMonthlySummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/food-ingredients": {
+            "get": {
+                "description": "Mengembalikan daftar semua food ingredients",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FoodIngredients"
+                ],
+                "summary": "Get all food ingredients",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.FoodIngredient"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/food-ingredients/{id}": {
+            "get": {
+                "description": "Mengembalikan satu food ingredient berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "FoodIngredients"
+                ],
+                "summary": "Get food ingredient by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.FoodIngredient"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/ingredient-stock-histories": {
+            "get": {
+                "description": "Mengembalikan daftar semua ingredient stock histories",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IngredientStockHistories"
+                ],
+                "summary": "Get all ingredient stock histories",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.IngredientStockHistory"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/ingredient-stock-histories/{id}": {
+            "get": {
+                "description": "Mengembalikan satu ingredient stock history berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "IngredientStockHistories"
+                ],
+                "summary": "Get ingredient stock history by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.IngredientStockHistory"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-ingredients": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu ingredients",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuIngredients"
+                ],
+                "summary": "Get all menu ingredients",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuIngredient"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-ingredients/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu ingredient berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuIngredients"
+                ],
+                "summary": "Get menu ingredient by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuIngredient"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-offer-details": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu offer details",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuOfferDetails"
+                ],
+                "summary": "Get all menu offer details",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuOfferDetail"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-offer-details/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu offer detail berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuOfferDetails"
+                ],
+                "summary": "Get menu offer detail by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuOfferDetail"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-offers": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu offers",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuOffers"
+                ],
+                "summary": "Get all menu offers",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuOffer"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-offers/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu offer berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuOffers"
+                ],
+                "summary": "Get menu offer by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuOffer"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-online-orders": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu online orders",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuOnlineOrders"
+                ],
+                "summary": "Get all menu online orders",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuOnlineOrder"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-online-orders/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu online order berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuOnlineOrders"
+                ],
+                "summary": "Get menu online order by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuOnlineOrder"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-packaging-ingredients": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu packaging ingredients",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuPackagingIngredients"
+                ],
+                "summary": "Get all menu packaging ingredients",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuPackagingIngredient"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-packaging-ingredients/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu packaging ingredient berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuPackagingIngredients"
+                ],
+                "summary": "Get menu packaging ingredient by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuPackagingIngredient"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-packagings": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu packagings",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuPackagings"
+                ],
+                "summary": "Get all menu packagings",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuPackaging"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-packagings/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu packaging berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuPackagings"
+                ],
+                "summary": "Get menu packaging by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuPackaging"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-variant-ingredients": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu variant ingredients",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuVariantIngredients"
+                ],
+                "summary": "Get all menu variant ingredients",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuVariantIngredient"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-variant-ingredients/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu variant ingredient berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuVariantIngredients"
+                ],
+                "summary": "Get menu variant ingredient by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuVariantIngredient"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-variants": {
+            "get": {
+                "description": "Mengembalikan daftar semua menu variants",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuVariants"
+                ],
+                "summary": "Get all menu variants",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.MenuVariant"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menu-variants/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu variant berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "MenuVariants"
+                ],
+                "summary": "Get menu variant by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.MenuVariant"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menus": {
+            "get": {
+                "description": "Mengembalikan daftar semua menus",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Menus"
+                ],
+                "summary": "Get all menus",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.Menu"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/menus/{id}": {
+            "get": {
+                "description": "Mengembalikan satu menu berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Menus"
+                ],
+                "summary": "Get menu by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Menu"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/order-items": {
+            "get": {
+                "description": "Mengembalikan daftar semua order items",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OrderItems"
+                ],
+                "summary": "Get all order items",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.OrderItem"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/order-items/{id}": {
+            "get": {
+                "description": "Mengembalikan satu order item berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "OrderItems"
+                ],
+                "summary": "Get order item by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.OrderItem"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/orders": {
+            "get": {
+                "description": "Mengembalikan daftar semua orders",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Orders"
+                ],
+                "summary": "Get all orders",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.Order"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/orders/{id}": {
+            "get": {
+                "description": "Mengembalikan satu order berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Orders"
+                ],
+                "summary": "Get order by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.Order"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/payment-methods": {
+            "get": {
+                "description": "Mengembalikan daftar semua payment methods",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "PaymentMethods"
+                ],
+                "summary": "Get all payment methods",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.PaymentMethod"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/payment-methods/{id}": {
+            "get": {
+                "description": "Mengembalikan satu payment method berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "PaymentMethods"
+                ],
+                "summary": "Get payment method by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.PaymentMethod"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/sales-daily-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua sales daily summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SalesDailySummaries"
+                ],
+                "summary": "Get all sales daily summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.SalesDailySummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/sales-daily-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu sales daily summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SalesDailySummaries"
+                ],
+                "summary": "Get sales daily summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SalesDailySummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/sales-menu-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua sales menu summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SalesMenuSummaries"
+                ],
+                "summary": "Get all sales menu summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.SalesMenuSummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/sales-menu-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu sales menu summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SalesMenuSummaries"
+                ],
+                "summary": "Get sales menu summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SalesMenuSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/sales-monthly-summaries": {
+            "get": {
+                "description": "Mengembalikan daftar semua sales monthly summaries",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SalesMonthlySummaries"
+                ],
+                "summary": "Get all sales monthly summaries",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.SalesMonthlySummary"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/sales-monthly-summaries/{id}": {
+            "get": {
+                "description": "Mengembalikan satu sales monthly summary berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SalesMonthlySummaries"
+                ],
+                "summary": "Get sales monthly summary by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SalesMonthlySummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/store-discounts": {
+            "get": {
+                "description": "Mengembalikan daftar semua store discounts",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StoreDiscounts"
+                ],
+                "summary": "Get all store discounts",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.StoreDiscount"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/store-discounts/{id}": {
+            "get": {
+                "description": "Mengembalikan satu store discount berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StoreDiscounts"
+                ],
+                "summary": "Get store discount by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.StoreDiscount"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/store-operational-hours": {
+            "get": {
+                "description": "Mengembalikan daftar semua store operational hours",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StoreOperationalHours"
+                ],
+                "summary": "Get all store operational hours",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.StoreOperationalHour"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/store-operational-hours/{id}": {
+            "get": {
+                "description": "Mengembalikan satu store operational hour berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StoreOperationalHours"
+                ],
+                "summary": "Get store operational hour by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.StoreOperationalHour"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/store-payment-methods": {
+            "get": {
+                "description": "Mengembalikan daftar semua store payment methods",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StorePaymentMethods"
+                ],
+                "summary": "Get all store payment methods",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.StorePaymentMethod"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/store-payment-methods/{id}": {
+            "get": {
+                "description": "Mengembalikan satu store payment method berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "StorePaymentMethods"
+                ],
+                "summary": "Get store payment method by ID",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "UUID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.StorePaymentMethod"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/stores": {
             "get": {
                 "description": "Mengembalikan daftar semua store yang aktif",
@@ -151,6 +1976,79 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/models.Store"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/subscription-types": {
+            "get": {
+                "description": "Mengembalikan daftar semua subscription types",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SubscriptionTypes"
+                ],
+                "summary": "Get all subscription types",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/models.SubscriptionType"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/subscription-types/{id}": {
+            "get": {
+                "description": "Mengembalikan satu subscription type berdasarkan ID",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "SubscriptionTypes"
+                ],
+                "summary": "Get subscription type by ID",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/models.SubscriptionType"
                         }
                     },
                     "400": {
@@ -280,6 +2178,1280 @@ const docTemplate = `{
                 }
             }
         },
+        "models.FinanceDailyDiscountSummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_discount_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "t_finance_daily_summary_id": {
+                    "type": "string"
+                },
+                "total_discount": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.FinanceDailyHppSummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_menu_category_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "t_finance_daily_summary_id": {
+                    "type": "string"
+                },
+                "total_hpp": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.FinanceDailyRegulationSummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "m_store_regulation_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "t_finance_daily_summary_id": {
+                    "type": "string"
+                },
+                "total_regulation": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.FinanceDailySummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "total_cash": {
+                    "type": "number"
+                },
+                "total_cost_and_expense": {
+                    "type": "number"
+                },
+                "total_debit": {
+                    "type": "number"
+                },
+                "total_discount": {
+                    "type": "number"
+                },
+                "total_ewallet": {
+                    "type": "number"
+                },
+                "total_hpp": {
+                    "type": "number"
+                },
+                "total_income": {
+                    "type": "number"
+                },
+                "total_net_income": {
+                    "type": "number"
+                },
+                "total_regulation_customer": {
+                    "type": "number"
+                },
+                "total_regulation_outlet": {
+                    "type": "number"
+                },
+                "total_rounding": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.FinanceMonthlySummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "total_cash": {
+                    "type": "number"
+                },
+                "total_cost_and_expense": {
+                    "type": "number"
+                },
+                "total_debit": {
+                    "type": "number"
+                },
+                "total_discount": {
+                    "type": "number"
+                },
+                "total_ewallet": {
+                    "type": "number"
+                },
+                "total_hpp": {
+                    "type": "number"
+                },
+                "total_income": {
+                    "type": "number"
+                },
+                "total_net_income": {
+                    "type": "number"
+                },
+                "total_regulation_customer": {
+                    "type": "number"
+                },
+                "total_regulation_outlet": {
+                    "type": "number"
+                },
+                "total_rounding": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.FoodIngredient": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "deleted_note": {
+                    "type": "string"
+                },
+                "deleted_reason": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_food_unit_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "stock_limit": {
+                    "type": "number"
+                },
+                "unit_price": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.IngredientStockHistory": {
+            "type": "object",
+            "properties": {
+                "added": {
+                    "type": "number"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "current_stock": {
+                    "type": "number"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "deleted_note": {
+                    "type": "string"
+                },
+                "deleted_reason": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "ingredient_code": {
+                    "type": "string"
+                },
+                "ingredient_name": {
+                    "type": "string"
+                },
+                "ingredient_unit_name": {
+                    "type": "string"
+                },
+                "journal": {
+                    "type": "number"
+                },
+                "m_food_ingredient_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "previous_stock": {
+                    "type": "number"
+                },
+                "reduced": {
+                    "type": "number"
+                },
+                "remaining_capital": {
+                    "type": "number"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "stock_change": {
+                    "type": "number"
+                },
+                "total_remaining_capital": {
+                    "type": "number"
+                },
+                "total_unit_price": {
+                    "type": "number"
+                },
+                "type": {
+                    "type": "string"
+                },
+                "unit_price": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.Menu": {
+            "type": "object",
+            "properties": {
+                "background_color": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "string"
+                },
+                "cogs": {
+                    "type": "number"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "image_url": {
+                    "type": "string"
+                },
+                "m_menu_category_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "m_store_regulation_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "total_stock": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuIngredient": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_food_ingredient_id": {
+                    "type": "string"
+                },
+                "m_menu_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuOffer": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "expired_offer_date": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "image_url": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "m_store_regulation_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "start_offer_date": {
+                    "type": "string"
+                },
+                "terms_and_conditions": {
+                    "type": "string"
+                },
+                "total_stock": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuOfferDetail": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_menu_id": {
+                    "type": "string"
+                },
+                "m_menu_offer_id": {
+                    "type": "string"
+                },
+                "m_menu_packaging_id": {
+                    "type": "string"
+                },
+                "m_menu_variant_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuOnlineOrder": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_percentage": {
+                    "type": "boolean"
+                },
+                "m_menu_id": {
+                    "type": "string"
+                },
+                "m_menu_online_order_type_id": {
+                    "type": "integer"
+                },
+                "m_menu_packaging_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuPackaging": {
+            "type": "object",
+            "properties": {
+                "cogs": {
+                    "type": "number"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "m_store_regulation_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "total_stock": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuPackagingIngredient": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_food_ingredient_id": {
+                    "type": "string"
+                },
+                "m_menu_packaging_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuVariant": {
+            "type": "object",
+            "properties": {
+                "cogs": {
+                    "type": "number"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "m_store_regulation_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "total_stock": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.MenuVariantIngredient": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_food_ingredient_id": {
+                    "type": "string"
+                },
+                "m_menu_variant_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.Order": {
+            "type": "object",
+            "properties": {
+                "cancelled_at": {
+                    "type": "string"
+                },
+                "cancelled_by": {
+                    "type": "string"
+                },
+                "cancelled_note": {
+                    "type": "string"
+                },
+                "cancelled_reason": {
+                    "type": "string"
+                },
+                "cashier_name": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "customer_name": {
+                    "type": "string"
+                },
+                "customer_phone": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "deleted_note": {
+                    "type": "string"
+                },
+                "deleted_reason": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_cashier_id": {
+                    "type": "string"
+                },
+                "m_customer_id": {
+                    "type": "string"
+                },
+                "m_menu_online_order_type_id": {
+                    "type": "integer"
+                },
+                "m_order_payment_status_id": {
+                    "type": "integer"
+                },
+                "m_order_status_id": {
+                    "type": "integer"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "m_store_payment_method_id": {
+                    "type": "string"
+                },
+                "m_store_regulation_ids": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "m_table_id": {
+                    "type": "string"
+                },
+                "order_number": {
+                    "type": "string"
+                },
+                "payment_method_name": {
+                    "type": "string"
+                },
+                "rounding_price": {
+                    "type": "number"
+                },
+                "sub_total": {
+                    "type": "number"
+                },
+                "table_name": {
+                    "type": "string"
+                },
+                "total_admin_debit_fee": {
+                    "type": "number"
+                },
+                "total_admin_ewallet_fee": {
+                    "type": "number"
+                },
+                "total_item_price": {
+                    "type": "number"
+                },
+                "total_paid": {
+                    "type": "number"
+                },
+                "total_price": {
+                    "type": "number"
+                },
+                "total_regulation": {
+                    "type": "number"
+                },
+                "total_return": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.OrderItem": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_ready": {
+                    "type": "boolean"
+                },
+                "m_customer_id": {
+                    "type": "string"
+                },
+                "m_menu_id": {
+                    "type": "string"
+                },
+                "m_menu_offer_id": {
+                    "type": "string"
+                },
+                "m_menu_online_order_id": {
+                    "type": "string"
+                },
+                "m_menu_packaging_id": {
+                    "type": "string"
+                },
+                "m_menu_variant_id": {
+                    "type": "string"
+                },
+                "m_order_type_id": {
+                    "type": "integer"
+                },
+                "m_store_discount_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "manual_discount_is_percentage": {
+                    "type": "boolean"
+                },
+                "manual_discount_name": {
+                    "type": "string"
+                },
+                "manual_discount_nominal": {
+                    "type": "number"
+                },
+                "menu_category_name": {
+                    "type": "string"
+                },
+                "menu_cogs": {
+                    "type": "number"
+                },
+                "menu_name": {
+                    "type": "string"
+                },
+                "menu_offer_cogs": {
+                    "type": "number"
+                },
+                "menu_offer_name": {
+                    "type": "string"
+                },
+                "menu_offer_price": {
+                    "type": "number"
+                },
+                "menu_online_order_name": {
+                    "type": "string"
+                },
+                "menu_online_order_price": {
+                    "type": "number"
+                },
+                "menu_packaging_cogs": {
+                    "type": "number"
+                },
+                "menu_packaging_name": {
+                    "type": "string"
+                },
+                "menu_packaging_price": {
+                    "type": "number"
+                },
+                "menu_price": {
+                    "type": "number"
+                },
+                "menu_variant_cogs": {
+                    "type": "number"
+                },
+                "menu_variant_name": {
+                    "type": "string"
+                },
+                "menu_variant_price": {
+                    "type": "number"
+                },
+                "note": {
+                    "type": "string"
+                },
+                "order_type_name": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "store_discount_name": {
+                    "type": "string"
+                },
+                "store_discount_price": {
+                    "type": "number"
+                },
+                "t_order_id": {
+                    "type": "string"
+                },
+                "total_price": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.PaymentMethod": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "logo_url": {
+                    "type": "string"
+                },
+                "m_payment_method_type_id": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.SalesDailySummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "total_discount": {
+                    "type": "number"
+                },
+                "total_hpp": {
+                    "type": "number"
+                },
+                "total_omzet": {
+                    "type": "number"
+                },
+                "total_profit": {
+                    "type": "number"
+                },
+                "total_regulation": {
+                    "type": "number"
+                },
+                "total_rounding": {
+                    "type": "number"
+                },
+                "total_transaction": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.SalesMenuSummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_menu_id": {
+                    "type": "string"
+                },
+                "m_menu_offer_id": {
+                    "type": "string"
+                },
+                "m_menu_online_order_id": {
+                    "type": "string"
+                },
+                "m_menu_packaging_id": {
+                    "type": "string"
+                },
+                "m_menu_variant_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "menu_name": {
+                    "type": "string"
+                },
+                "menu_offer_name": {
+                    "type": "string"
+                },
+                "menu_online_order_name": {
+                    "type": "string"
+                },
+                "menu_packaging_name": {
+                    "type": "string"
+                },
+                "menu_variant_name": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "total_menu_offer_price": {
+                    "type": "number"
+                },
+                "total_menu_online_order_price": {
+                    "type": "number"
+                },
+                "total_menu_packaging_price": {
+                    "type": "number"
+                },
+                "total_menu_price": {
+                    "type": "number"
+                },
+                "total_menu_variant_price": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.SalesMonthlySummary": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "date": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "total_discount": {
+                    "type": "number"
+                },
+                "total_hpp": {
+                    "type": "number"
+                },
+                "total_omzet": {
+                    "type": "number"
+                },
+                "total_profit": {
+                    "type": "number"
+                },
+                "total_regulation": {
+                    "type": "number"
+                },
+                "total_rounding": {
+                    "type": "number"
+                },
+                "total_transaction": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
         "models.Store": {
             "type": "object",
             "properties": {
@@ -318,6 +3490,185 @@ const docTemplate = `{
                 },
                 "tutorial_step": {
                     "type": "integer"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.StoreDiscount": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_percentage": {
+                    "type": "boolean"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "nominal": {
+                    "type": "number"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.StoreOperationalHour": {
+            "type": "object",
+            "properties": {
+                "close_time": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "day_of_week": {
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "open_time": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.StorePaymentMethod": {
+            "type": "object",
+            "properties": {
+                "account_name": {
+                    "type": "string"
+                },
+                "account_number": {
+                    "type": "string"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "string"
+                },
+                "is_percentage": {
+                    "type": "boolean"
+                },
+                "m_payment_method_id": {
+                    "type": "string"
+                },
+                "m_store_id": {
+                    "type": "string"
+                },
+                "nominal": {
+                    "type": "number"
+                },
+                "qr_code_url": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                },
+                "updated_by": {
+                    "type": "string"
+                }
+            }
+        },
+        "models.SubscriptionType": {
+            "type": "object",
+            "properties": {
+                "coins": {
+                    "type": "integer"
+                },
+                "created_at": {
+                    "type": "string"
+                },
+                "created_by": {
+                    "type": "string"
+                },
+                "day": {
+                    "type": "integer"
+                },
+                "deleted_at": {
+                    "type": "string"
+                },
+                "deleted_by": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "image_url": {
+                    "type": "string"
+                },
+                "is_active": {
+                    "type": "boolean"
+                },
+                "max_users": {
+                    "type": "integer"
+                },
+                "name": {
+                    "type": "string"
                 },
                 "updated_at": {
                     "type": "string"
