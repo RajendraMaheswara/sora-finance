@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:sora2/pages/dashboard/dashboard_page.dart';
 
 import 'customers/customer_list_page.dart';
 import 'orders/order_list_page.dart';
@@ -22,6 +23,7 @@ class HomePage extends StatelessWidget {
           bottom: const TabBar(
             isScrollable: true,
             tabs: [
+              Tab(text: 'Dashboard'),
               Tab(text: 'Customers'),
               Tab(text: 'Orders'),
               Tab(text: 'Stores'),
@@ -35,6 +37,7 @@ class HomePage extends StatelessWidget {
         ),
         body: const TabBarView(
           children: [
+            DashboardScreen(),
             CustomerListPage(),
             OrderListPage(),
             StoreListPage(),
