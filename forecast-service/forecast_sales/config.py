@@ -11,6 +11,7 @@ class Config:
     SALES_MODELS_DIR = os.path.join(MODELS_DIR, "sales")
     
     DAILY_MODEL_PATH = os.path.join(SALES_MODELS_DIR, "models_rf_daily.joblib")
+    WEEKLY_MODEL_PATH = os.path.join(SALES_MODELS_DIR, "models_rf_weekly.joblib") # TAMBAHAN BARU
     MONTHLY_MODEL_PATH = os.path.join(SALES_MODELS_DIR, "models_rf_monthly.joblib")
 
     @staticmethod
