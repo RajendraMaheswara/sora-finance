@@ -39,7 +39,8 @@ class SalesForecaster:
         future_df['month'] = future_df['date'].dt.month
         future_df['is_weekend'] = future_df['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
         future_df['total_discount'] = 0 
-        
+        future_df['day_of_month'] = future_df['date'].dt.day
+        future_df['is_payday'] = future_df['day_of_month'].apply(lambda x: 1 if (x >= 25 or x <= 5) else 0)
         all_tree_preds = np.array([tree.predict(future_df[fitur_x].values) for tree in rf_model.estimators_])
         mean_preds = all_tree_preds.mean(axis=0)
         std_preds = all_tree_preds.std(axis=0)
