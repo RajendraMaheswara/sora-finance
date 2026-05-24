@@ -1,6 +1,8 @@
 # feat: Modul Forecasting Stok Barang dengan Prophet
 
 ## PROGRESS
+
+### 21 Mei 2026
 - Integrasi forecast-service (Python/Flask) ke backend Go via API
 - Training model Prophet per pasangan (store, ingredient)
 - Data historis diambil dari endpoint `GET /api/ingredient-stock-histories`
@@ -10,7 +12,18 @@
 - Auto-training scheduler tiap Minggu jam 2 pagi
 - Model disimpan sebagai `.pkl` di `models/inventory/`
 
+### 25 Mei 2026
+- Format response disamakan dengan modul visitor/sales:  
+  `success`, `data` (metrics, forecast_summary, prediction_analysis, model_confidence, daily_forecast)
+- Confidence score dihitung dari MAPE (100 - MAPE), dengan level HIGH/MEDIUM/LOW
+- Training dijalankan secara **asinkron** dengan endpoint `/api/inventory/train/start`
+- Monitoring progress training via `/api/inventory/train/status/<task_id>`
+- Metrik evaluasi (MAE, RMSE, MAPE) disimpan otomatis dalam file JSON setelah training
+- Backward compatibility: endpoint `/api/inventory/train` tetap bisa dipakai (langsung async)
+
 ## KENDALA / KEKURANGAN
+
+### 21 Mei 2026
 - Hasil prediksi bisa negatif karena banyak data nol (intermittent)
 - Belum menggunakan batasan nilai minimal (floor=0) pada Prophet
 - Belum tuning parameter untuk data jarang (intermittent demand)
@@ -19,106 +32,177 @@
 - Filter tanggal di API masih manual (belum difilter di server)
 - Opsi 'libur toko' masih placeholder (default 0)
 
+### 25 Mei 2026
+- Confidence sangat bergantung pada MAPE; jika data terlalu noise, confidence bisa rendah (wajar)
+- Metrik R² dan explained variance belum dihitung (placeholder `null`)
+- Belum ada fitur auto‑clean model usang / tidak terpakai
+- Progress training saat ini disimpan di memori (hilang jika service restart)
 
-PANDUAN RUN
-Panduan Menjalankan Forecast Service (Inventory)
-Prasyarat
-Python 3.12 (wajib, karena Prophet butuh versi ini)
+---
 
-Terminal (shell) di folder forecast-service
-
-File model .pkl yang sudah terlatih (ada di models/inventory/)
-Pastikan folder models/inventory/ berisi file hasil training sebelumnya (contoh: model_storeb4e2f559..._ingrb98b5042...pkl). Jika belum ada, minta ke anggota tim yang sudah training atau lakukan training sekali saja.
-
-1. Setup Virtual Environment (sekali saja)
+## STRUKTUR FOLDER
 ```
+forecast-service/
+├── app.py # Entry point Flask, routing, scheduler
+├── config.py # Konfigurasi (API backend Go, model path)
+├── .env # Environment variables (BACKEND_API_URL)
+├── requirements.txt # Dependencies Python
+├── modules/ # Logika forecasting per modul
+│ ├── init.py
+│ └── inventory/ # Modul stok barang
+│ ├── init.py
+│ ├── forecaster.py # Kelas InventoryForecaster (training, prediksi)
+│ └── trainer.py # Fungsi untuk melatih semua pasangan (store, ingredient)
+├── models/ # Tempat penyimpanan model hasil training (.pkl)
+│ └── inventory/ # Khusus model stok barang
+└── utils/ # (Dihapus, tidak digunakan)
+```
+
+
+---
+
+## PANDUAN MENJALANKAN SERVICE
+
+### Prasyarat
+- **Python 3.12** (wajib, karena Prophet membutuhkan versi ini)
+- Terminal di dalam folder `forecast-service`
+- File model `.pkl` yang sudah terlatih (ada di `models/inventory/`)  
+  *Jika belum ada, lakukan training sekali dengan endpoint async di bawah.*
+
+### 1. Setup Virtual Environment (sekali saja)
+```bash
 cd forecast-service
 python3.12 -m venv venv
 source venv/bin/activate          # Linux/Mac
-venv\Scripts\activate          # Windows
+# venv\Scripts\activate          # Windows
 pip install -r requirements.txt
 ```
-2. Konfigurasi .env
 
+### 2. Konfigurasi .env
 Pastikan file .env berisi:
 ```
 BACKEND_API_URL=http://localhost:8080/api
 ```
 (Sesuaikan jika backend Go berjalan di host/port berbeda)
 
-4. Jalankan Service
-
+### 3. Jalankan Service
+```
 python app.py
-
-Biarkan terminal tetap berjalan. Service tersedia di http://localhost:5000.
-
-6. Akses Prediksi (Forecast)
-
-Gunakan curl atau Postman untuk memanggil endpoint.
-
-Contoh permintaan mingguan (1 minggu ke depan) untuk Vanilla Syrup:
 ```
-curl -X POST http://localhost:5000/api/inventory/forecast \
-  -H "Content-Type: application/json" \  
-  -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":1,"freq":"W"}'
-```
+Service tersedia di http://localhost:5000.
 
-Contoh permintaan bulanan (1 bulan ke depan):
+### 4. Training Model (Async)
+Untuk memulai training semua pasangan toko-bahan secara asynchronous:
 ```
-curl -X POST http://localhost:5000/api/inventory/forecast \
-  -H "Content-Type: application/json" \  
-  -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":1,"freq":"M"}'
+curl -X POST http://localhost:5000/api/inventory/train/start
 ```
-6. Memahami Output
-
-Respon berbentuk JSON seperti ini:
+Response:
 ```
 {
-  "data": [
-    {
-      "ds": "Mon, 04 Jan 2027 00:00:00 GMT",
-      "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
-      "ingredient_id": "b98b5042-30b5-4dc7-80ce-7dbb4797c4c7",
-      "yhat": -0.8046689071900426,         // Prediksi rata-rata
-      "yhat_lower": -6.732813396856777,    // Batas bawah (worst-case)
-      "yhat_upper": 5.297820941020336      // Batas atas (best-case)
-    }
-  ],
-  "status": "sukses",
-  "pesan": "Forecast W untuk 1 periode ke depan"
+  "task_id": "uuid-string",
+  "message": "Training dimulai. Pantau progress di /api/inventory/train/status/<task_id>"
 }
 ```
-yhat : nilai prediksi tengah (dalam satuan yang sama dengan data reduced, misal botol, kg, butir)
-
-yhat_lower : batas bawah interval kepercayaan (skenario terendah)
-
-yhat_upper : batas atas interval kepercayaan (skenario tertinggi)
-
-Catatan: Hasil prediksi bisa negatif karena pola data banyak nol. Angka negatif bisa diinterpretasikan mendekati nol atau perlu perbaikan model di iterasi selanjutnya. Untuk saat ini fokus pada tren relatif dan rentang antara lower-upper.
-
-6. Mengganti Bahan/Toko
-Untuk mencoba prediksi bahan lain, ganti store_id dan ingredient_id dengan pasangan yang ada di models/inventory/ (lihat nama file).
-Contoh:
+Pantau progress:
 ```
-curl -X POST ... -d '{"store_id":"...", "ingredient_id":"...", "periods":2, "freq":"W"}'
+curl http://localhost:5000/api/inventory/train/status/<task_id>
 ```
-periods bisa diisi berapa minggu/bulan ke depan.
-freq diisi W (mingguan) atau M (bulanan).
+Status akan berubah: STARTING → RUNNING → DONE (atau ERROR).
 
-7. Catatan Penting
-Tidak perlu training lagi jika model sudah ada. Training ulang hanya diperlukan jika data historis bertambah dan ingin memperbarui model (dijalankan manual via POST /api/inventory/train atau otomatis oleh scheduler setiap Minggu 02:00).
-
-Service hanya sebagai jembatan; semua data tetap diambil dari API backend Go. Pastikan backend Go berjalan dan endpoint GET /api/ingredient-stock-histories dapat diakses.
-
-Untuk keperluan pengembangan, gunakan flask run (development server). Untuk production, gunakan gunicorn atau waitress.
-
-Troubleshooting Cepat
-Masalah	Solusi
-ModuleNotFoundError: No module named 'prophet'	pip install -r requirements.txt
-FileNotFoundError: Model not found...	Jalankan training sekali: 
+Alternatif (backward compatible):
 ```
 curl -X POST http://localhost:5000/api/inventory/train
 ```
-atau pastikan file .pkl ada di models/inventory/
-ConnectionError saat forecast	Pastikan backend Go berjalan dan .env benar
-Port 5000 sudah dipakai	Ganti port di app.py (baris terakhir app.run(port=5000))
+(Fungsi sama, langsung async dengan task_id baru)
+
+### 5. Forecasting
+Gunakan endpoint POST /api/inventory/forecast dengan body JSON.
+
+Contoh request mingguan (1 minggu ke depan):
+```
+curl -X POST http://localhost:5000/api/inventory/forecast \
+  -H "Content-Type: application/json" \
+  -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":1,"freq":"W"}'
+```
+Contoh request bulanan (1 bulan ke depan):
+```
+curl -X POST http://localhost:5000/api/inventory/forecast \
+  -H "Content-Type: application/json" \
+  -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":1,"freq":"M"}'
+```
+
+### 6. Memahami Output
+Response mengikuti format yang seragam dengan modul visitor/sales:
+```
+{
+  "success": true,
+  "message": "Forecast W untuk 1 periode ke depan",
+  "data": {
+    "store_id": "...",
+    "ingredient_id": "...",
+    "metrics": {
+      "mae": 1.23,
+      "rmse": 1.68,
+      "mape": 12.5,
+      "r2_score": null,
+      "explained_variance": null
+    },
+    "forecast_summary": {
+      "total_predicted_usage_next_7_days": 8.5,
+      "average_daily_usage_next_7_days": 1.21
+    },
+    "prediction_analysis": {
+      "highest_prediction_day": "2027-01-05",
+      "highest_prediction_value": 2.4,
+      "lowest_prediction_day": "2027-01-01",
+      "lowest_prediction_value": 0.1
+    },
+    "model_confidence": {
+      "confidence_score": 87.5,
+      "confidence_level": "HIGH"
+    },
+    "daily_forecast": [
+      {
+        "date": "2027-01-01",
+        "predicted_usage": 0.5,
+        "lower_bound": 0.0,
+        "upper_bound": 1.2
+      },
+      ...
+    ]
+  }
+}
+```
+
+- metrics: metrik evaluasi model dari cross‑validation (jika tersedia)
+- forecast_summary: total dan rata‑rata pemakaian selama periode yang diminta
+- prediction_analysis: hari dengan prediksi tertinggi/terendah
+- model_confidence: skor kepercayaan berdasarkan 100 - MAPE; level HIGH (≥85), MEDIUM (≥70), LOW (<70)
+- daily_forecast: array prediksi harian lengkap (7 atau 30 hari sesuai freq)
+
+### 7. Mengganti Bahan/Toko
+Ganti store_id dan ingredient_id dengan pasangan yang ada di models/inventory/ (lihat nama file).
+periods bisa diisi jumlah minggu/bulan ke depan. freq diisi W (mingguan) atau M (bulanan).
+
+### CATATAN PENTING
+- Training ulang hanya diperlukan jika data historis bertambah. Scheduler otomatis berjalan tiap Minggu pukul 02:00.
+- Semua data diambil dari API backend Go. Pastikan endpoint GET /api/ingredient-stock-histories dapat diakses.
+- Untuk production, gunakan WSGI server seperti gunicorn atau waitress, jangan mengandalkan server development Flask.
+- Progress training disimpan di memori – jika service restart, task lama tidak bisa dilacak.
+
+## TROUBLESHOOTING CEPAT
+
+- **ModuleNotFoundError: No module named 'prophet'**  
+  Jalankan `pip install -r requirements.txt`
+
+- **FileNotFoundError: Model not found...**  
+  Training dulu: `curl -X POST http://localhost:5000/api/inventory/train/start`
+
+- **ConnectionError saat forecast**  
+  Pastikan backend Go berjalan dan file `.env` sudah benar
+
+- **Port 5000 sudah dipakai**  
+  Ganti port di `app.py` (baris terakhir `app.run(port=5000)`)
+
+- **Training tidak kunjung selesai**  
+  Cek log Flask, mungkin ada error koneksi ke backend Go. Pastikan data tersedia.
