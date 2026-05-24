@@ -72,9 +72,9 @@ class SalesForecaster:
                 "tanggal": date.strftime('%Y-%m-%d'),
                 "day_of_week": nama_hari[hari_index],
                 "is_weekend": bool(hari_index >= 5),
-                "prediksi_total_omzet": int(pred_val),
-                "rentang_estimasi": {"batas_bawah": int(batas_bawah), "batas_atas": int(batas_atas)},
-                "persentase_keyakinan": f"{round(conf_level, 2)}%"
+                "forecast_omzet_total": int(pred_val),
+                "estimated range": {"lower_bound": int(batas_bawah), "upper_bound": int(batas_atas)},
+                "confidence level": f"{round(conf_level, 2)}%"
             })
         return hasil_akhir, None
 
@@ -111,8 +111,8 @@ class SalesForecaster:
 
             hasil_akhir.append({
                 "bulan_tahun": date.strftime('%Y-%m'),
-                "prediksi_total_omzet": int(pred_val),
-                "rentang_estimasi": {"batas_bawah": int(batas_bawah), "batas_atas": int(batas_atas)},
-                "persentase_keyakinan": f"{round(conf_level, 2)}%"
+                "forecast_omzet_total": int(pred_val),
+                "estimated range": {"lower_bound": int(batas_bawah), "upper_bound": int(batas_atas)},
+                "confidence level": f"{round(conf_level, 2)}%"
             })
         return hasil_akhir, None
