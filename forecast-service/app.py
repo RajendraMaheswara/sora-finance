@@ -1,18 +1,28 @@
 from flask import Flask, request, jsonify
+import traceback
+import uuid
+import threading
+
+# Import modul inventory (punya kamu)
 from modules.inventory.forecaster import InventoryForecaster
-from modules.inventory.trainer import train_all_inventory_models
+from modules.inventory.trainer import train_all_inventory_models, training_tasks
+
+# Scheduler untuk retrain otomatis
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
-import traceback
 
 app = Flask(__name__)
 
 # ============================================
 # SCHEDULER: Retrain otomatis tiap Minggu 02:00
 # ============================================
+def scheduled_train():
+    """Wrapper untuk scheduler, tanpa task_id."""
+    train_all_inventory_models(task_id=None)
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(
-    func=train_all_inventory_models,
+    func=scheduled_train,
     trigger="cron",
     day_of_week="sun",
     hour=2,
@@ -22,25 +32,25 @@ scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
 
 # ============================================
-# ROUTE 
+# ROUTE MODUL LAIN (VISITOR, SALES, dll.)
 # ============================================
-
 
 
 
 # ============================================
 # ROUTE INVENTORY (STOK BARANG)
 # ============================================
+
 @app.route('/api/inventory/forecast', methods=['POST'])
 def forecast_inventory():
     """
-    Dipanggil oleh backend Go untuk mendapatkan forecast stok bahan baku.
+    Mendapatkan forecast stok bahan baku.
     Request JSON:
     {
         "store_id": "...",
         "ingredient_id": "...",
-        "periods": 4,        // jumlah minggu/bulan ke depan
-        "freq": "W"          // "W" untuk mingguan, "M" untuk bulanan
+        "periods": 4,
+        "freq": "W"   // "W" atau "M"
     }
     """
     try:
@@ -50,49 +60,78 @@ def forecast_inventory():
         periods = int(data.get('periods', 1))
         freq = data.get('freq', 'W').upper()
 
-        # Validasi
         if not store_id or not ingredient_id:
             return jsonify({"error": "store_id dan ingredient_id wajib diisi"}), 400
         if freq not in ['W', 'M']:
             return jsonify({"error": "freq harus 'W' (mingguan) atau 'M' (bulanan)"}), 400
 
-        # Jalankan forecasting
         forecaster = InventoryForecaster(store_id, ingredient_id)
-        hasil = forecaster.predict(periods=periods, freq=freq)
-
-        # Ubah DataFrame hasil ke list of dict
-        hasil_json = hasil.to_dict(orient='records')
+        result = forecaster.predict(periods=periods, freq=freq)
 
         return jsonify({
-            "status": "sukses",
-            "pesan": f"Forecast {freq} untuk {periods} periode ke depan",
-            "data": hasil_json
+            "success": True,
+            "message": f"Forecast {freq} untuk {periods} periode ke depan",
+            "data": result
         })
 
     except FileNotFoundError:
-        # Model belum ada
         return jsonify({
-            "error": "Model belum di-training. Silakan panggil endpoint /api/inventory/train terlebih dahulu."
+            "error": "Model belum di-training. Silakan panggil endpoint /api/inventory/train/start terlebih dahulu."
         }), 404
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-# ============================================
-# ROUTE UNTUK TRAINING MANUAL (ADMIN)
-# ============================================
+
+@app.route('/api/inventory/train/start', methods=['POST'])
+def start_training():
+    """Memulai training async dan mengembalikan task_id."""
+    task_id = str(uuid.uuid4())
+    with threading.Lock():
+        training_tasks[task_id] = {
+            "status": "STARTING",
+            "total": 0,
+            "processed": 0,
+            "current_pair": None,
+            "message": ""
+        }
+    thread = threading.Thread(target=train_all_inventory_models, args=(task_id,))
+    thread.start()
+    return jsonify({
+        "task_id": task_id,
+        "message": "Training dimulai. Pantau progress di /api/inventory/train/status/<task_id>"
+    })
+
+
+@app.route('/api/inventory/train/status/<task_id>', methods=['GET'])
+def get_training_status(task_id):
+    """Mengembalikan status training berdasarkan task_id."""
+    task = training_tasks.get(task_id)
+    if not task:
+        return jsonify({"error": "Task tidak ditemukan"}), 404
+    return jsonify(task)
+
+
+# Backward compatibility – langsung jalankan async tanpa perlu task_id
 @app.route('/api/inventory/train', methods=['POST'])
 def train_inventory():
-    """
-    Memulai training semua model inventory.
-    Bisa dipanggil manual oleh admin atau dijadwalkan.
-    """
-    try:
-        train_all_inventory_models()
-        return jsonify({"status": "sukses", "pesan": "Training selesai"})
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+    """(Deprecated) Langsung mulai training async."""
+    task_id = str(uuid.uuid4())
+    with threading.Lock():
+        training_tasks[task_id] = {
+            "status": "STARTING",
+            "total": 0,
+            "processed": 0,
+            "current_pair": None,
+            "message": ""
+        }
+    thread = threading.Thread(target=train_all_inventory_models, args=(task_id,))
+    thread.start()
+    return jsonify({
+        "task_id": task_id,
+        "message": "Training dimulai. Gunakan /api/inventory/train/status/<task_id> untuk memantau."
+    })
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
