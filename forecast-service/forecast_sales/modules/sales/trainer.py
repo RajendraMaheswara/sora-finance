@@ -16,6 +16,13 @@ def get_optimized_rf_model():
         min_samples_leaf=3, random_state=42, n_jobs=-1
     )
 
+def get_small_rf_model():
+    # Model khusus untuk data mingguan dan bulanan yang ukurannya sangat kecil
+    return RandomForestRegressor(
+        n_estimators=50, max_depth=4, min_samples_split=2, 
+        min_samples_leaf=1, random_state=42, n_jobs=-1
+    )
+
 def calculate_advanced_metrics(y_true, y_pred):
     mae = mean_absolute_error(y_true, y_pred)
     rmse = np.sqrt(mean_squared_error(y_true, y_pred))
@@ -79,7 +86,6 @@ def train_all():
         weekly_models_dict = {}
         for store_id in df_d['m_store_id'].unique():
             df_s = df_d[df_d['m_store_id'] == store_id].copy()
-            # Set index ke date untuk melakukan Resampling mingguan (W-MON berarti awal minggu di Senin)
             df_s.set_index('date', inplace=True)
             
             # Resample: Jumlahkan omzet per minggu
@@ -88,23 +94,33 @@ def train_all():
             # Feature Engineering Mingguan
             df_w['week_of_year'] = df_w['date'].dt.isocalendar().week
             df_w['month'] = df_w['date'].dt.month
+            df_w['week_of_month'] = ((df_w['date'].dt.day - 1) // 7) + 1
+            
+            # LAG FEATURE
+            df_w['lag_1'] = df_w['total_omzet'].shift(1)
+            df_w['lag_4'] = df_w['total_omzet'].shift(4)
+            df_w = df_w.bfill()
             
             if len(df_w) < 5: 
                 print(f"   -> [SKIP] Weekly Toko {store_id} (Data kurang dari 5 minggu)")
                 continue
 
-            fitur_x = ['week_of_year', 'month', 'total_discount']
+            fitur_x = ['week_of_year', 'month', 'week_of_month', 'total_discount', 'lag_1', 'lag_4']
             X, y = df_w[fitur_x], df_w['total_omzet']
 
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            rf_eval = get_optimized_rf_model()
+            rf_eval = get_small_rf_model()
             rf_eval.fit(X_train, y_train)
             metrics = calculate_advanced_metrics(y_test, rf_eval.predict(X_test))
 
-            rf_final = get_optimized_rf_model()
+            rf_final = get_small_rf_model()
             rf_final.fit(X, y)
             
-            weekly_models_dict[store_id] = {"model": rf_final, "fitur_x": fitur_x, "last_date": df_w['date'].max(), "metrics": metrics}
+            weekly_models_dict[store_id] = {
+                "model": rf_final, "fitur_x": fitur_x, "last_date": df_w['date'].max(), 
+                "metrics": metrics, "last_omzet": df_w['total_omzet'].iloc[-1],
+                "last_4_omzet": df_w['total_omzet'].iloc[-4:].tolist()
+            }
             print(f"   -> Weekly: Toko {store_id} selesai (R2: {metrics['r2_score']})")
             
         joblib.dump(weekly_models_dict, Config.WEEKLY_MODEL_PATH)
@@ -125,20 +141,27 @@ def train_all():
             df_s['quarter'] = df_s['date'].dt.quarter
             df_s['total_discount'] = df_s.get('total_discount', 0).fillna(0)
             
+            # LAG FEATURE
+            df_s['lag_1'] = df_s['total_omzet'].shift(1)
+            df_s = df_s.dropna()
+            
             if len(df_s) < 5: continue
 
-            fitur_x = ['month', 'quarter', 'total_discount']
+            fitur_x = ['month', 'quarter', 'total_discount', 'lag_1']
             X, y = df_s[fitur_x], df_s['total_omzet']
 
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            rf_eval = get_optimized_rf_model()
+            rf_eval = get_small_rf_model()
             rf_eval.fit(X_train, y_train)
             metrics = calculate_advanced_metrics(y_test, rf_eval.predict(X_test))
 
-            rf_final = get_optimized_rf_model()
+            rf_final = get_small_rf_model()
             rf_final.fit(X, y)
             
-            monthly_models_dict[store_id] = {"model": rf_final, "fitur_x": fitur_x, "last_date": df_s['date'].max(), "metrics": metrics}
+            monthly_models_dict[store_id] = {
+                "model": rf_final, "fitur_x": fitur_x, "last_date": df_s['date'].max(), 
+                "metrics": metrics, "last_omzet": df_s['total_omzet'].iloc[-1]
+            }
             print(f"   -> Monthly: Toko {store_id} selesai (R2: {metrics['r2_score']})")
             
         joblib.dump(monthly_models_dict, Config.MONTHLY_MODEL_PATH)
