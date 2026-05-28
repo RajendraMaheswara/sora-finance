@@ -1,27 +1,4 @@
-"""
-forecaster.py — InventoryForecaster
-Modul prediksi stok bahan baku menggunakan Facebook Prophet.
-
-Changelog:
-- [FIX] growth='logistic' + floor/cap dihapus → kembali ke growth='linear'
-        dengan clip manual untuk menjamin prediksi >= 0.
-- [FIX] Rentang pengisian nol sekarang hanya sampai tanggal terakhir transaksi
-        (bukan end_date parameter). Mencegah penambahan ribuan hari kosong buatan
-        yang membuat model bias ke nol.
-- [FIX] mape KeyError pada data intermittent → fallback ke smape
-- [FIX] initial='365 days' tidak valid untuk data < 1 tahun → parameter adaptif
-- [NEW] Parameter training menyesuaikan panjang data secara otomatis
-        (aman untuk data 3 bulan dari toko baru s/d beberapa tahun dari toko lama)
-- [NEW] R² score dan explained_variance dihitung dari data latih
-- [NEW] smape disimpan di metrics JSON sebagai pelengkap/pengganti mape
-- [NEW] end_date default = hari ini (dinamis), tidak lagi statis 2026-12-31
-
-CATATAN PENTING:
-  Model yang tersimpan setelah perubahan ini TIDAK kompatibel dengan
-  model lama (growth='logistic' dengan floor/cap). Wajib hapus semua file
-  .pkl dan .json di models/inventory/, lalu retrain:
-    curl -X POST http://localhost:5000/api/inventory/train/start
-"""
+"""Inventory forecasting for ingredients using Prophet."""
 
 import itertools
 import json
@@ -143,12 +120,14 @@ class InventoryForecaster:
           MEDIUM : 365–729 hari → cross-val standar, yearly seasonality aktif, grid medium
           LONG   : 730+ hari    → full cross-val, semua fitur aktif, grid penuh
         """
+        # [EDIT_POINT] Ubah threshold tier training di sini (SHORT/MEDIUM/LONG).
         if data_days >= 730:
             return {
                 'yearly_seasonality': True,
                 'cv_initial': '365 days',
                 'cv_period':  '30 days',
                 'cv_horizon': '30 days',
+                # [EDIT_POINT] Ubah kombinasi hyperparameter LONG di sini.
                 'param_grid': {
                     'changepoint_prior_scale': [0.01, 0.05, 0.1],
                     'seasonality_prior_scale': [1.0, 5.0, 10.0],
@@ -160,6 +139,7 @@ class InventoryForecaster:
                 'cv_initial': '180 days',
                 'cv_period':  '30 days',
                 'cv_horizon': '30 days',
+                # [EDIT_POINT] Ubah kombinasi hyperparameter MEDIUM di sini.
                 'param_grid': {
                     'changepoint_prior_scale': [0.01, 0.1],
                     'seasonality_prior_scale': [1.0, 10.0],
@@ -172,6 +152,7 @@ class InventoryForecaster:
                 'cv_initial': f'{cv_initial_days} days',
                 'cv_period':  '14 days',
                 'cv_horizon': '14 days',
+                # [EDIT_POINT] Ubah kombinasi hyperparameter SHORT di sini.
                 'param_grid': {
                     'changepoint_prior_scale': [0.05, 0.1],
                     'seasonality_prior_scale': [5.0, 10.0],
@@ -184,6 +165,7 @@ class InventoryForecaster:
                 'cv_initial':  None,
                 'cv_period':   None,
                 'cv_horizon':  None,
+                # [EDIT_POINT] Ubah fallback hyperparameter data sangat pendek di sini.
                 'param_grid': {
                     'changepoint_prior_scale': [0.05],
                     'seasonality_prior_scale': [5.0],

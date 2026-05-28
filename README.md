@@ -1,128 +1,52 @@
-# feat: Modul Forecasting Stok Barang dengan Prophet
+# Modul Forecasting Stok Barang (Prophet)
 
-## PROGRESS
+Forecast service untuk prediksi pemakaian bahan baku F&B per pasangan store dan ingredient.
+Service ini berbasis Python + Flask dan mengambil data historis dari backend Go.
 
-### 21 Mei 2026
-- Integrasi forecast-service (Python/Flask) ke backend Go via API
-- Training model Prophet per pasangan (store, ingredient)
-- Data historis diambil dari endpoint `GET /api/ingredient-stock-histories`
-- Agregasi harian `SUM(reduced)` dengan pengisian 0 untuk hari kosong
-- Support fitur weekend, hari libur nasional (holidays Indonesia)
-- Endpoint forecast: `POST /api/inventory/forecast` (mingguan/bulanan)
-- Auto-training scheduler tiap Minggu jam 2 pagi
-- Model disimpan sebagai `.pkl` di `models/inventory/`
+## Daftar Bagian
+- Ringkasan
+- Bagian yang Sering Diganti
+- Fitur Aktif
+- Status dan Batasan Saat Ini
+- Struktur Folder
+- Persyaratan Sistem dan Instalasi
+- Konfigurasi Environment
+- Menjalankan Service
+- Endpoint API
+- Memahami Output
+- Troubleshooting
+- Catatan Production
+- Changelog Ringkas
 
-### 25 Mei 2026
-- Format response disamakan dengan modul visitor/sales:  
-  `success`, `data` (metrics, forecast_summary, prediction_analysis, model_confidence, daily_forecast)
-- Confidence score dihitung dari MAPE (100 - MAPE), dengan level HIGH/MEDIUM/LOW
-- Training dijalankan secara **asinkron** melalui endpoint `/api/inventory/train/start`
-- Monitoring progress training via `/api/inventory/train/status/<task_id>`
-- Metrik evaluasi (MAE, RMSE, MAPE) disimpan otomatis dalam file JSON setelah training
-- Backward compatibility: endpoint `/api/inventory/train` tetap bisa dipakai (langsung async)
-- **Uji coba endpoint forecast berhasil** mengembalikan struktur lengkap (daily_forecast, summary, analysis, confidence)
-- Response sudah sesuai untuk konsumsi dashboard; field `metrics` dan `confidence` akan terisi setelah retrain dengan kode terbaru
+## Ringkasan
+- Forecast mendukung frekuensi harian (`D`), mingguan (`W`), dan bulanan (`M`).
+- Training berjalan async dan bisa dipantau per `task_id`.
+- Model disimpan per pasangan store-ingredient pada folder `models/inventory/`.
+- Confidence score dihitung dari metrik error (`100 - MAPE`, fallback `100 - sMAPE`).
 
-### 29 Mei 2026
-- **Prediksi tidak lagi negatif/nol** – beralih ke `growth='linear'` dengan clip manual
-- **Data historis tidak lagi dipanjangkan buatan** – pengisian nol hanya sampai tanggal transaksi terakhir
-- **Parameter training adaptif** – cross‑validation & yearly seasonality menyesuaikan panjang data (aman untuk toko baru 3 bulan hingga toko lama bertahun‑tahun)
-- **Dukungan frekuensi harian (`D`)**, mingguan (`W`), dan bulanan (`M`) dengan agregasi otomatis  
-  - `freq='D'` → `daily_forecast` (array harian)  
-  - `freq='W'` → `weekly_forecast` (array total per minggu)  
-  - `freq='M'` → `monthly_forecast` (array total per bulan)
-- **R² dan explained variance** kini dihitung dari data latih dan disimpan di metrik
-- **Metrik sMAPE** ditambahkan sebagai fallback saat MAPE tidak tersedia
-- **Training paralel** dengan `ThreadPoolExecutor` (jumlah worker bisa diatur di `.env`)
-- **`end_date` dinamis** – default hari ini, tidak lagi statis 2026-12-31
-- Berbagai perbaikan bug: timezone UTC, `NoneType` pada model, validasi input
+## Bagian yang Sering Diganti
+Gunakan bagian ini kalau ingin cepat update tanpa menyentuh seluruh README.
 
-## KENDALA / KEKURANGAN
-
-### 21 Mei 2026
-- Hasil prediksi bisa negatif karena banyak data nol (intermittent) ✅ **teratasi**
-- Belum menggunakan batasan nilai minimal (floor=0) pada Prophet ✅ **teratasi**
-- Belum tuning parameter untuk data jarang ✅ **teratasi dengan grid adaptif**
-- Training masih dilakukan satu per satu ✅ **teratasi dengan paralelisasi**
-- Belum ada endpoint untuk evaluasi akurasi model ✅ **metrik kini tersimpan & dikembalikan**
-- Filter tanggal di API masih manual (belum difilter di server)
-- Opsi 'libur toko' masih placeholder (default 0)
-
-### 25 Mei 2026
-- Model yang dilatih sebelum revisi kode (21 Mei) tidak memiliki file metrics ✅ **teratasi**
-- Nilai negatif pada predicted_usage masih muncul ✅ **teratasi dengan clip**
-- Confidence sangat bergantung pada MAPE; pada data noise tinggi, confidence bisa rendah (wajar – sudah dijelaskan di response)
-- Metrik R² dan explained variance belum dihitung ✅ **teratasi**
-- Belum ada fitur auto‑clean model usang / tidak terpakai
-- Progress training disimpan di memori (hilang jika service restart)
-
-### 29 Mei 2026
-- Confidence tetap dihitung dari MAPE (hanya pada hari bertransaksi) – perlu dipahami sebagai indikator akurasi pada hari sibuk, bukan probabilitas statistik
-- Filter tanggal di server Go belum dimanfaatkan; semua data ditarik lalu difilter di Python (cukup untuk development, tapi tidak optimal untuk skala besar)
-- Tidak ada autentikasi/otorisasi di endpoint (untuk production harus ditambahkan – saat ini hanya development)
-- Job training masih dalam proses Flask, belum queue/worker terpisah
-- Model disimpan di filesystem lokal (cukup untuk development, production perlu versioning & object storage)
-
----
-
-## STRUKTUR FOLDER
-
-```
-forecast-service/
-├── app.py # Entry point Flask, routing, scheduler
-├── config.py # Konfigurasi (API backend Go, model path)
-├── .env # Environment variables (BACKEND_API_URL)
-├── requirements.txt # Dependencies Python
-├── modules/ # Logika forecasting per modul
-│ ├── init.py
-│ └── inventory/ # Modul stok barang
-│ ├── init.py
-│ ├── forecaster.py # Kelas InventoryForecaster (training, prediksi)
-│ └── trainer.py # Fungsi untuk melatih semua pasangan (store, ingredient)
-├── models/ # Tempat penyimpanan model hasil training (.pkl)
-│ └── inventory/ # Khusus model stok barang
-└── utils/ # (Dihapus, tidak digunakan)
+### 1) Environment (`.env`) - paling sering diganti
+```env
+BACKEND_API_URL=http://localhost:8080/api
+TRAINING_MAX_WORKERS=4
 ```
 
-
----
-
-## PERSYARATAN SISTEM & INSTALASI
-
-### Untuk Semua Sistem Operasi
-- **Python 3.12** (wajib - Prophet belum mendukung Python 3.13+ dengan baik)
-- **pip** versi terbaru (jalankan `pip install --upgrade pip`)
-
-### Untuk Windows (fokus utama tim)
-1. **Download & Install Python 3.12** dari [python.org](https://www.python.org/downloads/).
-Centang opsi *"Add Python to PATH"* saat instalasi.
-2. Buka **Command Prompt** atau **PowerShell**, lalu buat virtual environment:
-
-```cmd
-cd forecast-service
-python -m venv venv
-venv\Scripts\activate
+### 2) Pair Contoh untuk Testing - sering diganti
+```text
+STORE_ID_SAMPLE=b4e2f559-9615-4263-84fe-9ee97780748f
+INGREDIENT_ID_SAMPLE=b98b5042-30b5-4dc7-80ce-7dbb4797c4c7
 ```
 
-Install dependensi:
-
-```cmd
-pip install -r requirements.txt
-```
-
-Jika ada error terkait `cmdstanpy` atau `Prophet`, lihat bagian Troubleshooting di bawah.
-
-### Untuk Linux/Mac
-
+### 3) Contoh Curl Forecast - sering diganti
 ```bash
-cd forecast-service
-python3.12 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+curl -X POST http://localhost:5000/api/inventory/forecast \
+  -H "Content-Type: application/json" \
+  -d '{"store_id":"STORE_ID_SAMPLE","ingredient_id":"INGREDIENT_ID_SAMPLE","periods":4,"freq":"W"}'
 ```
 
-### ISI `requirements.txt`
-
+### 4) Dependencies - update kalau versi package berubah
 ```text
 flask==3.0.0
 pandas==2.2.2
@@ -137,145 +61,132 @@ scikit-learn==1.5.0
 python-dotenv==1.0.1
 ```
 
-Catatan: Versi NumPy harus `1.26.4` karena Prophet `1.1.5` tidak kompatibel dengan NumPy `2.x`.
-Backend Stan menggunakan `cmdstanpy` (bukan `pystan`) untuk stabilitas di Windows.
+## Fitur Aktif
+- Prediksi non-negatif dengan clip manual (`growth='linear'`).
+- Data harian diisi nol hanya sampai tanggal transaksi terakhir aktual.
+- Training adaptif berdasarkan panjang data (short/medium/long).
+- Regressor: weekend, hari libur nasional, placeholder store closed.
+- Simpan metrik: MAE, RMSE, MAPE, sMAPE, R2, explained variance, data_days.
+- Training paralel dengan `ThreadPoolExecutor` (`TRAINING_MAX_WORKERS`).
+- Scheduler retrain mingguan (Minggu 02:00).
 
-## PANDUAN MENJALANKAN SERVICE
+## Status dan Batasan Saat Ini
+- Belum ada autentikasi/otorisasi endpoint (development only).
+- Progress training disimpan di memori proses (hilang jika restart).
+- Model disimpan di filesystem lokal (belum object storage/versioning).
+- Filter data masih dilakukan di sisi Python setelah menarik data dari API.
+- `is_store_closed` masih placeholder (`0`).
 
-### 1. Konfigurasi `.env`
-Buat file `.env` di folder `forecast-service` (jika belum ada):
-
+## Struktur Folder
 ```text
+forecast-service/
+├── app.py
+├── config.py
+├── .env
+├── requirements.txt
+├── modules/
+│   └── inventory/
+│       ├── forecaster.py
+│       └── trainer.py
+├── models/
+│   └── inventory/
+└── README.md
+```
+
+## Persyaratan Sistem dan Instalasi
+### Semua OS
+- Python 3.12
+- pip terbaru
+
+### Windows
+```cmd
+cd forecast-service
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+### Linux/Mac
+```bash
+cd forecast-service
+python3.12 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+Catatan kompatibilitas:
+- Gunakan `numpy==1.26.4` untuk kompatibilitas Prophet `1.1.5`.
+- Backend Stan menggunakan `cmdstanpy`.
+
+## Konfigurasi Environment
+Buat file `.env` di `forecast-service/`:
+
+```env
 BACKEND_API_URL=http://localhost:8080/api
 TRAINING_MAX_WORKERS=4
 ```
 
-- `BACKEND_API_URL`: URL backend Go (sesuaikan host/port)
-- `TRAINING_MAX_WORKERS`: jumlah pasangan yang dilatih bersamaan (default 4, cocok untuk laptop)
+Penjelasan:
+- `BACKEND_API_URL`: endpoint backend Go.
+- `TRAINING_MAX_WORKERS`: jumlah pasangan yang dilatih paralel.
 
-### 2. Jalankan Service
-
+## Menjalankan Service
 ```bash
 python app.py
 ```
 
-Service tersedia di `http://localhost:5000`.
+Service berjalan di `http://localhost:5000`.
 
-### 3. Training Model (Async)
-Memulai training semua pasangan toko-bahan secara background:
-
+## Endpoint API
+### 1) Start training (async)
 ```bash
 curl -X POST http://localhost:5000/api/inventory/train/start
 ```
 
-Response:
-
-```json
-{
-  "task_id": "uuid-string",
-  "message": "Training dimulai. Pantau progress di /api/inventory/train/status/<task_id>"
-}
-```
-
-Pantau progress:
-
+### 2) Cek status training
 ```bash
 curl http://localhost:5000/api/inventory/train/status/<task_id>
 ```
 
-Status: STARTING -> RUNNING -> DONE (atau ERROR).
-
-### 4. Forecasting
-Gunakan endpoint `POST /api/inventory/forecast` dengan body JSON.
-
-Contoh harian (7 hari ke depan):
-
+### 3) Forecast
+Contoh harian (7 hari):
 ```bash
 curl -X POST http://localhost:5000/api/inventory/forecast \
   -H "Content-Type: application/json" \
   -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":7,"freq":"D"}'
 ```
 
-Contoh mingguan (4 minggu ke depan):
-
+Contoh mingguan (4 minggu):
 ```bash
 curl -X POST http://localhost:5000/api/inventory/forecast \
   -H "Content-Type: application/json" \
   -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":4,"freq":"W"}'
 ```
 
-Contoh bulanan (3 bulan ke depan):
-
+Contoh bulanan (3 bulan):
 ```bash
 curl -X POST http://localhost:5000/api/inventory/forecast \
   -H "Content-Type: application/json" \
   -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":3,"freq":"M"}'
 ```
 
-### 5. Memahami Output
-Response mengikuti format yang seragam dengan modul visitor/sales:
+## Memahami Output
+Field utama response:
+- `metrics`: metrik evaluasi model.
+- `forecast_summary`: total dan rata-rata periode prediksi.
+- `prediction_analysis`: titik prediksi tertinggi/terendah.
+- `model_confidence`: skor confidence berbasis MAPE/sMAPE.
+- `daily_forecast` / `weekly_forecast` / `monthly_forecast`: array sesuai `freq`.
 
-```json
-{
-  "success": true,
-  "message": "Forecast W untuk 4 periode ke depan",
-  "data": {
-    "store_id": "...",
-    "ingredient_id": "...",
-    "metrics": {
-      "mae": 2.94,
-      "rmse": 3.57,
-      "mape": 0.25,
-      "smape": 0.29,
-      "r2_score": 0.5453,
-      "explained_variance": 0.5453,
-      "data_days": 182,
-      "cv_initial": "109 days"
-    },
-    "forecast_summary": {
-      "total_predicted_usage_next_28_days": 290.5,
-      "average_daily_usage_next_28_days": 10.38
-    },
-    "prediction_analysis": {
-      "highest_prediction_day": "2020-07-28",
-      "highest_prediction_value": 11.44,
-      "lowest_prediction_day": "2020-07-04",
-      "lowest_prediction_value": 9.4
-    },
-    "model_confidence": {
-      "confidence_score": 99.75,
-      "confidence_level": "HIGH"
-    },
-    "weekly_forecast": [
-      {
-        "week_start": "2020-07-01",
-        "week_end": "2020-07-07",
-        "predicted_usage": 68.97,
-        "lower_bound": 51.38,
-        "upper_bound": 88.84,
-        "average_daily_usage": 9.85
-      },
-      "..."
-    ]
-  }
-}
-```
+Aturan confidence:
+- Jika `mape` ada: `confidence_score = 100 - mape`
+- Jika `mape` tidak ada: `confidence_score = 100 - smape`
+- Level: HIGH >= 85, MEDIUM >= 70, LOW < 70
 
-- `metrics`: metrik evaluasi model dari cross-validation dan data latih
-- `forecast_summary`: total dan rata-rata pemakaian selama periode yang diminta
-- `prediction_analysis`: hari dengan prediksi tertinggi/terendah
-- `model_confidence`: `confidence_score = 100 - MAPE` (jika MAPE tidak ada, pakai sMAPE); level: HIGH >= 85, MEDIUM >= 70, LOW < 70
-- `daily_forecast` / `weekly_forecast` / `monthly_forecast`: array prediksi sesuai `freq`
-
-## TROUBLESHOOTING CEPAT
-
-### Masalah Instalasi Prophet di Windows
-
-**Error: `cmdstanpy not found`**
-Install dulu compiler C++: download Microsoft C++ Build Tools, pilih workload "Desktop development with C++", lalu install.
-
-**Error: `numpy incompatible`**
-Pastikan `numpy==1.26.4` terinstall. Jika masih error, jalankan:
+## Troubleshooting
+### Prophet gagal install di Windows
+- Pastikan C++ Build Tools terpasang.
+- Coba reinstall NumPy dan Prophet:
 
 ```cmd
 pip uninstall numpy -y
@@ -283,37 +194,35 @@ pip install numpy==1.26.4
 pip install prophet==1.1.5 --no-cache-dir
 ```
 
-**Error: `prophet gagal build`**
-Gunakan file wheel pre-compiled (jika tersedia) atau coba instalasi dengan conda:
+### Error umum
+- `FileNotFoundError: Model not found`
+  Jalankan training dulu.
+- `ConnectionError saat forecast`
+  Pastikan backend Go hidup dan `.env` benar.
+- Port `5000` bentrok
+  Ganti port di `app.py`.
+- Prediksi banyak nol
+  Hapus model lama di `models/inventory/*`, lalu retrain.
 
-```cmd
-conda install -c conda-forge prophet
-```
+## Catatan Production
+Sebelum dipakai di lingkungan production:
+- Tambah autentikasi dan otorisasi endpoint.
+- Jalankan Flask di WSGI server (Gunicorn/Waitress), bukan dev server.
+- Pindahkan job training ke queue/worker terpisah.
+- Gunakan penyimpanan model yang mendukung versioning (object storage).
+- Tambah monitoring, logging terstruktur, dan alerting.
 
-**Error: `ModuleNotFoundError: No module named 'prophet'`**
-Pastikan virtual environment aktif (`venv\Scripts\activate`), lalu jalankan `pip install -r requirements.txt`.
+## Changelog Ringkas
+### 21 Mei 2026
+- Integrasi forecast-service dengan backend Go.
+- Training Prophet per pasangan store-ingredient.
 
-### Masalah Umum (Semua OS)
+### 25 Mei 2026
+- Response diseragamkan dengan modul lain.
+- Training async + endpoint status.
 
-**FileNotFoundError: Model not found...**
-Training dulu: `curl -X POST http://localhost:5000/api/inventory/train/start`
-
-**ConnectionError saat forecast**
-Pastikan backend Go berjalan dan file `.env` sudah benar.
-
-**Port 5000 sudah dipakai**
-Ganti port di `app.py` (baris terakhir `app.run(port=5000)`).
-
-**Training tidak kunjung selesai**
-Cek log Flask, mungkin ada error koneksi ke backend Go. Pastikan data tersedia.
-
-**Prediksi banyak yang nol**
-Hapus model lama (`models/inventory/*`), lalu training ulang. Pastikan menggunakan kode terbaru.
-
-## CATATAN PENTING
-
-- Training ulang hanya diperlukan jika data historis bertambah. Scheduler otomatis berjalan tiap Minggu pukul 02:00.
-- Semua data diambil dari API backend Go. Pastikan endpoint `GET /api/ingredient-stock-histories` dapat diakses.
-- Untuk production, gunakan WSGI server seperti gunicorn atau waitress, jangan mengandalkan server development Flask.
-- Progress training disimpan di memori: jika service restart, task lama tidak bisa dilacak.
-- Confidence dihitung berdasarkan error pada hari dengan transaksi saja (karena MAPE/sMAPE tidak bisa dihitung saat aktual = 0). Untuk hari tanpa pemakaian, model mungkin overestimate.
+### 29 Mei 2026
+- Perbaikan prediksi non-negatif.
+- Training adaptif + dukungan `D/W/M`.
+- Tambahan metrik `smape`, `r2_score`, `explained_variance`.
+- Parallel training dan `end_date` dinamis.

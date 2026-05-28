@@ -1,14 +1,4 @@
-"""
-trainer.py — train_all_inventory_models
-Melatih semua pasangan (store_id, ingredient_id) secara paralel.
-
-Changelog:
-- [NEW] Paralel training dengan ThreadPoolExecutor
-- [NEW] MAX_WORKERS dikontrol dari Config (default: 4, bisa diubah di .env)
-- [FIX] Progress counter thread-safe dengan lock per operasi
-- [CLEAN] Pemisahan fungsi train satu pasangan (_train_single) supaya lebih mudah dibaca
-- [NOTE] Kompatibel dengan forecaster.py terbaru (growth='linear', tanpa floor/cap)
-"""
+"""Parallel trainer for all inventory forecasting models."""
 
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -100,6 +90,7 @@ def train_all_inventory_models(task_id: str | None = None):
     pairs = df[['m_store_id', 'm_food_ingredient_id']].drop_duplicates()
     total = len(pairs)
 
+    # [EDIT_POINT] Ubah jumlah worker default di Config.TRAINING_MAX_WORKERS (.env/config.py).
     print(f"[trainer] Mulai training {total} pasangan dengan max {Config.TRAINING_MAX_WORKERS} worker paralel")
 
     if task_id:
