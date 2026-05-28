@@ -1,29 +1,73 @@
-import pandas as pd
-import numpy as np
-from prophet import Prophet
-import joblib
-import holidays
-import os
+"""
+forecaster.py — InventoryForecaster
+Modul prediksi stok bahan baku menggunakan Facebook Prophet.
+
+Changelog:
+- [FIX] growth='logistic' + floor/cap dihapus → kembali ke growth='linear'
+        dengan clip manual untuk menjamin prediksi >= 0.
+- [FIX] Rentang pengisian nol sekarang hanya sampai tanggal terakhir transaksi
+        (bukan end_date parameter). Mencegah penambahan ribuan hari kosong buatan
+        yang membuat model bias ke nol.
+- [FIX] mape KeyError pada data intermittent → fallback ke smape
+- [FIX] initial='365 days' tidak valid untuk data < 1 tahun → parameter adaptif
+- [NEW] Parameter training menyesuaikan panjang data secara otomatis
+        (aman untuk data 3 bulan dari toko baru s/d beberapa tahun dari toko lama)
+- [NEW] R² score dan explained_variance dihitung dari data latih
+- [NEW] smape disimpan di metrics JSON sebagai pelengkap/pengganti mape
+- [NEW] end_date default = hari ini (dinamis), tidak lagi statis 2026-12-31
+
+CATATAN PENTING:
+  Model yang tersimpan setelah perubahan ini TIDAK kompatibel dengan
+  model lama (growth='logistic' dengan floor/cap). Wajib hapus semua file
+  .pkl dan .json di models/inventory/, lalu retrain:
+    curl -X POST http://localhost:5000/api/inventory/train/start
+"""
+
+import itertools
 import json
+import os
+
+import holidays
+import joblib
+import numpy as np
+import pandas as pd
 import requests
-from datetime import datetime
+from prophet import Prophet
+from prophet.diagnostics import cross_validation, performance_metrics
+
 from config import Config
+
 
 class InventoryForecaster:
     def __init__(self, store_id, ingredient_id, model_dir=None):
         if model_dir is None:
             model_dir = Config.MODEL_DIR
-        self.store_id = store_id
-        self.ingredient_id = ingredient_id
-        self.model_name = f"model_store{store_id}_ingr{ingredient_id}"
-        self.model_path = os.path.join(model_dir, 'inventory', f"{self.model_name}.pkl")
-        self.metrics_path = os.path.join(model_dir, 'inventory', f"metrics_{self.model_name}.json")
-        self.model = None
-        self.id_holidays = holidays.ID()   # Kalender libur Indonesia
 
-    # ========== DATA RETRIEVAL ==========
-    def _get_historical_data(self, start_date='2020-01-01', end_date='2026-12-31'):
-        """Ambil data dari API Go, agregasi harian SUM(reduced)."""
+        self.store_id      = store_id
+        self.ingredient_id = ingredient_id
+        self.model_name    = f"model_store{store_id}_ingr{ingredient_id}"
+        self.model_path    = os.path.join(model_dir, 'inventory', f"{self.model_name}.pkl")
+        self.metrics_path  = os.path.join(model_dir, 'inventory', f"metrics_{self.model_name}.json")
+        self.model         = None
+        self.id_holidays   = holidays.ID()  # Kalender libur Indonesia
+
+    # =========================================================================
+    # DATA RETRIEVAL
+    # =========================================================================
+
+    def _get_historical_data(self, start_date='2020-01-01', end_date=None):
+        """
+        Ambil data dari API Go, lalu agregasi harian dengan SUM(reduced).
+
+        Args:
+            start_date (str): Batas bawah data (default '2020-01-01').
+            end_date (str | None): Batas atas data. Jika None, akan diisi
+                                    dengan tanggal hari ini (dinamis).
+        """
+        # Jika end_date tidak diberikan, gunakan tanggal hari ini
+        if end_date is None:
+            end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
+
         url = f"{Config.BACKEND_API_URL}/ingredient-stock-histories"
         try:
             resp = requests.get(url)
@@ -31,25 +75,23 @@ class InventoryForecaster:
         except requests.RequestException as e:
             raise ValueError(f"Gagal mengambil data dari API: {e}")
 
-        data = resp.json()
-        if isinstance(data, dict) and 'data' in data:
-            records = data['data']
-        else:
-            records = data
+        data    = resp.json()
+        records = data['data'] if isinstance(data, dict) and 'data' in data else data
 
         if not records:
             raise ValueError("Data kosong dari API")
 
         df = pd.DataFrame(records)
-        df = df[(df['m_store_id'] == self.store_id) & (df['m_food_ingredient_id'] == self.ingredient_id)]
+        df = df[
+            (df['m_store_id'] == self.store_id) &
+            (df['m_food_ingredient_id'] == self.ingredient_id)
+        ]
         if df.empty:
             raise ValueError(f"Tidak ada data untuk pasangan {self.store_id}-{self.ingredient_id}")
 
         df['date'] = pd.to_datetime(df['date'])
-        mask = (df['date'] >= start_date) & (df['date'] <= end_date)
-        df = df[mask]
-
-        # Hanya pemakaian (reduced > 0)
+        df['date'] = df['date'].dt.tz_localize(None)
+        df = df[(df['date'] >= start_date) & (df['date'] <= end_date)]
         df = df[df['reduced'] > 0]
 
         if df.empty:
@@ -60,41 +102,126 @@ class InventoryForecaster:
         daily.columns = ['ds', 'y']
         daily['ds'] = pd.to_datetime(daily['ds'])
 
-        # Isi hari tanpa transaksi dengan 0
-        full_range = pd.date_range(start=daily['ds'].min(), end=end_date, freq='D')
-        df_full = pd.DataFrame({'ds': full_range})
-        df_final = df_full.merge(daily, on='ds', how='left')
+        # Hanya isi nol untuk rentang dari transaksi pertama hingga terakhir aktual
+        max_actual_date = daily['ds'].max()
+        full_range = pd.date_range(start=daily['ds'].min(), end=max_actual_date, freq='D')
+        df_final   = pd.DataFrame({'ds': full_range}).merge(daily, on='ds', how='left')
         df_final['y'] = df_final['y'].fillna(0)
+
         return df_final[['ds', 'y']]
 
-    # ========== FEATURE ENGINEERING ==========
+    # =========================================================================
+    # FEATURE ENGINEERING
+    # =========================================================================
+
     def _add_regressors(self, df):
-        """Tambahkan fitur weekend, hari libur nasional, dan placeholder libur toko."""
+        """
+        Tambahkan fitur tambahan (regressors) ke dataframe.
+
+        - is_weekend         : 1 jika Sabtu/Minggu
+        - is_national_holiday: 1 jika hari libur nasional Indonesia
+        - is_store_closed    : placeholder (default 0)
+                               TODO: isi dari API kalender toko Go jika tersedia
+        """
         df = df.copy()
-        df['is_weekend'] = df['ds'].dt.dayofweek.isin([5, 6]).astype(int)
+        df['is_weekend']          = df['ds'].dt.dayofweek.isin([5, 6]).astype(int)
         df['is_national_holiday'] = df['ds'].apply(lambda x: 1 if x in self.id_holidays else 0)
-        df['is_store_closed'] = 0   # opsional, default tidak ada libur toko
+        df['is_store_closed']     = 0
         return df
 
-    # ========== TRAINING ==========
+    # =========================================================================
+    # ADAPTIVE TRAINING CONFIG
+    # =========================================================================
+
+    @staticmethod
+    def _get_training_config(data_days: int) -> dict:
+        """
+        Tentukan parameter training berdasarkan panjang data yang tersedia.
+
+        Tier:
+          SHORT  : 90–364 hari  → cross-val konservatif, tanpa yearly seasonality, grid kecil
+          MEDIUM : 365–729 hari → cross-val standar, yearly seasonality aktif, grid medium
+          LONG   : 730+ hari    → full cross-val, semua fitur aktif, grid penuh
+        """
+        if data_days >= 730:
+            return {
+                'yearly_seasonality': True,
+                'cv_initial': '365 days',
+                'cv_period':  '30 days',
+                'cv_horizon': '30 days',
+                'param_grid': {
+                    'changepoint_prior_scale': [0.01, 0.05, 0.1],
+                    'seasonality_prior_scale': [1.0, 5.0, 10.0],
+                },
+            }
+        elif data_days >= 365:
+            return {
+                'yearly_seasonality': True,
+                'cv_initial': '180 days',
+                'cv_period':  '30 days',
+                'cv_horizon': '30 days',
+                'param_grid': {
+                    'changepoint_prior_scale': [0.01, 0.1],
+                    'seasonality_prior_scale': [1.0, 10.0],
+                },
+            }
+        elif data_days >= 90:
+            cv_initial_days = max(int(data_days * 0.6), 60)
+            return {
+                'yearly_seasonality': False,
+                'cv_initial': f'{cv_initial_days} days',
+                'cv_period':  '14 days',
+                'cv_horizon': '14 days',
+                'param_grid': {
+                    'changepoint_prior_scale': [0.05, 0.1],
+                    'seasonality_prior_scale': [5.0, 10.0],
+                },
+            }
+        else:
+            # Data < 90 hari: skip cross-val
+            return {
+                'yearly_seasonality': False,
+                'cv_initial':  None,
+                'cv_period':   None,
+                'cv_horizon':  None,
+                'param_grid': {
+                    'changepoint_prior_scale': [0.05],
+                    'seasonality_prior_scale': [5.0],
+                },
+            }
+
+    # =========================================================================
+    # TRAINING
+    # =========================================================================
+
     def tune_and_train(self, start_date='2020-01-01'):
-        """Latih model dengan grid search kecil, simpan model & metrik evaluasi."""
+        """
+        Latih model Prophet dengan grid search adaptif, simpan model dan metrik.
+        """
         df = self._get_historical_data(start_date=start_date)
         df = self._add_regressors(df)
 
-        param_grid = {
-            'changepoint_prior_scale': [0.01, 0.05, 0.1],
-            'seasonality_prior_scale': [1.0, 5.0, 10.0]
-        }
-        best_rmse = float('inf')
-        best_model = None
-        best_metrics = None
-        from prophet.diagnostics import cross_validation, performance_metrics
-        import itertools
+        data_days = len(df)
+        config    = self._get_training_config(data_days)
 
-        for params in (dict(zip(param_grid.keys(), v)) for v in itertools.product(*param_grid.values())):
+        print(
+            f"[{self.model_name}] "
+            f"data={data_days} hari | "
+            f"yearly={config['yearly_seasonality']} | "
+            f"cv_initial={config['cv_initial']} | "
+            f"grid={len(list(itertools.product(*config['param_grid'].values())))} kombinasi"
+        )
+
+        best_rmse       = float('inf')
+        best_model      = None
+        best_cv_metrics = None
+
+        for values in itertools.product(*config['param_grid'].values()):
+            params = dict(zip(config['param_grid'].keys(), values))
+
             m = Prophet(
-                yearly_seasonality=True,
+                growth='linear',  # kembali ke linear, aman dengan clip
+                yearly_seasonality=config['yearly_seasonality'],
                 weekly_seasonality=True,
                 daily_seasonality=False,
                 **params
@@ -105,47 +232,99 @@ class InventoryForecaster:
             m.add_country_holidays(country_name='ID')
             m.fit(df)
 
-            try:
-                df_cv = cross_validation(m, initial='365 days', period='30 days', horizon='30 days')
-                metrics = performance_metrics(df_cv)
-                rmse = metrics['rmse'].iloc[-1]
-                # Simpan metrik jika ini yang terbaik
-                if rmse < best_rmse:
-                    best_rmse = rmse
+            if config['cv_initial'] is not None:
+                try:
+                    df_cv      = cross_validation(
+                        m,
+                        initial=config['cv_initial'],
+                        period=config['cv_period'],
+                        horizon=config['cv_horizon'],
+                        disable_tqdm=True,
+                    )
+                    cv_metrics = performance_metrics(df_cv)
+                    rmse       = cv_metrics['rmse'].iloc[-1]
+
+                    if rmse < best_rmse:
+                        best_rmse       = rmse
+                        best_model      = m
+                        best_cv_metrics = cv_metrics
+
+                except Exception as e:
+                    print(f"  [skip] params={params} → cross-val error: {e}")
+                    continue
+            else:
+                if best_model is None:
                     best_model = m
-                    best_metrics = {
-                        'mae': metrics['mae'].iloc[-1],
-                        'rmse': metrics['rmse'].iloc[-1],
-                        'mape': metrics['mape'].iloc[-1],
-                        'r2_score': None,   # Prophet tidak langsung, kita bisa hitung manual jika perlu
-                        'explained_variance': None
-                    }
-            except Exception:
-                continue
 
         if best_model is None:
-            raise RuntimeError("Tidak ada model yang berhasil dilatih.")
+            raise RuntimeError(
+                f"Tidak ada model yang berhasil dilatih untuk {self.model_name}. "
+                f"Data: {data_days} hari."
+            )
 
-        # Hitung tambahan metrik dari data latih (opsional)
-        # forecast_train = best_model.predict(df)
-        # r2 = 1 - np.sum((df['y'] - forecast_train['yhat'])**2) / np.sum((df['y'] - df['y'].mean())**2)
-        # best_metrics['r2_score'] = r2
-        # best_metrics['explained_variance'] = ...
+        # In-sample metrics
+        forecast_train = best_model.predict(df)
+        y_true         = df['y'].values
+        y_pred         = forecast_train['yhat'].values
 
-        print(f"Best params for {self.model_name}: RMSE={best_rmse:.2f}")
+        ss_res = np.sum((y_true - y_pred) ** 2)
+        ss_tot = np.sum((y_true - y_true.mean()) ** 2)
+        r2 = float(1 - ss_res / ss_tot) if ss_tot > 0 else None
+
+        residuals = y_true - y_pred
+        ev = float(1 - np.var(residuals) / np.var(y_true)) if np.var(y_true) > 0 else None
+
+        if best_cv_metrics is not None:
+            has_mape  = 'mape'  in best_cv_metrics.columns
+            has_smape = 'smape' in best_cv_metrics.columns
+            best_metrics = {
+                'mae':                float(best_cv_metrics['mae'].iloc[-1]),
+                'rmse':               float(best_cv_metrics['rmse'].iloc[-1]),
+                'mape':               float(best_cv_metrics['mape'].iloc[-1])  if has_mape  else None,
+                'smape':              float(best_cv_metrics['smape'].iloc[-1]) if has_smape else None,
+                'r2_score':           round(r2, 4) if r2 is not None else None,
+                'explained_variance': round(ev, 4) if ev is not None else None,
+                'data_days':          data_days,
+                'cv_initial':         config['cv_initial'],
+            }
+        else:
+            best_metrics = {
+                'mae':                None,
+                'rmse':               None,
+                'mape':               None,
+                'smape':              None,
+                'r2_score':           round(r2, 4) if r2 is not None else None,
+                'explained_variance': round(ev, 4) if ev is not None else None,
+                'data_days':          data_days,
+                'cv_initial':         None,
+            }
+
+        error_val   = best_metrics['mape'] if best_metrics['mape'] is not None else best_metrics['smape']
+        error_label = 'MAPE' if best_metrics['mape'] is not None else 'sMAPE'
+        error_str   = f"{error_label}={error_val:.2f}%" if error_val is not None else "no-cv"
+        print(
+            f"[{self.model_name}] DONE — "
+            f"RMSE={best_metrics['rmse']} | {error_str} | R²={best_metrics['r2_score']}"
+        )
+
         self.model = best_model
         os.makedirs(os.path.dirname(self.model_path), exist_ok=True)
         joblib.dump(self.model, self.model_path)
-
-        # Simpan metrik ke JSON
         with open(self.metrics_path, 'w') as f:
             json.dump(best_metrics, f, indent=2)
+
         return self.model
 
-    # ========== LOADING ==========
+    # =========================================================================
+    # LOADING
+    # =========================================================================
+
     def load_model(self):
         if not os.path.exists(self.model_path):
-            raise FileNotFoundError(f"Model not found at {self.model_path}. Train it first.")
+            raise FileNotFoundError(
+                f"Model tidak ditemukan di {self.model_path}. "
+                "Jalankan training dulu: POST /api/inventory/train/start"
+            )
         self.model = joblib.load(self.model_path)
         return self.model
 
@@ -155,66 +334,120 @@ class InventoryForecaster:
         with open(self.metrics_path, 'r') as f:
             return json.load(f)
 
-    # ========== PREDICTION ==========
+    # =========================================================================
+    # PREDICTION
+    # =========================================================================
+
     def predict(self, periods=1, freq='W'):
-        """
-        Menghasilkan prediksi dalam format dictionary lengkap.
-        freq: 'W' (mingguan) atau 'M' (bulanan) – tetap menyertakan daily_forecast.
-        """
         if not self.model:
             self.load_model()
 
-        # Hitung jumlah hari yang diminta
         if freq == 'W':
             future_periods = periods * 7
         elif freq == 'M':
             future_periods = periods * 30
+        elif freq == 'D':
+            future_periods = periods
         else:
-            raise ValueError("freq must be 'W' or 'M'")
+            raise ValueError("freq harus 'D' (harian), 'W' (mingguan), atau 'M' (bulanan)")
 
         future = self.model.make_future_dataframe(periods=future_periods)
         future = self._add_regressors(future)
         forecast = self.model.predict(future)
 
         last_hist_date = self.model.history['ds'].max()
-        future_forecast = forecast[forecast['ds'] > last_hist_date].copy()
+        daily_rows = forecast[forecast['ds'] > last_hist_date].head(future_periods).copy()
 
-        # Ambil hanya sejumlah periode yang diminta (untuk daily_forecast)
-        daily_rows = future_forecast.head(future_periods)
+        # Clip negatif
+        daily_rows['yhat']       = daily_rows['yhat'].clip(lower=0)
+        daily_rows['yhat_lower'] = daily_rows['yhat_lower'].clip(lower=0)
+        daily_rows['yhat_upper'] = daily_rows['yhat_upper'].clip(lower=0)
 
-        # Bangun daily_forecast array
-        daily_forecast = []
-        for _, row in daily_rows.iterrows():
-            daily_forecast.append({
-                "date": row['ds'].strftime('%Y-%m-%d'),
-                "predicted_usage": round(row['yhat'], 2),
-                "lower_bound": round(row['yhat_lower'], 2),
-                "upper_bound": round(row['yhat_upper'], 2)
-            })
+        # --- Agregasi berdasarkan freq ---
+        if freq == 'D':
+            # Harian tetap seperti biasa
+            forecast_array = [
+                {
+                    "date": row['ds'].strftime('%Y-%m-%d'),
+                    "predicted_usage": round(row['yhat'], 2),
+                    "lower_bound": round(row['yhat_lower'], 2),
+                    "upper_bound": round(row['yhat_upper'], 2),
+                }
+                for _, row in daily_rows.iterrows()
+            ]
+            forecast_key = "daily_forecast"
 
-        # Summary (total dan rata‑rata)
-        total_predicted = round(daily_rows['yhat'].sum(), 2)
-        average_daily = round(daily_rows['yhat'].mean(), 2)
+        elif freq == 'W':
+            # Kelompokkan per minggu (awal minggu Senin)
+            daily_rows['week_start'] = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
+            daily_rows['week_end']   = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
+            grouped = daily_rows.groupby(['week_start', 'week_end']).agg(
+                total_yhat       = ('yhat', 'sum'),
+                total_yhat_lower = ('yhat_lower', 'sum'),
+                total_yhat_upper = ('yhat_upper', 'sum'),
+                avg_yhat         = ('yhat', 'mean')
+            ).reset_index()
+            forecast_array = [
+                {
+                    "week_start": row['week_start'],
+                    "week_end": row['week_end'],
+                    "predicted_usage": round(row['total_yhat'], 2),
+                    "lower_bound": round(row['total_yhat_lower'], 2),
+                    "upper_bound": round(row['total_yhat_upper'], 2),
+                    "average_daily_usage": round(row['avg_yhat'], 2),
+                }
+                for _, row in grouped.iterrows()
+            ]
+            forecast_key = "weekly_forecast"
+
+        elif freq == 'M':
+            # Kelompokkan per bulan
+            daily_rows['month_start'] = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
+            daily_rows['month_end']   = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
+            grouped = daily_rows.groupby(['month_start', 'month_end']).agg(
+                total_yhat       = ('yhat', 'sum'),
+                total_yhat_lower = ('yhat_lower', 'sum'),
+                total_yhat_upper = ('yhat_upper', 'sum'),
+                avg_yhat         = ('yhat', 'mean')
+            ).reset_index()
+            forecast_array = [
+                {
+                    "month_start": row['month_start'],
+                    "month_end": row['month_end'],
+                    "predicted_usage": round(row['total_yhat'], 2),
+                    "lower_bound": round(row['total_yhat_lower'], 2),
+                    "upper_bound": round(row['total_yhat_upper'], 2),
+                    "average_daily_usage": round(row['avg_yhat'], 2),
+                }
+                for _, row in grouped.iterrows()
+            ]
+            forecast_key = "monthly_forecast"
+
+        # Forecast summary
+        total_all = round(daily_rows['yhat'].sum(), 2)
+        avg_all   = round(daily_rows['yhat'].mean(), 2)
         forecast_summary = {
-            f"total_predicted_usage_next_{future_periods}_days": total_predicted,
-            f"average_daily_usage_next_{future_periods}_days": average_daily
+            f"total_predicted_usage_next_{future_periods}_days": total_all,
+            f"average_daily_usage_next_{future_periods}_days": avg_all
         }
 
-        # Analysis: hari tertinggi & terendah dari daily_rows
+        # Prediction analysis (dari data harian)
         highest = daily_rows.loc[daily_rows['yhat'].idxmax()]
-        lowest = daily_rows.loc[daily_rows['yhat'].idxmin()]
+        lowest  = daily_rows.loc[daily_rows['yhat'].idxmin()]
         prediction_analysis = {
-            "highest_prediction_day": highest['ds'].strftime('%Y-%m-%d'),
+            "highest_prediction_day":   highest['ds'].strftime('%Y-%m-%d'),
             "highest_prediction_value": round(highest['yhat'], 2),
-            "lowest_prediction_day": lowest['ds'].strftime('%Y-%m-%d'),
-            "lowest_prediction_value": round(lowest['yhat'], 2)
+            "lowest_prediction_day":    lowest['ds'].strftime('%Y-%m-%d'),
+            "lowest_prediction_value":  round(lowest['yhat'], 2)
         }
 
-        # Confidence dari metrik tersimpan
+        # Confidence
         metrics = self._load_metrics()
-        if metrics and metrics.get('mape') is not None:
-            mape = metrics['mape']
-            confidence_score = max(0, 100 - mape)   # seperti modul visitor
+        error_metric = None
+        if metrics:
+            error_metric = metrics.get('mape') if metrics.get('mape') is not None else metrics.get('smape')
+        if error_metric is not None:
+            confidence_score = max(0.0, min(100.0, 100 - error_metric))
             if confidence_score >= 85:
                 confidence_level = "HIGH"
             elif confidence_score >= 70:
@@ -224,20 +457,19 @@ class InventoryForecaster:
         else:
             confidence_score = 0
             confidence_level = "UNKNOWN"
-
         model_confidence = {
             "confidence_score": round(confidence_score, 2),
             "confidence_level": confidence_level
         }
 
-        # Gabungkan semua
+        # Gabungkan
         result = {
-            "store_id": self.store_id,
-            "ingredient_id": self.ingredient_id,
-            "metrics": metrics,
-            "forecast_summary": forecast_summary,
+            "store_id":            self.store_id,
+            "ingredient_id":       self.ingredient_id,
+            "metrics":             metrics,
+            "forecast_summary":    forecast_summary,
             "prediction_analysis": prediction_analysis,
-            "model_confidence": model_confidence,
-            "daily_forecast": daily_forecast
+            "model_confidence":    model_confidence,
+            forecast_key:          forecast_array
         }
         return result

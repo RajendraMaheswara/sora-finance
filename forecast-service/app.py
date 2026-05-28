@@ -50,7 +50,7 @@ def forecast_inventory():
         "store_id": "...",
         "ingredient_id": "...",
         "periods": 4,
-        "freq": "W"   // "W" atau "M"
+        "freq": "W"   // "D", "W", atau "M"
     }
     """
     try:
@@ -62,8 +62,8 @@ def forecast_inventory():
 
         if not store_id or not ingredient_id:
             return jsonify({"error": "store_id dan ingredient_id wajib diisi"}), 400
-        if freq not in ['W', 'M']:
-            return jsonify({"error": "freq harus 'W' (mingguan) atau 'M' (bulanan)"}), 400
+        if freq not in ['D', 'W', 'M']:
+            return jsonify({"error": "freq harus 'D', 'W', atau 'M'"}), 400
 
         forecaster = InventoryForecaster(store_id, ingredient_id)
         result = forecaster.predict(periods=periods, freq=freq)
