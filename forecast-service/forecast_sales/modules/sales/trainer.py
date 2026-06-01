@@ -1,8 +1,10 @@
 import pandas as pd
 import numpy as np
 import joblib
+import os
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics import (
     mean_absolute_error, mean_squared_error, r2_score, 
     mean_absolute_percentage_error, explained_variance_score
@@ -10,17 +12,11 @@ from sklearn.metrics import (
 from config import Config
 from modules.sales.forecaster import SalesForecaster
 
-def get_optimized_rf_model():
+def get_global_rf_model():
+    # Model Global raksasa
     return RandomForestRegressor(
-        n_estimators=250, max_depth=12, min_samples_split=5, 
-        min_samples_leaf=3, random_state=42, n_jobs=-1
-    )
-
-def get_small_rf_model():
-    # Model khusus untuk data mingguan dan bulanan yang ukurannya sangat kecil
-    return RandomForestRegressor(
-        n_estimators=50, max_depth=4, min_samples_split=2, 
-        min_samples_leaf=1, random_state=42, n_jobs=-1
+        n_estimators=300, max_depth=16, min_samples_split=4, 
+        min_samples_leaf=2, random_state=42, n_jobs=-1
     )
 
 def calculate_advanced_metrics(y_true, y_pred):
@@ -38,134 +34,104 @@ def calculate_advanced_metrics(y_true, y_pred):
 def train_all():
     Config.init_app()
     forecaster = SalesForecaster()
+    GLOBAL_MODEL_PATH = os.path.join(os.path.dirname(Config.DAILY_MODEL_PATH), 'models_rf_global.joblib')
     
-    # Ambil Data Harian (Akan dipakai untuk Daily dan di-resample untuk Weekly)
+    # Ambil Data Harian
     sales_daily = forecaster.fetch_data("sales-daily-summaries")
     
-    # ==========================================
-    # 1. TRAINING HARIAN
-    # ==========================================
-    print("=== [TRAINER] MULAI TRAINING HARIAN (DAILY) ===")
+    print("=== [TRAINER] MULAI TRAINING GLOBAL MODEL (DNA STORE PROFILING) ===")
     if sales_daily:
         df_d = pd.DataFrame(sales_daily)
         df_d['date'] = pd.to_datetime(df_d['date'])
-        daily_models_dict = {}
         
+        # 1. EKSTRAKSI DNA TOKO (Karakteristik Unik Masing-Masing Toko)
+        store_stats = {}
         for store_id in df_d['m_store_id'].unique():
-            df_s = df_d[df_d['m_store_id'] == store_id].copy().sort_values('date')
-            df_s['day_of_week'] = df_s['date'].dt.dayofweek 
-            df_s['month'] = df_s['date'].dt.month
-            df_s['is_weekend'] = df_s['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
-            df_s['day_of_month'] = df_s['date'].dt.day
-            df_s['is_payday'] = df_s['day_of_month'].apply(lambda x: 1 if (x >= 25 or x <= 5) else 0)
-            df_s['total_discount'] = df_s.get('total_discount', 0).fillna(0)
+            df_store = df_d[df_d['m_store_id'] == store_id].copy()
+            df_store['day_of_week'] = df_store['date'].dt.dayofweek
             
-            if len(df_s) < 15: continue
-
-            fitur_x = ['day_of_week', 'month', 'is_weekend', 'is_payday', 'total_discount']
-            X, y = df_s[fitur_x], df_s['total_omzet']
-
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            rf_eval = get_optimized_rf_model()
-            rf_eval.fit(X_train, y_train)
-            metrics = calculate_advanced_metrics(y_test, rf_eval.predict(X_test))
-
-            rf_final = get_optimized_rf_model()
-            rf_final.fit(X, y)
+            mean_omzet = df_store['total_omzet'].mean()
+            std_omzet = df_store['total_omzet'].std()
+            if pd.isna(std_omzet): std_omzet = 0
             
-            daily_models_dict[store_id] = {"model": rf_final, "fitur_x": fitur_x, "last_date": df_s['date'].max(), "metrics": metrics}
-            print(f"   -> Daily: Toko {store_id} selesai (R2: {metrics['r2_score']})")
-        joblib.dump(daily_models_dict, Config.DAILY_MODEL_PATH)
-        print(f"==> Tersimpan di {Config.DAILY_MODEL_PATH}\n")
-
-    # ==========================================
-    # 2. TRAINING MINGGUAN (Dari Resample Harian)
-    # ==========================================
-    print("=== [TRAINER] MULAI TRAINING MINGGUAN (WEEKLY) ===")
-    if sales_daily:
-        weekly_models_dict = {}
-        for store_id in df_d['m_store_id'].unique():
-            df_s = df_d[df_d['m_store_id'] == store_id].copy()
-            df_s.set_index('date', inplace=True)
+            # Hitung perbandingan ramai weekend vs weekday
+            wd_mean = df_store[df_store['day_of_week'] < 5]['total_omzet'].mean()
+            we_mean = df_store[df_store['day_of_week'] >= 5]['total_omzet'].mean()
+            wd_mean = 0 if pd.isna(wd_mean) else wd_mean
+            we_mean = 0 if pd.isna(we_mean) else we_mean
+            weekend_ratio = we_mean / (wd_mean + 1) # Tambah 1 untuk menghindari pembagian dengan nol
             
-            # Resample: Jumlahkan omzet per minggu
-            df_w = df_s.resample('W-MON').agg({'total_omzet': 'sum', 'total_discount': 'sum'}).reset_index()
-            
-            # Feature Engineering Mingguan
-            df_w['week_of_year'] = df_w['date'].dt.isocalendar().week
-            df_w['month'] = df_w['date'].dt.month
-            df_w['week_of_month'] = ((df_w['date'].dt.day - 1) // 7) + 1
-            
-            # LAG FEATURE
-            df_w['lag_1'] = df_w['total_omzet'].shift(1)
-            df_w['lag_4'] = df_w['total_omzet'].shift(4)
-            df_w = df_w.bfill()
-            
-            if len(df_w) < 5: 
-                print(f"   -> [SKIP] Weekly Toko {store_id} (Data kurang dari 5 minggu)")
-                continue
-
-            fitur_x = ['week_of_year', 'month', 'week_of_month', 'total_discount', 'lag_1', 'lag_4']
-            X, y = df_w[fitur_x], df_w['total_omzet']
-
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            rf_eval = get_small_rf_model()
-            rf_eval.fit(X_train, y_train)
-            metrics = calculate_advanced_metrics(y_test, rf_eval.predict(X_test))
-
-            rf_final = get_small_rf_model()
-            rf_final.fit(X, y)
-            
-            weekly_models_dict[store_id] = {
-                "model": rf_final, "fitur_x": fitur_x, "last_date": df_w['date'].max(), 
-                "metrics": metrics, "last_omzet": df_w['total_omzet'].iloc[-1],
-                "last_4_omzet": df_w['total_omzet'].iloc[-4:].tolist()
+            store_stats[store_id] = {
+                'store_mean': float(mean_omzet),
+                'store_std': float(std_omzet),
+                'weekend_ratio': float(weekend_ratio)
             }
-            print(f"   -> Weekly: Toko {store_id} selesai (R2: {metrics['r2_score']})")
-            
-        joblib.dump(weekly_models_dict, Config.WEEKLY_MODEL_PATH)
-        print(f"==> Tersimpan di {Config.WEEKLY_MODEL_PATH}\n")
+        
+        # Mapping DNA Toko kembali ke DataFrame Harian
+        df_d['store_mean_omzet'] = df_d['m_store_id'].apply(lambda x: store_stats[x]['store_mean'])
+        df_d['store_std_omzet'] = df_d['m_store_id'].apply(lambda x: store_stats[x]['store_std'])
+        df_d['store_weekend_ratio'] = df_d['m_store_id'].apply(lambda x: store_stats[x]['weekend_ratio'])
+        
+        # Label Encoding untuk store_id
+        le = LabelEncoder()
+        df_d['store_id_encoded'] = le.fit_transform(df_d['m_store_id'])
+        
+        # 2. FEATURE ENGINEERING WAKTU (Kalender)
+        df_d['day_of_week'] = df_d['date'].dt.dayofweek 
+        df_d['month'] = df_d['date'].dt.month
+        df_d['day_of_month'] = df_d['date'].dt.day
+        df_d['week_of_month'] = ((df_d['date'].dt.day - 1) // 7) + 1
+        df_d['is_weekend'] = df_d['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
+        df_d['is_payday'] = df_d['day_of_month'].apply(lambda x: 1 if (x >= 25 or x <= 5) else 0)
+        df_d['total_discount'] = df_d.get('total_discount', 0).fillna(0)
+        
+        df_d = df_d.dropna().sort_values('date')
+        
+        # List Fitur X Gabungan (DNA Toko + Kalender)
+        fitur_x = [
+            'store_id_encoded', 'store_mean_omzet', 'store_std_omzet', 'store_weekend_ratio', 
+            'day_of_week', 'month', 'day_of_month', 'week_of_month', 'is_weekend', 'is_payday', 'total_discount'
+        ]
+        X, y = df_d[fitur_x], df_d['total_omzet']
+        
+        if len(X) < 20:
+            print("Data keseluruhan terlalu kecil untuk dilatih.")
+            return
 
-    # ==========================================
-    # 3. TRAINING BULANAN
-    # ==========================================
-    print("=== [TRAINER] MULAI TRAINING BULANAN (MONTHLY) ===")
-    sales_monthly = forecaster.fetch_data("sales-monthly-summaries")
-    if sales_monthly:
-        df_m = pd.DataFrame(sales_monthly)
-        df_m['date'] = pd.to_datetime(df_m['date'])
-        monthly_models_dict = {}
-        for store_id in df_m['m_store_id'].unique():
-            df_s = df_m[df_m['m_store_id'] == store_id].copy().sort_values('date')
-            df_s['month'] = df_s['date'].dt.month
-            df_s['quarter'] = df_s['date'].dt.quarter
-            df_s['total_discount'] = df_s.get('total_discount', 0).fillna(0)
-            
-            # LAG FEATURE
-            df_s['lag_1'] = df_s['total_omzet'].shift(1)
-            df_s = df_s.dropna()
-            
-            if len(df_s) < 5: continue
+        # Ujian Akurasi (Simulasi)
+        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, shuffle=False)
+        rf_eval = get_global_rf_model()
+        rf_eval.fit(X_train, y_train)
+        metrics = calculate_advanced_metrics(y_test, rf_eval.predict(X_test))
 
-            fitur_x = ['month', 'quarter', 'total_discount', 'lag_1']
-            X, y = df_s[fitur_x], df_s['total_omzet']
+        print(f"   -> Evaluasi Global Model selesai (R2 Keseluruhan: {metrics['r2_score']})")
 
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, shuffle=False)
-            rf_eval = get_small_rf_model()
-            rf_eval.fit(X_train, y_train)
-            metrics = calculate_advanced_metrics(y_test, rf_eval.predict(X_test))
+        # Train Full Model untuk Produksi
+        rf_final = get_global_rf_model()
+        rf_final.fit(X, y)
+        
+        # Catat last_date per toko untuk titik mulai forecasting
+        last_dates = df_d.groupby('m_store_id')['date'].max().to_dict()
+        
+        # Kemas semua ke dalam 1 file pintar
+        global_model_dict = {
+            "model": rf_final,
+            "fitur_x": fitur_x,
+            "label_encoder": le,
+            "store_stats": store_stats,
+            "last_dates": last_dates,
+            "metrics": metrics
+        }
+        
+        os.makedirs(os.path.dirname(GLOBAL_MODEL_PATH), exist_ok=True)
+        joblib.dump(global_model_dict, GLOBAL_MODEL_PATH)
+        print(f"==> Tersimpan di {GLOBAL_MODEL_PATH}\n")
 
-            rf_final = get_small_rf_model()
-            rf_final.fit(X, y)
-            
-            monthly_models_dict[store_id] = {
-                "model": rf_final, "fitur_x": fitur_x, "last_date": df_s['date'].max(), 
-                "metrics": metrics, "last_omzet": df_s['total_omzet'].iloc[-1]
-            }
-            print(f"   -> Monthly: Toko {store_id} selesai (R2: {metrics['r2_score']})")
-            
-        joblib.dump(monthly_models_dict, Config.MONTHLY_MODEL_PATH)
-        print(f"==> Tersimpan di {Config.MONTHLY_MODEL_PATH}\n")
+        # Pembersihan Model Lama (Agar rapi)
+        for old_model in [Config.DAILY_MODEL_PATH, Config.WEEKLY_MODEL_PATH, Config.MONTHLY_MODEL_PATH]:
+            if os.path.exists(old_model):
+                try: os.remove(old_model)
+                except: pass
 
 if __name__ == '__main__':
     train_all()
