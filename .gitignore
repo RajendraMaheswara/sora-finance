@@ -1,0 +1,160 @@
+.env
+
+# ---------- General ----------
+# macOS / Windows
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/
+.idea/
+*.iml
+
+# Logs
+*.log
+logs/
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# ---------- Python / forecast-service ----------
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+env.bak/
+
+# Python tooling
+.pytest_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Model artifacts
+saved_models/
+*.pkl
+*.h5
+*.pt
+*.ckpt
+
+# ---------- Go / backend ----------
+# Binaries for programs and plugins
+/bin/
+/pkg/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Build outputs
+build/
+dist/
+
+# Vendor
+vendor/
+
+# ---------- Flutter / frontend ----------
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.dart_tool/
+.pub-cache/
+pubspec.lock
+/.dart_tool/
+
+# Build outputs
+/build/
+/android/app/build/
+/ios/Flutter/Flutter.framework
+/ios/Pods/
+
+# Flutter workspace files
+.flutter-plugins
+.metadata
+
+# ---------- Other ----------
+# Database
+*.sqlite3
+*.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temporary
+*.tmp
+*.swp
+*.swo
+~*
+=======
+# Secrets and env files
+.env
+*.env
+!.env.example
+
+# OS and logs
+.DS_Store
+Thumbs.db
+*.log
+
+# =====================
+# backend (Go)
+# =====================
+backend/.env
+backend/bin/
+backend/tmp/
+backend/dist/
+backend/coverage.out
+backend/*.exe
+backend/*.test
+backend/*.out
+backend/.air*
+
+# =====================
+# forecast-service (Python)
+# =====================
+forecast-service/.env
+forecast-service/__pycache__/
+forecast-service/*.py[cod]
+forecast-service/.venv/
+forecast-service/venv/
+forecast-service/env/
+forecast-service/.pytest_cache/
+forecast-service/.mypy_cache/
+forecast-service/.ruff_cache/
+forecast-service/.coverage
+forecast-service/htmlcov/
+forecast-service/.ipynb_checkpoints/
+forecast-service/saved_models/
+
+# =====================
+# frontend (Flutter)
+# =====================
+frontend/.env
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.pub-cache/
+frontend/.pub/
+frontend/build/
+frontend/coverage/
+
+frontend/android/.gradle/
+frontend/android/captures/
+frontend/android/local.properties
+frontend/android/app/debug/
+frontend/android/app/profile/
+frontend/android/app/release/
+
+frontend/ios/Pods/
+frontend/ios/.symlinks/
+frontend/ios/Flutter/ephemeral/
