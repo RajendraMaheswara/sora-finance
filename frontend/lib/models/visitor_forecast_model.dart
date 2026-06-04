@@ -73,6 +73,128 @@ class VisitorForecastModel {
     required this.monthlyForecast,
   });
 
+  /// Membangun model dari response array GET /api/forecast-predictions.
+  factory VisitorForecastModel.fromPredictionList(List<dynamic> rawList) {
+    const visitorKeywords = ['visitor', 'pengunjung', 'kunjungan'];
+
+    var all = rawList
+        .whereType<Map>()
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+
+    // Coba filter berdasarkan modul visitor; fallback ke semua data
+    final visitorFiltered = all.where((e) {
+      final m = (e['module'] as String? ?? '').toLowerCase();
+      return visitorKeywords.any((k) => m.contains(k));
+    }).toList();
+    if (visitorFiltered.isNotEmpty) all = visitorFiltered;
+
+    all.sort((a, b) => (a['prediction_date'] as String? ?? '')
+        .compareTo(b['prediction_date'] as String? ?? ''));
+
+    List<VisitorForecastPoint> toPoints(List<Map<String, dynamic>> preds) =>
+        preds
+            .map((p) => VisitorForecastPoint(
+                  date: p['prediction_date'] ?? '',
+                  predictedVisitors:
+                      (p['predicted_value'] as num?)?.toInt() ?? 0,
+                ))
+            .toList();
+
+    final weeklyData = all.take(7).toList();
+    final monthlyData = all.take(30).toList();
+
+    final weeklyPoints = toPoints(weeklyData);
+    final monthlyPoints = toPoints(monthlyData);
+
+    final total7 =
+        weeklyPoints.fold<int>(0, (s, p) => s + p.predictedVisitors);
+    final total30 =
+        monthlyPoints.fold<int>(0, (s, p) => s + p.predictedVisitors);
+
+    final avg7 = weeklyPoints.isEmpty ? 0.0 : total7 / weeklyPoints.length;
+    final avg30 =
+        monthlyPoints.isEmpty ? 0.0 : total30 / monthlyPoints.length;
+
+    VisitorForecastPoint? highest, lowest;
+    for (final p in weeklyPoints) {
+      if (highest == null || p.predictedVisitors > highest.predictedVisitors) {
+        highest = p;
+      }
+      if (lowest == null || p.predictedVisitors < lowest.predictedVisitors) {
+        lowest = p;
+      }
+    }
+
+    String trendDirection = 'STABLE';
+    if (weeklyPoints.length >= 4) {
+      final mid = weeklyPoints.length ~/ 2;
+      final firstHalf = weeklyPoints
+          .sublist(0, mid)
+          .fold<int>(0, (s, p) => s + p.predictedVisitors);
+      final secondHalf = weeklyPoints
+          .sublist(mid)
+          .fold<int>(0, (s, p) => s + p.predictedVisitors);
+      if (secondHalf > firstHalf) {
+        trendDirection = 'UPWARD';
+      } else if (secondHalf < firstHalf) {
+        trendDirection = 'DOWNWARD';
+      }
+    }
+
+    final mapes = all
+        .map((p) => (p['mape'] as num?)?.toDouble())
+        .whereType<double>()
+        .toList();
+    final avgMape = mapes.isEmpty
+        ? 15.0
+        : mapes.fold<double>(0, (s, v) => s + v) / mapes.length;
+    final confidenceScore = (100.0 - avgMape).clamp(0.0, 100.0);
+    final confidenceLevel = confidenceScore >= 85
+        ? 'Tinggi'
+        : confidenceScore >= 70
+            ? 'Sedang'
+            : 'Rendah';
+
+    final insights = <String>[];
+    if (highest != null && highest.predictedVisitors > 0) {
+      insights.add(
+          'Puncak kunjungan diprediksi pada ${highest.date} dengan ${highest.predictedVisitors} orang.');
+    }
+    if (trendDirection == 'UPWARD') {
+      insights.add(
+          'Tren pengunjung menunjukkan peningkatan dalam periode prediksi.');
+    } else if (trendDirection == 'DOWNWARD') {
+      insights.add(
+          'Tren pengunjung menunjukkan penurunan dalam periode prediksi.');
+    }
+    if (mapes.isNotEmpty) {
+      insights.add(
+          'Akurasi model: MAPE rata-rata ${avgMape.toStringAsFixed(1)}%, tingkat kepercayaan ${confidenceScore.toStringAsFixed(1)}%.');
+    }
+
+    final storeId =
+        all.isNotEmpty ? (all.first['store_id'] as String? ?? '') : '';
+
+    return VisitorForecastModel(
+      storeId: storeId,
+      totalNext7Days: total7,
+      totalNext30Days: total30,
+      avgDailyNext7Days: avg7,
+      avgDailyNext30Days: avg30,
+      highestPredictionDay: highest?.date ?? '',
+      highestPredictionValue: highest?.predictedVisitors ?? 0,
+      lowestPredictionDay: lowest?.date ?? '',
+      lowestPredictionValue: lowest?.predictedVisitors ?? 0,
+      trendDirection: trendDirection,
+      confidenceScore: confidenceScore,
+      confidenceLevel: confidenceLevel,
+      insights: insights,
+      weeklyForecast: weeklyPoints,
+      monthlyForecast: monthlyPoints,
+    );
+  }
+
   factory VisitorForecastModel.fromJson(Map<String, dynamic> json) {
     final summary = (json['forecast_summary'] as Map?) ?? const {};
     final analysis = (json['prediction_analysis'] as Map?) ?? const {};

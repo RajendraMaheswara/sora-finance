@@ -12,7 +12,7 @@ const Color _kPrimaryGreenDark = Color(0xFF24CC14);
 const Color _kAccentOrange = Color(0xFFF59E0B);
 const Color _kBarBlueLight = Color(0xFFD7DEE8);
 
-String _visitorForecastEndpoint(String storeId) => 'forecast/visitors/$storeId';
+const String _kForecastPredictionsEndpoint = 'forecast-predictions';
 
 // ==========================================
 // PAGE
@@ -37,10 +37,8 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
   }
 
   Future<VisitorForecastModel> _fetch() async {
-    final raw = await _apiService.fetchObject(
-      _visitorForecastEndpoint(widget.storeId),
-    );
-    return VisitorForecastModel.fromJson(raw);
+    final raw = await _apiService.fetchData(_kForecastPredictionsEndpoint);
+    return VisitorForecastModel.fromPredictionList(raw);
   }
 
   void _refresh() {
@@ -373,13 +371,11 @@ class _ErrorPanel extends StatelessWidget {
 // ==========================================
 // PERIOD ENUM + HELPER
 // ==========================================
-enum ForecastPeriod { daily, weekly, monthly }
+enum ForecastPeriod { weekly, monthly }
 
 extension on ForecastPeriod {
   String get label {
     switch (this) {
-      case ForecastPeriod.daily:
-        return 'Harian';
       case ForecastPeriod.weekly:
         return 'Mingguan';
       case ForecastPeriod.monthly:
@@ -410,18 +406,6 @@ List<_PeriodAggregate> _aggregateForPeriod(
   ForecastPeriod period,
 ) {
   switch (period) {
-    case ForecastPeriod.daily:
-      // 7 titik harian dari weekly_forecast
-      return data.weeklyForecast
-          .map(
-            (p) => _PeriodAggregate(
-              label: _formatShortDate(p.date),
-              dateLabel: _formatLongDate(p.date),
-              value: p.predictedVisitors,
-            ),
-          )
-          .toList();
-
     case ForecastPeriod.weekly:
       // Pecah monthly_forecast (30 hari) jadi grup 7-harian.
       final src = data.monthlyForecast;
@@ -522,7 +506,7 @@ class _ForecastBody extends StatefulWidget {
 }
 
 class _ForecastBodyState extends State<_ForecastBody> {
-  ForecastPeriod _period = ForecastPeriod.daily;
+  ForecastPeriod _period = ForecastPeriod.weekly;
 
   @override
   Widget build(BuildContext context) {
@@ -618,40 +602,30 @@ class _SummaryCardsRow extends StatelessWidget {
   Widget build(BuildContext context) {
     // Card 1: angka aktual untuk periode yang dipilih
     final card1Title = switch (period) {
-      ForecastPeriod.daily => 'Pengunjung Hari Ini',
       ForecastPeriod.weekly => 'Total Pengunjung Minggu Ini',
       ForecastPeriod.monthly => 'Total Pengunjung Bulan Ini',
     };
     final card1Value = switch (period) {
-      ForecastPeriod.daily =>
-        data.weeklyForecast.isNotEmpty
-            ? '${data.weeklyForecast.first.predictedVisitors} Orang'
-            : '0 Orang',
       ForecastPeriod.weekly => '${data.totalNext7Days} Orang',
       ForecastPeriod.monthly => '${data.totalNext30Days} Orang',
     };
     final card1Subtitle = switch (period) {
-      ForecastPeriod.daily => 'Update terakhir ${_currentTimeWIB()}',
       ForecastPeriod.weekly => 'Akumulasi prediksi 7 hari',
       ForecastPeriod.monthly => 'Akumulasi prediksi 30 hari',
     };
 
     // Card 2: rata-rata
     final card2Title = switch (period) {
-      ForecastPeriod.daily => 'Rata-rata Harian',
       ForecastPeriod.weekly => 'Rata-rata Mingguan',
       ForecastPeriod.monthly => 'Rata-rata Bulanan',
     };
     final card2Value = switch (period) {
-      ForecastPeriod.daily =>
-        '${data.avgDailyNext7Days.toStringAsFixed(0)} Orang',
       ForecastPeriod.weekly =>
         '${(data.avgDailyNext7Days * 7).toStringAsFixed(0)} Orang',
       ForecastPeriod.monthly =>
         '${(data.avgDailyNext30Days * 30).toStringAsFixed(0)} Orang',
     };
     final card2Subtitle = switch (period) {
-      ForecastPeriod.daily => 'Berdasarkan 7 hari prediksi',
       ForecastPeriod.weekly => 'Estimasi total per minggu',
       ForecastPeriod.monthly => 'Estimasi total per bulan',
     };
@@ -821,7 +795,6 @@ class _HistoricalChartCard extends StatelessWidget {
 
     // Multiplier per periode supaya bentuk bar terlihat berbeda.
     final factors = switch (period) {
-      ForecastPeriod.daily => [0.92, 0.88, 1.05, 0.78, 1.0],
       ForecastPeriod.weekly => [0.95, 0.85, 1.02, 0.92],
       ForecastPeriod.monthly => [0.94, 1.06, 0.88],
     };
@@ -1171,7 +1144,6 @@ class _ConfidenceTableCard extends StatelessWidget {
     }).toList();
 
     final dateColumnTitle = switch (period) {
-      ForecastPeriod.daily => 'Tanggal',
       ForecastPeriod.weekly => 'Minggu',
       ForecastPeriod.monthly => 'Bulan',
     };

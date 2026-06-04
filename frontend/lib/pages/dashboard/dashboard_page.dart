@@ -3,20 +3,109 @@ import 'package:fl_chart/fl_chart.dart';
 
 import '../../core/services/api_service.dart';
 import '../../models/visitor_forecast_model.dart';
+import '../../models/sales_forecast_model.dart';
 import '../visitor_forecast/visitor_forecast_page.dart';
+import '../sales_forecast/sales_forecast_page.dart';
+import '../stock_forecast/stock_forecast_page.dart';
 
 // ==========================================
 // KONFIGURASI
 // ==========================================
-// Store ID dummy yang sama dengan contoh response forecast.
-// Nanti tinggal ganti / ambil dari state global / login.
 const String _kStoreId = 'b4e2f559-9615-4263-84fe-9ee97780748f';
-
-// Endpoint forecast pengunjung. Pola URL menunggu route backend dibuat.
-String _visitorForecastEndpoint(String storeId) => 'forecast/visitors/$storeId';
-
 const Color _kPrimaryGreen = Color(0xFF8CE600);
 const Color _kPrimaryGreenDark = Color(0xFF24CC14);
+const Color _kLineGreen = Color(0xFF43A047);
+
+// ==========================================
+// HELPER DATA CLASSES
+// ==========================================
+class _CriticalItem {
+  final String name;
+  final int days;
+  _CriticalItem({required this.name, required this.days});
+}
+
+class _StockCardData {
+  final List<_CriticalItem> items;
+  _StockCardData({required this.items});
+
+  int get criticalCount => items.where((i) => i.days <= 3).length;
+
+  static Future<_StockCardData> load(ApiService api) async {
+    try {
+      final results = await Future.wait([
+        api.fetchData('forecast-results'),
+        api.fetchData('ingredient-stock-histories'),
+        api.fetchData('food-ingredients'),
+      ]);
+      return _StockCardData._from(results[0], results[1], results[2]);
+    } catch (_) {
+      return _StockCardData(items: []);
+    }
+  }
+
+  factory _StockCardData._from(
+    List<dynamic> rawResults,
+    List<dynamic> rawHistories,
+    List<dynamic> rawIngredients,
+  ) {
+    // Ingredient name map
+    final nameMap = <String, String>{};
+    for (final r in rawIngredients) {
+      final m = r as Map;
+      final id = (m['id'] as String?) ?? '';
+      if (id.isNotEmpty) nameMap[id] = (m['name'] as String?) ?? id;
+    }
+
+    // Current stock per ingredient (most recent entry)
+    final stockMap = <String, double>{};
+    final histByItem = <String, List<Map<String, dynamic>>>{};
+    for (final h in rawHistories) {
+      final m = Map<String, dynamic>.from(h as Map);
+      final id = (m['m_food_ingredient_id'] as String?) ?? '';
+      if (id.isEmpty) continue;
+      histByItem.putIfAbsent(id, () => []).add(m);
+    }
+    for (final entry in histByItem.entries) {
+      entry.value.sort((a, b) =>
+          ((b['date'] as String?) ?? '').compareTo((a['date'] as String?) ?? ''));
+      stockMap[entry.key] =
+          (entry.value.first['current_stock'] as num?)?.toDouble() ?? 0.0;
+    }
+
+    // Average daily usage per item from forecast_results
+    final usageMap = <String, List<double>>{};
+    for (final r in rawResults) {
+      final m = r as Map;
+      final id = (m['item_id'] as String?) ?? '';
+      if (id.isEmpty) continue;
+      final v = (m['predicted_value'] as num?)?.toDouble() ?? 0.0;
+      usageMap.putIfAbsent(id, () => []).add(v);
+    }
+
+    // Calculate days until depletion
+    final criticals = <_CriticalItem>[];
+    for (final entry in usageMap.entries) {
+      final id = entry.key;
+      final usages = entry.value;
+      if (usages.isEmpty) continue;
+      final avg = usages.fold<double>(0, (s, v) => s + v) / usages.length;
+      if (avg <= 0) continue;
+      // Skip item yang namanya belum ter-resolve (UUID mentah)
+      final name = nameMap[id];
+      if (name == null) continue;
+
+      final stock = stockMap[id] ?? 0.0;
+      final days = stock <= 0 ? 0 : (stock / avg).ceil();
+      if (days <= 7) {
+        criticals.add(_CriticalItem(name: name, days: days));
+      }
+    }
+    criticals.sort((a, b) => a.days.compareTo(b.days));
+
+    return _StockCardData(items: criticals.take(5).toList());
+  }
+}
 
 // ==========================================
 // SCREEN
@@ -29,26 +118,22 @@ class DashboardScreen extends StatefulWidget {
 }
 
 class _DashboardScreenState extends State<DashboardScreen> {
-  final ApiService _apiService = ApiService();
+  final ApiService _api = ApiService();
 
-  late Future<VisitorForecastModel> _visitorForecastFuture;
-
-  Future<VisitorForecastModel> _fetchVisitorForecast() async {
-    final raw = await _apiService.fetchObject(
-      _visitorForecastEndpoint(_kStoreId),
-    );
-    return VisitorForecastModel.fromJson(raw);
-  }
+  late Future<List<dynamic>> _predictionsFuture;
+  late Future<_StockCardData> _stockFuture;
 
   @override
   void initState() {
     super.initState();
-    _visitorForecastFuture = _fetchVisitorForecast();
+    _predictionsFuture = _api.fetchData('forecast-predictions');
+    _stockFuture = _StockCardData.load(_api);
   }
 
   void _refresh() {
     setState(() {
-      _visitorForecastFuture = _fetchVisitorForecast();
+      _predictionsFuture = _api.fetchData('forecast-predictions');
+      _stockFuture = _StockCardData.load(_api);
     });
   }
 
@@ -68,7 +153,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   _HeaderWidget(onRefresh: _refresh),
                   const SizedBox(height: 28),
-                  _PredictionRow(visitorForecastFuture: _visitorForecastFuture),
+                  _PredictionRow(
+                    predictionsFuture: _predictionsFuture,
+                    stockFuture: _stockFuture,
+                  ),
                 ],
               ),
             ),
@@ -94,25 +182,19 @@ class _SidebarWidget extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // Logo
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(Icons.eco, color: Colors.lightGreen[600], size: 22),
               const SizedBox(width: 4),
-              Text(
-                'sora',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.lightGreen[700],
-                ),
-              ),
+              Text('sora',
+                  style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.lightGreen[700])),
             ],
           ),
           const SizedBox(height: 24),
-
-          // Avatar
           Container(
             width: 80,
             height: 80,
@@ -122,38 +204,27 @@ class _SidebarWidget extends StatelessWidget {
               color: Colors.grey.shade200,
             ),
             child: const ClipOval(
-              child: Icon(Icons.person, size: 56, color: Colors.white),
-            ),
+                child: Icon(Icons.person, size: 56, color: Colors.white)),
           ),
           const SizedBox(height: 8),
-          const Text(
-            'Aminah',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-          ),
+          const Text('Aminah',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
           const SizedBox(height: 2),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: const [
-              Text(
-                'Admin',
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
+              Text('Admin',
+                  style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600)),
               SizedBox(width: 4),
               Text('🔴', style: TextStyle(fontSize: 9)),
             ],
           ),
           const SizedBox(height: 28),
-
-          // Active menu: Dasbor
           const _SidebarMenuItem(
-            icon: Icons.pie_chart,
-            title: 'Dasbor',
-            isActive: true,
-          ),
+              icon: Icons.pie_chart, title: 'Dasbor', isActive: true),
         ],
       ),
     );
@@ -164,12 +235,8 @@ class _SidebarMenuItem extends StatelessWidget {
   final IconData icon;
   final String title;
   final bool isActive;
-
-  const _SidebarMenuItem({
-    required this.icon,
-    required this.title,
-    this.isActive = false,
-  });
+  const _SidebarMenuItem(
+      {required this.icon, required this.title, this.isActive = false});
 
   @override
   Widget build(BuildContext context) {
@@ -184,20 +251,14 @@ class _SidebarMenuItem extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            icon,
-            color: isActive ? Colors.white : Colors.grey[700],
-            size: 26,
-          ),
+          Icon(icon,
+              color: isActive ? Colors.white : Colors.grey[700], size: 26),
           const SizedBox(height: 4),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: isActive ? Colors.white : Colors.grey[700],
-            ),
-          ),
+          Text(title,
+              style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                  color: isActive ? Colors.white : Colors.grey[700])),
         ],
       ),
     );
@@ -214,9 +275,9 @@ class _HeaderWidget extends StatelessWidget {
   String _formatNowOpened() {
     final now = DateTime.now();
     final isPm = now.hour >= 12;
-    final hour12 = now.hour % 12 == 0 ? 12 : now.hour % 12;
+    final h = now.hour % 12 == 0 ? 12 : now.hour % 12;
     final mm = now.minute.toString().padLeft(2, '0');
-    return 'Opened $hour12:$mm ${isPm ? 'pm' : 'am'}';
+    return 'Opened $h:$mm ${isPm ? 'pm' : 'am'}';
   }
 
   @override
@@ -224,14 +285,11 @@ class _HeaderWidget extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Top row: just timestamp
         Row(
           mainAxisAlignment: MainAxisAlignment.end,
           children: [
-            Text(
-              _formatNowOpened(),
-              style: const TextStyle(color: Colors.grey, fontSize: 12),
-            ),
+            Text(_formatNowOpened(),
+                style: const TextStyle(color: Colors.grey, fontSize: 12)),
           ],
         ),
         const SizedBox(height: 16),
@@ -242,29 +300,23 @@ class _HeaderWidget extends StatelessWidget {
             const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Dasbor',
-                  style: TextStyle(color: Colors.grey, fontSize: 13),
-                ),
+                Text('Dasbor',
+                    style: TextStyle(color: Colors.grey, fontSize: 13)),
                 SizedBox(height: 6),
-                Text(
-                  'Ringkasan Penjualan',
-                  style: TextStyle(
-                    fontSize: 22,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black87,
-                  ),
-                ),
+                Text('Ringkasan Penjualan',
+                    style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87)),
               ],
             ),
             Row(
               children: [
                 IconButton(
-                  onPressed: onRefresh,
-                  icon: const Icon(Icons.refresh),
-                  tooltip: 'Refresh data',
-                  color: Colors.grey,
-                ),
+                    onPressed: onRefresh,
+                    icon: const Icon(Icons.refresh),
+                    tooltip: 'Refresh data',
+                    color: Colors.grey),
                 const SizedBox(width: 4),
                 ElevatedButton.icon(
                   onPressed: () {},
@@ -276,16 +328,11 @@ class _HeaderWidget extends StatelessWidget {
                     elevation: 0,
                     side: BorderSide(color: Colors.grey.shade300),
                     shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
+                        borderRadius: BorderRadius.circular(10)),
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 12,
-                    ),
+                        horizontal: 16, vertical: 12),
                     textStyle: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w600,
-                    ),
+                        fontSize: 13, fontWeight: FontWeight.w600),
                   ),
                 ),
               ],
@@ -298,50 +345,51 @@ class _HeaderWidget extends StatelessWidget {
 }
 
 // ==========================================
-// PREDICTION ROW (3 KARTU)
+// PREDICTION ROW
 // ==========================================
 class _PredictionRow extends StatelessWidget {
-  final Future<VisitorForecastModel> visitorForecastFuture;
+  final Future<List<dynamic>> predictionsFuture;
+  final Future<_StockCardData> stockFuture;
 
-  const _PredictionRow({required this.visitorForecastFuture});
+  const _PredictionRow({
+    required this.predictionsFuture,
+    required this.stockFuture,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Card 1: Prediksi Penjualan -> COMING SOON
-        const Expanded(
-          child: _ComingSoonCard(title: 'Prediksi Penjualan (Minggu Depan)'),
-        ),
-        const SizedBox(width: 16),
-
-        // Card 2: Prediksi Pengunjung -> dari endpoint forecast (clickable)
         Expanded(
-          child: Builder(
-            builder: (context) => InkWell(
-              borderRadius: BorderRadius.circular(16),
-              onTap: () {
-                Navigator.of(context).push(
-                  MaterialPageRoute(
-                    builder: (_) =>
-                        const VisitorForecastPage(storeId: _kStoreId),
-                  ),
-                );
-              },
-              child: _VisitorPredictionCard(future: visitorForecastFuture),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const SalesForecastPage()),
             ),
+            child: _SalesMiniCard(future: predictionsFuture),
           ),
         ),
         const SizedBox(width: 16),
-
-        // Card 3: Prediksi Stok -> COMING SOON
-        const Expanded(
-          child: _ComingSoonCard(
-            title: 'Prediksi Stok (Kritis)',
-            badgeText: 'Warning',
-            badgeBg: Color(0xFFFFEBEE),
-            badgeFg: Colors.red,
+        Expanded(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                  builder: (_) =>
+                      const VisitorForecastPage(storeId: _kStoreId)),
+            ),
+            child: _VisitorMiniCard(future: predictionsFuture),
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const StockForecastPage()),
+            ),
+            child: _StockMiniCard(future: stockFuture),
           ),
         ),
       ],
@@ -350,187 +398,74 @@ class _PredictionRow extends StatelessWidget {
 }
 
 // ==========================================
-// CARD: COMING SOON
+// CARD 1: PREDIKSI PENJUALAN
+// Line chart hijau dengan area fill
 // ==========================================
-class _ComingSoonCard extends StatelessWidget {
-  final String title;
-  final String? badgeText;
-  final Color? badgeBg;
-  final Color? badgeFg;
-
-  const _ComingSoonCard({
-    required this.title,
-    this.badgeText,
-    this.badgeBg,
-    this.badgeFg,
-  });
+class _SalesMiniCard extends StatelessWidget {
+  final Future<List<dynamic>> future;
+  const _SalesMiniCard({required this.future});
 
   @override
   Widget build(BuildContext context) {
     return _CardShell(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Flexible(
-                child: Text(
-                  title,
-                  style: const TextStyle(
-                    color: Colors.grey,
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              if (badgeText != null)
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: badgeBg ?? Colors.grey.shade100,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    badgeText!,
-                    style: TextStyle(
-                      color: badgeFg ?? Colors.grey,
-                      fontSize: 11,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          Center(
-            child: Column(
-              children: [
-                Icon(
-                  Icons.hourglass_bottom,
-                  size: 36,
-                  color: Colors.grey.shade400,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Coming Soon',
-                  style: TextStyle(
-                    color: Colors.grey.shade500,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Fitur prediksi belum tersedia',
-                  style: TextStyle(color: Colors.grey.shade400, fontSize: 11),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-        ],
-      ),
-    );
-  }
-}
-
-// ==========================================
-// CARD: PREDIKSI PENGUNJUNG (real data)
-// ==========================================
-class _VisitorPredictionCard extends StatelessWidget {
-  final Future<VisitorForecastModel> future;
-  const _VisitorPredictionCard({required this.future});
-
-  @override
-  Widget build(BuildContext context) {
-    return _CardShell(
-      child: FutureBuilder<VisitorForecastModel>(
+      child: FutureBuilder<List<dynamic>>(
         future: future,
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const _CardLoading(
-              title: 'Prediksi Pengunjung (Minggu Depan)',
-            );
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const _CardLoading(title: 'Prediksi Penjualan (Minggu Depan)');
           }
-          if (snapshot.hasError) {
+          if (snap.hasError) {
             return _CardError(
-              title: 'Prediksi Pengunjung (Minggu Depan)',
-              message: '${snapshot.error}',
-            );
+                title: 'Prediksi Penjualan (Minggu Depan)',
+                message: '${snap.error}');
           }
-
-          final data = snapshot.data!;
+          final data = SalesForecastModel.fromPredictionList(snap.data!);
           final pct = data.weeklyChangePercent;
-          final pctText = '${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%';
+          final pctText =
+              '${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%';
           final isUp = pct >= 0;
-
-          // Bar data dari weekly_forecast
-          final values = data.weeklyForecast
-              .map((p) => p.predictedVisitors)
-              .toList();
-          final maxVal = values.isEmpty
-              ? 1
-              : values.reduce((a, b) => a > b ? a : b);
+          // Baseline: estimasi "minggu ini" = avg30Days * 7
+          final baseline = data.avg30Days * 7;
+          final vals = data.weeklyForecast.map((p) => p.value).toList();
 
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const Text(
-                'Prediksi Pengunjung (Minggu Depan)',
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 12),
+              const Text('Prediksi Penjualan (Minggu Depan)',
+                  style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(height: 10),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
-                  Text(
-                    '${data.totalNext7Days} Orang',
-                    style: const TextStyle(
-                      fontSize: 26,
-                      fontWeight: FontWeight.bold,
+                  Flexible(
+                    child: Text(
+                      data.formattedTotal7,
+                      style: const TextStyle(
+                          fontSize: 22, fontWeight: FontWeight.bold),
+                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: isUp
-                          ? const Color(0xFFE8F5E9)
-                          : const Color(0xFFFFEBEE),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      pctText,
-                      style: TextStyle(
-                        color: isUp ? Colors.green : Colors.red,
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
+                  _Badge(
+                    text: pctText,
+                    bg: isUp
+                        ? const Color(0xFFE8F5E9)
+                        : const Color(0xFFFFEBEE),
+                    fg: isUp ? Colors.green : Colors.red,
                   ),
                 ],
               ),
               const SizedBox(height: 4),
               Text(
-                'Rata-rata harian: ${data.avgDailyNext7Days.toStringAsFixed(0)} Orang',
-                style: const TextStyle(color: Colors.grey, fontSize: 12),
+                'vs. Penjualan minggu ini (${SalesForecastModel.formatRupiah(baseline)})',
+                style: const TextStyle(color: Colors.grey, fontSize: 11),
+                overflow: TextOverflow.ellipsis,
               ),
-              const SizedBox(height: 20),
-              SizedBox(
-                height: 70,
-                child: _VisitorBarChart(values: values, maxVal: maxVal),
-              ),
+              const SizedBox(height: 16),
+              SizedBox(height: 60, child: _SalesLineChart(values: vals)),
             ],
           );
         },
@@ -539,71 +474,333 @@ class _VisitorPredictionCard extends StatelessWidget {
   }
 }
 
-class _VisitorBarChart extends StatelessWidget {
-  final List<int> values;
-  final int maxVal;
+class _SalesLineChart extends StatelessWidget {
+  final List<double> values;
+  const _SalesLineChart({required this.values});
 
+  @override
+  Widget build(BuildContext context) {
+    if (values.isEmpty) return const SizedBox.shrink();
+    final maxY = values.reduce((a, b) => a > b ? a : b) * 1.2;
+    final spots =
+        List.generate(values.length, (i) => FlSpot(i.toDouble(), values[i]));
+
+    return LineChart(LineChartData(
+      minX: 0,
+      maxX: (values.length - 1).toDouble(),
+      minY: 0,
+      maxY: maxY,
+      gridData: const FlGridData(show: false),
+      titlesData: const FlTitlesData(show: false),
+      borderData: FlBorderData(show: false),
+      lineTouchData: const LineTouchData(enabled: false),
+      lineBarsData: [
+        LineChartBarData(
+          spots: spots,
+          isCurved: true,
+          curveSmoothness: 0.35,
+          color: _kLineGreen,
+          barWidth: 2,
+          dotData: const FlDotData(show: false),
+          belowBarData: BarAreaData(
+            show: true,
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [
+                _kLineGreen.withValues(alpha: 0.28),
+                _kLineGreen.withValues(alpha: 0.02),
+              ],
+            ),
+          ),
+        ),
+      ],
+    ));
+  }
+}
+
+// ==========================================
+// CARD 2: PREDIKSI PENGUNJUNG
+// Bar chart dengan highlight bar tertinggi
+// ==========================================
+class _VisitorMiniCard extends StatelessWidget {
+  final Future<List<dynamic>> future;
+  const _VisitorMiniCard({required this.future});
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardShell(
+      child: FutureBuilder<List<dynamic>>(
+        future: future,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const _CardLoading(
+                title: 'Prediksi Pengunjung (Minggu Depan)');
+          }
+          if (snap.hasError) {
+            return _CardError(
+                title: 'Prediksi Pengunjung (Minggu Depan)',
+                message: '${snap.error}');
+          }
+          final data = VisitorForecastModel.fromPredictionList(snap.data!);
+          final pct = data.weeklyChangePercent;
+          final pctText =
+              '${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%';
+          final isUp = pct >= 0;
+          final today =
+              data.weeklyForecast.isNotEmpty
+                  ? data.weeklyForecast.first.predictedVisitors
+                  : 0;
+          final vals = data.weeklyForecast
+              .map((p) => p.predictedVisitors.toDouble())
+              .toList();
+          final maxVal =
+              vals.isEmpty ? 1.0 : vals.reduce((a, b) => a > b ? a : b);
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Prediksi Pengunjung (Minggu Depan)',
+                  style: TextStyle(
+                      color: Colors.grey,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600)),
+              const SizedBox(height: 10),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    '${_fmt(data.totalNext7Days)} Orang',
+                    style: const TextStyle(
+                        fontSize: 22, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(width: 8),
+                  _Badge(
+                    text: pctText,
+                    bg: isUp
+                        ? const Color(0xFFE8F5E9)
+                        : const Color(0xFFFFEBEE),
+                    fg: isUp ? Colors.green : Colors.red,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text('Pengunjung hari ini: ${_fmt(today)} Orang',
+                  style:
+                      const TextStyle(color: Colors.grey, fontSize: 11)),
+              const SizedBox(height: 16),
+              SizedBox(
+                  height: 60,
+                  child: _VisitorBarChart(values: vals, maxVal: maxVal)),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// Format angka dengan titik ribuan gaya Indonesia: 1240 → "1.240"
+  static String _fmt(int n) {
+    if (n < 1000) return n.toString();
+    final s = n.toString();
+    final buf = StringBuffer();
+    for (var i = 0; i < s.length; i++) {
+      if (i > 0 && (s.length - i) % 3 == 0) buf.write('.');
+      buf.write(s[i]);
+    }
+    return buf.toString();
+  }
+}
+
+class _VisitorBarChart extends StatelessWidget {
+  final List<double> values;
+  final double maxVal;
   const _VisitorBarChart({required this.values, required this.maxVal});
 
   @override
   Widget build(BuildContext context) {
-    if (values.isEmpty) {
-      return Center(
-        child: Text(
-          'Tidak ada data prediksi',
-          style: TextStyle(color: Colors.grey.shade400, fontSize: 12),
-        ),
-      );
-    }
+    if (values.isEmpty) return const SizedBox.shrink();
 
-    // Indeks bar tertinggi: di-highlight biru tua (mengikuti gambar).
     int maxIdx = 0;
     for (var i = 0; i < values.length; i++) {
       if (values[i] > values[maxIdx]) maxIdx = i;
     }
 
-    return BarChart(
-      BarChartData(
-        gridData: const FlGridData(show: false),
-        titlesData: const FlTitlesData(show: false),
-        borderData: FlBorderData(show: false),
-        alignment: BarChartAlignment.spaceEvenly,
-        maxY: (maxVal * 1.15).clamp(1, double.infinity).toDouble(),
-        barTouchData: BarTouchData(
-          enabled: true,
-          touchTooltipData: BarTouchTooltipData(
-            getTooltipItem: (group, _, rod, __) {
-              return BarTooltipItem(
-                '${rod.toY.toInt()} pengunjung',
-                const TextStyle(color: Colors.white, fontSize: 11),
-              );
-            },
+    return BarChart(BarChartData(
+      gridData: const FlGridData(show: false),
+      titlesData: const FlTitlesData(show: false),
+      borderData: FlBorderData(show: false),
+      alignment: BarChartAlignment.spaceEvenly,
+      maxY: (maxVal * 1.15).clamp(1, double.infinity),
+      barTouchData: const BarTouchData(enabled: false),
+      barGroups: List.generate(values.length, (i) {
+        return BarChartGroupData(x: i, barRods: [
+          BarChartRodData(
+            toY: values[i],
+            color: i == maxIdx
+                ? const Color(0xFF1E88E5)
+                : Colors.blue.shade100,
+            width: 18,
+            borderRadius:
+                const BorderRadius.vertical(top: Radius.circular(4)),
           ),
-        ),
-        barGroups: List.generate(values.length, (i) {
-          final isPeak = i == maxIdx;
-          return BarChartGroupData(
-            x: i,
-            barRods: [
-              BarChartRodData(
-                toY: values[i].toDouble(),
-                color: isPeak ? const Color(0xFF1E88E5) : Colors.blue.shade100,
-                width: 18,
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(4),
-                ),
+        ]);
+      }),
+    ));
+  }
+}
+
+// ==========================================
+// CARD 3: PREDIKSI STOK (KRITIS)
+// Daftar item kritis dengan countdown hari
+// ==========================================
+class _StockMiniCard extends StatelessWidget {
+  final Future<_StockCardData> future;
+  const _StockMiniCard({required this.future});
+
+  @override
+  Widget build(BuildContext context) {
+    return _CardShell(
+      child: FutureBuilder<_StockCardData>(
+        future: future,
+        builder: (context, snap) {
+          if (snap.connectionState == ConnectionState.waiting) {
+            return const _CardLoading(title: 'Prediksi Stok (Kritis)');
+          }
+          if (snap.hasError) {
+            return _CardError(
+                title: 'Prediksi Stok (Kritis)',
+                message: '${snap.error}');
+          }
+
+          final stock = snap.data!;
+          final count = stock.items.length;
+          final hasCritical = count > 0;
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Flexible(
+                    child: Text('Prediksi Stok (Kritis)',
+                        style: TextStyle(
+                            color: Colors.grey,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600)),
+                  ),
+                  if (hasCritical)
+                    _Badge(
+                      text: 'Warning',
+                      bg: const Color(0xFFFFEBEE),
+                      fg: Colors.red,
+                    ),
+                ],
               ),
+              const SizedBox(height: 10),
+              Text(
+                hasCritical ? '$count Item' : 'Aman',
+                style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: hasCritical ? Colors.black87 : Colors.green),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                hasCritical
+                    ? 'Diprediksi habis dalam < ${stock.items.last.days} hari'
+                    : 'Semua stok dalam kondisi aman',
+                style: const TextStyle(color: Colors.grey, fontSize: 11),
+                overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 14),
+              if (hasCritical)
+                ...stock.items.take(3).map((item) => _StockItemRow(item: item))
+              else
+                Row(
+                  children: [
+                    Icon(Icons.check_circle_outline,
+                        color: Colors.green[400], size: 18),
+                    const SizedBox(width: 6),
+                    const Text('Tidak ada item kritis',
+                        style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  ],
+                ),
             ],
           );
-        }),
+        },
+      ),
+    );
+  }
+}
+
+class _StockItemRow extends StatelessWidget {
+  final _CriticalItem item;
+  const _StockItemRow({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final isUrgent = item.days <= 1;
+    final badgeBg = isUrgent
+        ? const Color(0xFFFFEBEE)
+        : const Color(0xFFFFF3E0);
+    final badgeFg = isUrgent ? Colors.red : Colors.orange;
+    final label = item.days <= 0 ? 'Habis' : 'Habis ${item.days} Hari';
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Flexible(
+            child: Text(
+              item.name,
+              style: const TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.w600),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+                color: badgeBg, borderRadius: BorderRadius.circular(6)),
+            child: Text(label,
+                style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: badgeFg)),
+          ),
+        ],
       ),
     );
   }
 }
 
 // ==========================================
-// SHARED CARD SHELL & STATES
+// SHARED WIDGETS
 // ==========================================
+class _Badge extends StatelessWidget {
+  final String text;
+  final Color bg;
+  final Color fg;
+  const _Badge({required this.text, required this.bg, required this.fg});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+      decoration:
+          BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
+      child: Text(text,
+          style: TextStyle(
+              fontSize: 11, fontWeight: FontWeight.bold, color: fg)),
+    );
+  }
+}
+
 class _CardShell extends StatelessWidget {
   final Widget child;
   const _CardShell({required this.child});
@@ -617,10 +814,9 @@ class _CardShell extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.03),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 8,
+              offset: const Offset(0, 2)),
         ],
       ),
       child: child,
@@ -637,23 +833,18 @@ class _CardLoading extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: Colors.grey,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        Text(title,
+            style: const TextStyle(
+                color: Colors.grey,
+                fontSize: 13,
+                fontWeight: FontWeight.w600)),
         const SizedBox(height: 32),
         const Center(
           child: SizedBox(
             width: 24,
             height: 24,
             child: CircularProgressIndicator(
-              strokeWidth: 2.5,
-              color: _kPrimaryGreenDark,
-            ),
+                strokeWidth: 2.5, color: _kPrimaryGreenDark),
           ),
         ),
         const SizedBox(height: 32),
@@ -672,14 +863,11 @@ class _CardError extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          title,
-          style: const TextStyle(
-            color: Colors.grey,
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-          ),
-        ),
+        Text(title,
+            style: const TextStyle(
+                color: Colors.grey,
+                fontSize: 13,
+                fontWeight: FontWeight.w600)),
         const SizedBox(height: 16),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -687,11 +875,9 @@ class _CardError extends StatelessWidget {
             const Icon(Icons.error_outline, color: Colors.red, size: 18),
             const SizedBox(width: 8),
             Expanded(
-              child: Text(
-                'Gagal memuat prediksi.\n$message',
-                style: const TextStyle(color: Colors.red, fontSize: 12),
-              ),
-            ),
+                child: Text('Gagal memuat.\n$message',
+                    style:
+                        const TextStyle(color: Colors.red, fontSize: 12))),
           ],
         ),
       ],
