@@ -1,9 +1,14 @@
 package models
 
-import "time"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
 
 // ForecastPrediction sesuai tabel forecast_predictions
 type ForecastPrediction struct {
+	ID             uuid.UUID `json:"id"`
 	StoreID        string    `json:"store_id"`
 	Module         string    `json:"module"`
 	HorizonLabel   string    `json:"horizon_label"`

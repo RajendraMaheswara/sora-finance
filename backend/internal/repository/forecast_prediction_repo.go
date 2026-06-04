@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"sora-finance-api/internal/models"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -13,6 +15,55 @@ type ForecastPredictionRepository struct {
 
 func NewForecastPredictionRepository(db *pgxpool.Pool) *ForecastPredictionRepository {
 	return &ForecastPredictionRepository{db: db}
+}
+
+func (r *ForecastPredictionRepository) GetAll(ctx context.Context) ([]models.ForecastPrediction, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, store_id, module, horizon_label, horizon_days, prediction_date,
+		       predicted_value, lower_bound, upper_bound, mae, rmse, mape, model_version, created_at
+		FROM forecast_predictions
+		ORDER BY created_at DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []models.ForecastPrediction
+	for rows.Next() {
+		var item models.ForecastPrediction
+		err := rows.Scan(
+			&item.ID, &item.StoreID, &item.Module, &item.HorizonLabel, &item.HorizonDays,
+			&item.PredictionDate, &item.PredictedValue, &item.LowerBound, &item.UpperBound,
+			&item.MAE, &item.RMSE, &item.MAPE, &item.ModelVersion, &item.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (r *ForecastPredictionRepository) GetByID(ctx context.Context, id int64) (*models.ForecastPrediction, error) {
+	var item models.ForecastPrediction
+	err := r.db.QueryRow(ctx, `
+		SELECT id, store_id, module, horizon_label, horizon_days, prediction_date,
+		       predicted_value, lower_bound, upper_bound, mae, rmse, mape, model_version, created_at
+		FROM forecast_predictions
+		WHERE id = $1
+	`, id).Scan(
+		&item.ID, &item.StoreID, &item.Module, &item.HorizonLabel, &item.HorizonDays,
+		&item.PredictionDate, &item.PredictedValue, &item.LowerBound, &item.UpperBound,
+		&item.MAE, &item.RMSE, &item.MAPE, &item.ModelVersion, &item.CreatedAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &item, nil
 }
 
 // DeleteByStoreAndModule menghapus data lama untuk toko dan modul tertentu

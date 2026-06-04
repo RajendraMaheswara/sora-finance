@@ -3,17 +3,8 @@ package repository
 import (
 	"context"
 	"sora-finance-api/internal/models"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type ForecastResultRepository struct {
-	db *pgxpool.Pool
-}
-
-func NewForecastResultRepository(db *pgxpool.Pool) *ForecastResultRepository {
-	return &ForecastResultRepository{db: db}
-}
 
 func (r *ForecastResultRepository) CreateMany(ctx context.Context, items []models.ForecastResult) ([]models.ForecastResult, error) {
 	if len(items) == 0 {

@@ -183,13 +183,6 @@ func main() {
 	salesMonthlySummaryService := service.NewSalesMonthlySummaryService(salesMonthlySummaryRepo)
 	salesMonthlySummaryHandler := handler.NewSalesMonthlySummaryHandler(salesMonthlySummaryService)
 
-	forecastPredictionRepo := repository.NewForecastPredictionRepository(pool)
-	forecastPredictionService := service.NewForecastPredictionService(forecastPredictionRepo)
-	forecastPredictionHandler := handler.NewForecastPredictionHandler(forecastPredictionService)
-
-	forecastResultRepo := repository.NewForecastResultRepository(pool)
-	forecastResultService := service.NewForecastResultService(forecastResultRepo)
-	forecastResultHandler := handler.NewForecastResultHandler(forecastResultService)
 
 	// Router
 	r := chi.NewRouter()
@@ -353,13 +346,6 @@ func main() {
 	})
 	// -------------------------------------------
 
-	r.Route("/api/forecast-predictions", func(r chi.Router) {
-		r.Post("/", forecastPredictionHandler.Create)
-	})
-
-	r.Route("/api/forecast-results", func(r chi.Router) {
-		r.Post("/", forecastResultHandler.Create)
-	})
 
 	r.Route("/api/food-ingredients", func(r chi.Router) {
 		r.Get("/", foodIngredientHandler.GetAll)
@@ -457,10 +443,14 @@ func main() {
 	})
 
 	r.Route("/api/forecast-predictions", func(r chi.Router) {
-    r.Post("/", forecastPredictionHandler.Save)
+		r.Get("/", forecastPredictionHandler.GetAll)
+		r.Get("/{id}", forecastPredictionHandler.GetByID)
+		r.Post("/", forecastPredictionHandler.Save)
 	})
 
 	r.Route("/api/forecast-results", func(r chi.Router) {
+		r.Get("/", forecastResultHandler.GetAll)
+		r.Get("/{id}", forecastResultHandler.GetByID)
 		r.Post("/", forecastResultHandler.BulkCreate)
 	})
 	
