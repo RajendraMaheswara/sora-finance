@@ -1,0 +1,20 @@
+# Cache Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
+venv/
+env/
+
+# Environment Variables (Data Sensitif)
+.env
+
+# File Model Machine Learning (Ukurannya Besar)
+*.joblib
+*.pkl
+
+# File Sistem OS (Opsional tapi disarankan)
+.DS_Store
+Thumbs.db

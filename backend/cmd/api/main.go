@@ -183,6 +183,14 @@ func main() {
 	salesMonthlySummaryService := service.NewSalesMonthlySummaryService(salesMonthlySummaryRepo)
 	salesMonthlySummaryHandler := handler.NewSalesMonthlySummaryHandler(salesMonthlySummaryService)
 
+	forecastPredictionRepo := repository.NewForecastPredictionRepository(pool)
+	forecastPredictionService := service.NewForecastPredictionService(forecastPredictionRepo)
+	forecastPredictionHandler := handler.NewForecastPredictionHandler(forecastPredictionService)
+
+	forecastResultRepo := repository.NewForecastResultRepository(pool)
+	forecastResultService := service.NewForecastResultService(forecastResultRepo)
+	forecastResultHandler := handler.NewForecastResultHandler(forecastResultService)
+
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -253,6 +261,105 @@ func main() {
 		w.Write(balasanDariPython)
 	})
 	// -------------------------------------------
+
+	// --- STUB FORECAST PENGUNJUNG ---
+	// Mengembalikan response dummy yang sudah disepakati strukturnya.
+	// Nanti tinggal diganti dengan call ke forecast-service Python yang sebenarnya.
+	r.Get("/api/forecast/visitors/{storeId}", func(w http.ResponseWriter, req *http.Request) {
+		storeID := chi.URLParam(req, "storeId")
+
+		response := map[string]interface{}{
+			"success": true,
+			"message": "Forecast berhasil.",
+			"data": map[string]interface{}{
+				"store_id": storeID,
+				"metrics": map[string]interface{}{
+					"mae":                18.7823,
+					"rmse":               23.8634,
+					"mape":               13.0537,
+					"r2_score":           -0.0183,
+					"explained_variance": 0.2787,
+				},
+				"forecast_summary": map[string]interface{}{
+					"total_predicted_visitors_next_7_days":  903,
+					"total_predicted_visitors_next_30_days": 3915,
+					"average_daily_visitors_next_7_days":    129,
+					"average_daily_visitors_next_30_days":   130.5,
+				},
+				"prediction_analysis": map[string]interface{}{
+					"highest_prediction_day":   "2020-07-18",
+					"highest_prediction_value": 167,
+					"lowest_prediction_day":    "2020-07-01",
+					"lowest_prediction_value":  104,
+					"trend_direction":          "DOWNWARD",
+				},
+				"model_confidence": map[string]interface{}{
+					"confidence_score": 86.95,
+					"confidence_level": "HIGH",
+				},
+				"insights": []string{
+					"Prediksi pengunjung minggu depan cenderung menurun sebesar 14.5% dibanding rata-rata 7 hari terakhir.",
+					"Hari dengan pengunjung tertinggi diperkirakan terjadi pada Sabtu, 2020-07-18 dengan 167 pengunjung.",
+					"Hari dengan pengunjung terendah diperkirakan pada Rabu, 2020-07-01 dengan 104 pengunjung.",
+					"Model memiliki confidence level HIGH (86.95%) — akurasi prediksi tinggi.",
+					"Rekomendasi: Pengunjung diprediksi berkurang — pertimbangkan strategi promosi untuk mendorong kunjungan.",
+				},
+				"weekly_forecast": []map[string]interface{}{
+					{"date": "2020-07-01", "predicted_visitors": 104},
+					{"date": "2020-07-02", "predicted_visitors": 122},
+					{"date": "2020-07-03", "predicted_visitors": 121},
+					{"date": "2020-07-04", "predicted_visitors": 162},
+					{"date": "2020-07-05", "predicted_visitors": 156},
+					{"date": "2020-07-06", "predicted_visitors": 109},
+					{"date": "2020-07-07", "predicted_visitors": 129},
+				},
+				"monthly_forecast": []map[string]interface{}{
+					{"date": "2020-07-01", "predicted_visitors": 104},
+					{"date": "2020-07-02", "predicted_visitors": 122},
+					{"date": "2020-07-03", "predicted_visitors": 121},
+					{"date": "2020-07-04", "predicted_visitors": 162},
+					{"date": "2020-07-05", "predicted_visitors": 156},
+					{"date": "2020-07-06", "predicted_visitors": 109},
+					{"date": "2020-07-07", "predicted_visitors": 129},
+					{"date": "2020-07-08", "predicted_visitors": 125},
+					{"date": "2020-07-09", "predicted_visitors": 122},
+					{"date": "2020-07-10", "predicted_visitors": 123},
+					{"date": "2020-07-11", "predicted_visitors": 163},
+					{"date": "2020-07-12", "predicted_visitors": 153},
+					{"date": "2020-07-13", "predicted_visitors": 108},
+					{"date": "2020-07-14", "predicted_visitors": 127},
+					{"date": "2020-07-15", "predicted_visitors": 120},
+					{"date": "2020-07-16", "predicted_visitors": 123},
+					{"date": "2020-07-17", "predicted_visitors": 120},
+					{"date": "2020-07-18", "predicted_visitors": 167},
+					{"date": "2020-07-19", "predicted_visitors": 161},
+					{"date": "2020-07-20", "predicted_visitors": 108},
+					{"date": "2020-07-21", "predicted_visitors": 126},
+					{"date": "2020-07-22", "predicted_visitors": 120},
+					{"date": "2020-07-23", "predicted_visitors": 120},
+					{"date": "2020-07-24", "predicted_visitors": 122},
+					{"date": "2020-07-25", "predicted_visitors": 163},
+					{"date": "2020-07-26", "predicted_visitors": 158},
+					{"date": "2020-07-27", "predicted_visitors": 110},
+					{"date": "2020-07-28", "predicted_visitors": 129},
+					{"date": "2020-07-29", "predicted_visitors": 123},
+					{"date": "2020-07-30", "predicted_visitors": 121},
+				},
+			},
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	})
+	// -------------------------------------------
+
+	r.Route("/api/forecast-predictions", func(r chi.Router) {
+		r.Post("/", forecastPredictionHandler.Create)
+	})
+
+	r.Route("/api/forecast-results", func(r chi.Router) {
+		r.Post("/", forecastResultHandler.Create)
+	})
 
 	r.Route("/api/food-ingredients", func(r chi.Router) {
 		r.Get("/", foodIngredientHandler.GetAll)
