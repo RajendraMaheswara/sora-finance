@@ -121,18 +121,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
   final ApiService _api = ApiService();
 
   late Future<List<dynamic>> _predictionsFuture;
+  late Future<SalesForecastModel> _salesModelFuture;
   late Future<_StockCardData> _stockFuture;
+
+  Future<SalesForecastModel> _loadSalesModel() =>
+      SalesForecastModel.loadFromApi(_api.fetchData);
 
   @override
   void initState() {
     super.initState();
     _predictionsFuture = _api.fetchData('forecast-predictions');
+    _salesModelFuture = _loadSalesModel();
     _stockFuture = _StockCardData.load(_api);
   }
 
   void _refresh() {
     setState(() {
       _predictionsFuture = _api.fetchData('forecast-predictions');
+      _salesModelFuture = _loadSalesModel();
       _stockFuture = _StockCardData.load(_api);
     });
   }
@@ -155,6 +161,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 28),
                   _PredictionRow(
                     predictionsFuture: _predictionsFuture,
+                    salesModelFuture: _salesModelFuture,
                     stockFuture: _stockFuture,
                   ),
                 ],
@@ -349,10 +356,12 @@ class _HeaderWidget extends StatelessWidget {
 // ==========================================
 class _PredictionRow extends StatelessWidget {
   final Future<List<dynamic>> predictionsFuture;
+  final Future<SalesForecastModel> salesModelFuture;
   final Future<_StockCardData> stockFuture;
 
   const _PredictionRow({
     required this.predictionsFuture,
+    required this.salesModelFuture,
     required this.stockFuture,
   });
 
@@ -367,7 +376,7 @@ class _PredictionRow extends StatelessWidget {
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute(builder: (_) => const SalesForecastPage()),
             ),
-            child: _SalesMiniCard(future: predictionsFuture),
+            child: _SalesMiniCard(future: salesModelFuture),
           ),
         ),
         const SizedBox(width: 16),
@@ -402,13 +411,13 @@ class _PredictionRow extends StatelessWidget {
 // Line chart hijau dengan area fill
 // ==========================================
 class _SalesMiniCard extends StatelessWidget {
-  final Future<List<dynamic>> future;
+  final Future<SalesForecastModel> future;
   const _SalesMiniCard({required this.future});
 
   @override
   Widget build(BuildContext context) {
     return _CardShell(
-      child: FutureBuilder<List<dynamic>>(
+      child: FutureBuilder<SalesForecastModel>(
         future: future,
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
@@ -419,7 +428,7 @@ class _SalesMiniCard extends StatelessWidget {
                 title: 'Prediksi Penjualan (Minggu Depan)',
                 message: '${snap.error}');
           }
-          final data = SalesForecastModel.fromPredictionList(snap.data!);
+          final data = snap.data!;
           final pct = data.weeklyChangePercent;
           final pctText =
               '${pct >= 0 ? '+' : ''}${pct.toStringAsFixed(1)}%';

@@ -31,8 +31,12 @@ class _SalesForecastPageState extends State<SalesForecastPage> {
   }
 
   Future<SalesForecastModel> _fetch() async {
-    final raw = await _api.fetchData('forecast-predictions');
-    return SalesForecastModel.fromPredictionList(raw);
+    final results = await Future.wait([
+      _api.fetchData('forecast-predictions'),
+      _api.fetchData('forecast-results'),
+      _api.fetchData('sales-daily-summaries'),
+    ]);
+    return SalesForecastModel.fromSources(results[0], results[1], results[2]);
   }
 
   void _refresh() => setState(() => _future = _fetch());
@@ -61,6 +65,9 @@ class _SalesForecastPageState extends State<SalesForecastPage> {
                       else if (snapshot.hasError)
                         _ErrorPanel(
                             message: '${snapshot.error}', onRetry: _refresh)
+                      else if (snapshot.data!.weeklyForecast.isEmpty &&
+                          snapshot.data!.monthlyForecast.isEmpty)
+                        _NoDataPanel(onRetry: _refresh)
                       else
                         _ForecastBody(data: snapshot.data!),
                     ],
@@ -297,6 +304,50 @@ class _ErrorPanel extends StatelessWidget {
             onPressed: onRetry,
             icon: const Icon(Icons.refresh, size: 16),
             label: const Text('Coba Lagi'),
+            style: ElevatedButton.styleFrom(
+                backgroundColor: _kPrimaryGreen,
+                foregroundColor: Colors.white),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _NoDataPanel extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _NoDataPanel({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(40),
+      decoration: BoxDecoration(
+          color: Colors.white, borderRadius: BorderRadius.circular(16)),
+      child: Column(
+        children: [
+          Icon(Icons.bar_chart, size: 52, color: Colors.grey[300]),
+          const SizedBox(height: 16),
+          const Text(
+            'Belum ada data prediksi penjualan',
+            style: TextStyle(
+                fontSize: 16,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Data prediksi penjualan akan muncul setelah model forecast\n'
+            'menyimpan data dengan module "revenue" atau "sales"\n'
+            'ke tabel forecast_predictions.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.grey, fontSize: 13, height: 1.5),
+          ),
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            onPressed: onRetry,
+            icon: const Icon(Icons.refresh, size: 16),
+            label: const Text('Refresh'),
             style: ElevatedButton.styleFrom(
                 backgroundColor: _kPrimaryGreen,
                 foregroundColor: Colors.white),
@@ -826,14 +877,30 @@ class _CombinedChartCard extends StatelessWidget {
       lineTouchData: LineTouchData(
         touchTooltipData: LineTouchTooltipData(
           getTooltipItems: (spots) => spots.map((s) {
-            // Only show tooltip for pred (index 2) and hist (index 3)
             if (s.barIndex == 0 || s.barIndex == 1) {
               return const LineTooltipItem('', TextStyle());
             }
             final label = xLabels[s.x.toInt()] ?? '';
             final val = SalesForecastModel.formatRupiah(s.y);
-            final prefix = s.barIndex == 2 ? 'Prediksi' : 'Historis';
-            return LineTooltipItem('$prefix\n$label\n$val',
+            if (s.barIndex == 3) {
+              return LineTooltipItem('Historis\n$label\n$val',
+                  const TextStyle(color: Colors.white, fontSize: 11));
+            }
+            // barIndex 2 = prediksi — tampilkan CI jika ada
+            final xi = s.x.toInt();
+            FlSpot? findSpot(List<FlSpot> lst) {
+              for (final sp in lst) {
+                if (sp.x.toInt() == xi) return sp;
+              }
+              return null;
+            }
+            final upper = findSpot(upperSpots);
+            final lower = findSpot(lowerSpots);
+            final ciLine = (upper != null && lower != null)
+                ? '\nCI: ${SalesForecastModel.formatRupiah(lower.y)}'
+                    ' – ${SalesForecastModel.formatRupiah(upper.y)}'
+                : '';
+            return LineTooltipItem('Prediksi\n$label\n$val$ciLine',
                 const TextStyle(color: Colors.white, fontSize: 11));
           }).toList(),
         ),
@@ -875,7 +942,11 @@ class _CombinedChartCard extends StatelessWidget {
                   _LegendLine(color: _kLineBlueDash, dashed: true, label: 'Prediksi'),
                   if (hasCi) ...[
                     const SizedBox(width: 12),
-                    _LegendBox(color: _kCIBand, label: 'Confidence Interval'),
+                    _LegendCi(
+                      fillColor: _kCIBand,
+                      lineColor: _kLineBlueDash.withValues(alpha: 0.45),
+                      label: 'Confidence Interval',
+                    ),
                   ],
                 ],
               ),
@@ -915,27 +986,64 @@ class _LegendLine extends StatelessWidget {
   }
 }
 
-class _LegendBox extends StatelessWidget {
-  final Color color;
+class _LegendCi extends StatelessWidget {
+  final Color fillColor;
+  final Color lineColor;
   final String label;
-  const _LegendBox({required this.color, required this.label});
+  const _LegendCi(
+      {required this.fillColor, required this.lineColor, required this.label});
 
   @override
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Container(
-          width: 20,
-          height: 12,
-          decoration: BoxDecoration(
-              color: color, borderRadius: BorderRadius.circular(2)),
+        SizedBox(
+          width: 28,
+          height: 14,
+          child: CustomPaint(
+              painter: _CiLegendPainter(
+                  fillColor: fillColor, lineColor: lineColor)),
         ),
         const SizedBox(width: 4),
-        Text(label,
-            style: const TextStyle(fontSize: 11, color: Colors.grey)),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
       ],
     );
   }
+}
+
+class _CiLegendPainter extends CustomPainter {
+  final Color fillColor;
+  final Color lineColor;
+  const _CiLegendPainter({required this.fillColor, required this.lineColor});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    canvas.drawRect(
+      Rect.fromLTRB(0, 3, size.width, size.height - 3),
+      Paint()..color = fillColor,
+    );
+    final linePaint = Paint()
+      ..color = lineColor
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    _drawDash(canvas, Offset(0, 2), Offset(size.width, 2), linePaint);
+    _drawDash(canvas, Offset(0, size.height - 2),
+        Offset(size.width, size.height - 2), linePaint);
+  }
+
+  void _drawDash(Canvas canvas, Offset start, Offset end, Paint paint) {
+    const dashLen = 4.0;
+    const gapLen = 3.0;
+    var x = start.dx;
+    while (x < end.dx) {
+      canvas.drawLine(Offset(x, start.dy),
+          Offset((x + dashLen).clamp(0, end.dx), start.dy), paint);
+      x += dashLen + gapLen;
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class _LinePainter extends CustomPainter {

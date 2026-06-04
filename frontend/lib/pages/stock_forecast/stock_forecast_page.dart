@@ -10,7 +10,6 @@ const Color _kGreen = Color(0xFF8CE600);
 const Color _kGreenDark = Color(0xFF24CC14);
 const Color _kLineGreen = Color(0xFF43A047);
 const Color _kLineRed = Color(0xFFE53935);
-const Color _kCIBand = Color(0x1EE53935);
 
 // ==========================================
 // DATA MODELS (internal)
@@ -913,8 +912,6 @@ class _DepletionChart extends StatelessWidget {
   Widget build(BuildContext context) {
     final histPoints = item.history;
     final predForecasts = forecasts;
-    final hasCi = item.hasCi;
-
     // Max y
     final allVals = [
       item.currentStock,
@@ -943,19 +940,6 @@ class _DepletionChart extends StatelessWidget {
           predForecasts[i].estimatedRemaining));
     }
 
-    final upperSpots = <FlSpot>[];
-    final lowerSpots = <FlSpot>[];
-    if (hasCi) {
-      for (var i = 0; i < predForecasts.length; i++) {
-        final f = predForecasts[i];
-        if (f.upper != null && f.lower != null) {
-          upperSpots.add(FlSpot((histCount + i).toDouble(),
-              item.currentStock - (f.lower ?? 0)));
-          lowerSpots.add(FlSpot((histCount + i).toDouble(),
-              (item.currentStock - (f.upper ?? 0)).clamp(0, double.infinity)));
-        }
-      }
-    }
 
     // Find depletion point (stock hits 0)
     int? depletionIdx;
@@ -1009,10 +993,6 @@ class _DepletionChart extends StatelessWidget {
                   _LegendLine(color: _kLineGreen, dashed: false, label: 'Historis'),
                   const SizedBox(width: 12),
                   _LegendLine(color: _kLineRed, dashed: true, label: 'Prediksi'),
-                  if (hasCi && upperSpots.isNotEmpty) ...[
-                    const SizedBox(width: 12),
-                    _LegendBox(color: _kCIBand, label: 'CI'),
-                  ],
                 ],
               ),
             ],
@@ -1092,35 +1072,9 @@ class _DepletionChart extends StatelessWidget {
                 ),
               ),
               borderData: FlBorderData(show: false),
-              // lineBarsData indices for betweenBarsData:
-              // 0 = upper bound (CI, transparent)
-              // 1 = lower bound (CI, transparent)
-              // 2 = prediction (red dashed)
-              // 3 = historical (green solid)
-              betweenBarsData: hasCi && upperSpots.isNotEmpty
-                  ? [
-                      BetweenBarsData(
-                          fromIndex: 0, toIndex: 1, color: _kCIBand)
-                    ]
-                  : [],
+              betweenBarsData: [],
               lineBarsData: [
-                // 0: upper CI (transparent)
-                LineChartBarData(
-                  spots: upperSpots.isNotEmpty ? upperSpots : [const FlSpot(0, 0)],
-                  color: Colors.transparent,
-                  barWidth: 0,
-                  dotData: const FlDotData(show: false),
-                  belowBarData: BarAreaData(show: false),
-                ),
-                // 1: lower CI (transparent)
-                LineChartBarData(
-                  spots: lowerSpots.isNotEmpty ? lowerSpots : [const FlSpot(0, 0)],
-                  color: Colors.transparent,
-                  barWidth: 0,
-                  dotData: const FlDotData(show: false),
-                  belowBarData: BarAreaData(show: false),
-                ),
-                // 2: prediction (red dashed)
+                // 0: prediction (red dashed)
                 LineChartBarData(
                   spots: predSpots,
                   color: _kLineRed,
@@ -1130,9 +1084,7 @@ class _DepletionChart extends StatelessWidget {
                   dotData: FlDotData(
                     show: true,
                     getDotPainter: (spot, pct, bar, idx) {
-                      // Big red dot at depletion point
-                      final isDepletion =
-                          depletionIdx != null &&
+                      final isDepletion = depletionIdx != null &&
                           spot.x.toInt() == depletionIdx;
                       return FlDotCirclePainter(
                         radius: isDepletion ? 7 : 3,
@@ -1144,7 +1096,7 @@ class _DepletionChart extends StatelessWidget {
                   ),
                   belowBarData: BarAreaData(show: false),
                 ),
-                // 3: historical (green solid)
+                // 1: historical (green solid)
                 LineChartBarData(
                   spots: histSpots,
                   color: _kLineGreen,
@@ -1157,14 +1109,15 @@ class _DepletionChart extends StatelessWidget {
               lineTouchData: LineTouchData(
                 touchTooltipData: LineTouchTooltipData(
                   getTooltipItems: (spots) => spots.map((s) {
-                    if (s.barIndex < 2) {
-                      return const LineTooltipItem('', TextStyle());
-                    }
                     final label = xLabels[s.x.toInt()] ?? '';
-                    final val = '${s.y.toStringAsFixed(1)} kg';
-                    final prefix = s.barIndex == 2 ? 'Sisa Prediksi' : 'Sisa Aktual';
-                    return LineTooltipItem('$prefix\n$label\n$val',
+                    if (s.barIndex == 0) {
+                      return LineTooltipItem(
+                        'Sisa Prediksi\n$label\n${s.y.toStringAsFixed(1)} kg',
                         const TextStyle(color: Colors.white, fontSize: 11));
+                    }
+                    return LineTooltipItem(
+                      'Sisa Aktual\n$label\n${s.y.toStringAsFixed(1)} kg',
+                      const TextStyle(color: Colors.white, fontSize: 11));
                   }).toList(),
                 ),
               ),
@@ -1208,27 +1161,6 @@ class _LegendLine extends StatelessWidget {
           height: 14,
           child: CustomPaint(painter: _LinePainter(color: color, dashed: dashed)),
         ),
-        const SizedBox(width: 4),
-        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
-      ],
-    );
-  }
-}
-
-class _LegendBox extends StatelessWidget {
-  final Color color;
-  final String label;
-  const _LegendBox({required this.color, required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Container(
-            width: 18,
-            height: 12,
-            decoration: BoxDecoration(
-                color: color, borderRadius: BorderRadius.circular(2))),
         const SizedBox(width: 4),
         Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
       ],
