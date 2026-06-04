@@ -39,12 +39,18 @@ def _train_single(store_id, ingr_id, task_id: str | None) -> tuple[bool, str]:
     try:
         fc = InventoryForecaster(store_id, ingr_id)
         fc.tune_and_train()
+
+        # Simpan hasil forecast mingguan (4 minggu ke depan)
+        fc.save_all_forecasts(periods=4, freq='W')
+        # Simpan juga bulanan jika diperlukan (opsional)
+        # fc.save_all_forecasts(periods=3, freq='M')
+
         return True, pair_label
     except Exception as e:
         # Log error tapi tidak stop training pasangan lain
         print(f"[GAGAL] {pair_label}: {e}")
         return False, pair_label
-
+    
 
 # =========================================================================
 # TRAINING SEMUA PASANGAN

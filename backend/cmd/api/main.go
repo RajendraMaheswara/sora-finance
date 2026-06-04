@@ -147,6 +147,18 @@ func main() {
 	financeMonthlySummaryService := service.NewFinanceMonthlySummaryService(financeMonthlySummaryRepo)
 	financeMonthlySummaryHandler := handler.NewFinanceMonthlySummaryHandler(financeMonthlySummaryService)
 
+	forecastPredictionRepo := repository.NewForecastPredictionRepository(pool)
+	forecastPredictionService := service.NewForecastPredictionService(forecastPredictionRepo)
+	forecastPredictionHandler := handler.NewForecastPredictionHandler(forecastPredictionService)
+
+	forecastResultRepo := repository.NewForecastResultRepository(pool)
+	forecastResultService := service.NewForecastResultService(forecastResultRepo)
+	forecastResultHandler := handler.NewForecastResultHandler(forecastResultService)
+
+	forecastRunRepo := repository.NewForecastRunRepository(pool)
+	forecastRunService := service.NewForecastRunService(forecastRunRepo)
+	forecastRunHandler := handler.NewForecastRunHandler(forecastRunService)
+
 	ingredientStockHistoryRepo := repository.NewIngredientStockHistoryRepository(pool)
 	ingredientStockHistoryService := service.NewIngredientStockHistoryService(ingredientStockHistoryRepo)
 	ingredientStockHistoryHandler := handler.NewIngredientStockHistoryHandler(ingredientStockHistoryService)
@@ -335,6 +347,18 @@ func main() {
 	r.Route("/api/finance-daily-summaries", func(r chi.Router) {
 		r.Get("/", financeDailySummaryHandler.GetAll)
 		r.Get("/{id}", financeDailySummaryHandler.GetByID)
+	})
+
+	r.Route("/api/forecast-predictions", func(r chi.Router) {
+    r.Post("/", forecastPredictionHandler.Save)
+	})
+
+	r.Route("/api/forecast-results", func(r chi.Router) {
+		r.Post("/", forecastResultHandler.BulkCreate)
+	})
+	
+	r.Route("/api/forecast-runs", func(r chi.Router) {
+    r.Post("/", forecastRunHandler.Create)
 	})
 
 	r.Route("/api/finance-monthly-summaries", func(r chi.Router) {

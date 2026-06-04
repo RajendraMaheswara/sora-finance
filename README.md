@@ -37,6 +37,24 @@
 - **`end_date` dinamis** – default hari ini, tidak lagi statis 2026-12-31
 - Berbagai perbaikan bug: timezone UTC, `NoneType` pada model, validasi input
 
+### 4 Juni 2026
+- **Penyimpanan hasil forecast ke database** – tiga tabel terisi otomatis setelah training:
+  - `forecast_predictions` → untuk dashboard (ringan, cepat)
+  - `forecast_runs` → tracking setiap sesi training
+  - `forecast_results` → detail prediksi per tanggal, siap evaluasi (masih dalam penyelarasan tipe data)
+- **Payload disamakan** dengan modul visitor/sales:
+  - `horizon_label` deskriptif (`"daily"`/`"weekly"`/`"monthly"`)
+  - `metrics`, `summary`, `data_quality` dikirim sebagai **string JSON**
+  - `model_version` = `"1.0.0"` (statis, mudah dilacak)
+  - `started_at` & `finished_at` terisi format `YYYY-MM-DD HH:MM:SS+00`
+- **Backend Go** menyediakan endpoint baru:
+  - `POST /api/forecast-predictions`
+  - `POST /api/forecast-runs`
+  - `POST /api/forecast-results` (masih di-debug untuk tipe data)
+- **Auto‑save setelah training** – setiap pasangan yang selesai dilatih langsung menyimpan hasil ke ketiga tabel
+- **Endpoint manual** – `POST /api/inventory/save-all-forecasts` untuk trigger simpan tanpa training ulang
+- Bug fix: `model_version` terlalu panjang (varchar overflow), timezone UTC, field `null` di database
+
 ## KENDALA / KEKURANGAN
 
 ### 21 Mei 2026
@@ -62,6 +80,11 @@
 - Tidak ada autentikasi/otorisasi di endpoint (untuk production harus ditambahkan – saat ini hanya development)
 - Job training masih dalam proses Flask, belum queue/worker terpisah
 - Model disimpan di filesystem lokal (cukup untuk development, production perlu versioning & object storage)
+
+### 4 Juni 2026
+- `data_quality` masih minimal; bisa diperkaya dengan info outlier, missing dates, dsb.
+- `model_version` statis `"1.0.0"` belum otomatis naik jika model diperbarui signifikan
+- Belum ada mekanisme retry otomatis jika penyimpanan ke database gagal (saat ini hanya log error)
 
 ---
 
@@ -266,6 +289,24 @@ Response mengikuti format yang seragam dengan modul visitor/sales:
 - `prediction_analysis`: hari dengan prediksi tertinggi/terendah
 - `model_confidence`: `confidence_score = 100 - MAPE` (jika MAPE tidak ada, pakai sMAPE); level: HIGH >= 85, MEDIUM >= 70, LOW < 70
 - `daily_forecast` / `weekly_forecast` / `monthly_forecast`: array prediksi sesuai `freq`
+
+### 6. Menyimpan Hasil Forecast ke Database
+Setelah training, hasil forecast otomatis tersimpan ke database.
+Namun, jika ingin menyimpan ulang tanpa training, gunakan endpoint berikut:
+
+**Simpan ulang semua model yang sudah ada:**
+```
+curl -X POST http://localhost:5000/api/inventory/save-all-existing
+```
+
+**Simpan ulang satu pasangan saja:**
+```
+curl -X POST http://localhost:5000/api/inventory/save-all-forecasts \
+  -H "Content-Type: application/json" \
+  -d '{"store_id":"b4e2f559-...","ingredient_id":"b98b5042-...","periods":4,"freq":"W"}'
+```
+Data akan masuk ke tabel forecast_predictions (dashboard) dan forecast_runs (tracking).
+
 
 ## TROUBLESHOOTING CEPAT
 

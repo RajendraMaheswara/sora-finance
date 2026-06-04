@@ -1,9 +1,11 @@
 from flask import Flask, request, jsonify
+from config import Config
+import os
 import traceback
 import uuid
 import threading
 
-# Import modul inventory (punya kamu)
+# Import modul inventory
 from modules.inventory.forecaster import InventoryForecaster
 from modules.inventory.trainer import train_all_inventory_models, training_tasks
 
@@ -132,6 +134,50 @@ def train_inventory():
         "message": "Training dimulai. Gunakan /api/inventory/train/status/<task_id> untuk memantau."
     })
 
+@app.route('/api/inventory/save-all-forecasts', methods=['POST'])
+def save_all_forecasts():
+    try:
+        data = request.get_json()
+        store_id = data.get('store_id')
+        ingredient_id = data.get('ingredient_id')
+        periods = int(data.get('periods', 4))
+        freq = data.get('freq', 'W').upper()
+        if not store_id or not ingredient_id:
+            return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
+        fc = InventoryForecaster(store_id, ingredient_id)
+        success = fc.save_all_forecasts(periods=periods, freq=freq)
+        if success:
+            return jsonify({"status": "sukses", "pesan": "Semua forecast tersimpan"})
+        else:
+            return jsonify({"error": "Gagal menyimpan"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+@app.route('/api/inventory/save-all-existing', methods=['POST'])
+def save_all_existing_forecasts():
+    """Menyimpan ulang forecast untuk semua pasangan yang sudah punya model."""
+    model_dir = os.path.join(Config.MODEL_DIR, 'inventory')
+    if not os.path.isdir(model_dir):
+        return jsonify({"error": "Folder model tidak ditemukan"}), 500
 
+    pkl_files = [f for f in os.listdir(model_dir) if f.endswith('.pkl')]
+    if not pkl_files:
+        return jsonify({"error": "Tidak ada model tersimpan"}), 404
+
+    results = []
+    for filename in pkl_files:
+        # Nama file: model_store{store_id}_ingr{ingredient_id}.pkl
+        name_part = filename[len("model_store"):].replace('.pkl', '')
+        store_id, ingredient_id = name_part.split('_ingr')
+        
+        try:
+            fc = InventoryForecaster(store_id, ingredient_id)
+            fc.load_model()
+            fc.save_all_forecasts(periods=4, freq='W')
+            results.append({"pair": f"{store_id}/{ingredient_id}", "status": "saved"})
+        except Exception as e:
+            results.append({"pair": f"{store_id}/{ingredient_id}", "status": "error", "error": str(e)})
+
+    return jsonify({"status": "selesai", "details": results})
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)

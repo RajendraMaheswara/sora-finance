@@ -13,7 +13,7 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 
 from config import Config
-
+from datetime import datetime, timezone
 
 class InventoryForecaster:
     def __init__(self, store_id, ingredient_id, model_dir=None):
@@ -455,3 +455,168 @@ class InventoryForecaster:
             forecast_key:          forecast_array
         }
         return result
+    
+    # =========================================================================
+    # SAVE TO DATABASE
+    # ========================================================================= 
+
+    def save_all_forecasts(self, periods=4, freq='W'):
+        """
+        Prediksi sekali, simpan ke tiga tabel:
+        1. forecast_predictions  (dashboard)
+        2. forecast_runs         (tracking)
+        3. forecast_results      (evaluasi)
+        """
+        # 1. Prediksi satu kali
+        try:
+            result = self.predict(periods=periods, freq=freq)
+        except Exception as e:
+            print(f"[ERROR] Gagal prediksi {self.model_name}: {e}")
+            return False
+
+        metrics = result.get('metrics', {}) or {}
+        summary = result.get('forecast_summary', {})
+
+        # 2. Tentukan array forecast
+        if freq == 'D':
+            forecast_array = result.get('daily_forecast', [])
+            horizon_label = "daily"
+            horizon_days = periods
+            date_key = 'date'
+        elif freq == 'W':
+            forecast_array = result.get('weekly_forecast', [])
+            horizon_label = "weekly"
+            horizon_days = periods * 7
+            date_key = 'week_start'
+        elif freq == 'M':
+            forecast_array = result.get('monthly_forecast', [])
+            horizon_label = "monthly"
+            horizon_days = periods * 30
+            date_key = 'month_start'
+        else:
+            return False
+
+        if not forecast_array:
+            print("[ERROR] Array forecast kosong")
+            return False
+
+        # 3. Siapkan data untuk forecast_predictions
+        model_version = "1.0.0"  # bisa diganti dari config atau hasil tuning nanti
+        pred_rows = []
+        for item in forecast_array:
+            pred_rows.append({
+                "store_id":        self.store_id,
+                "module":          "inventory",
+                "horizon_label":   horizon_label,
+                "horizon_days":    horizon_days,
+                "prediction_date": item[date_key],
+                "predicted_value": item.get('predicted_usage', 0.0),
+                "lower_bound":     item.get('lower_bound') if item.get('lower_bound') is not None else 0.0,
+                "upper_bound":     item.get('upper_bound') if item.get('upper_bound') is not None else 0.0,
+                "mae":             metrics.get('mae') if metrics.get('mae') is not None else 0.0,
+                "rmse":            metrics.get('rmse') if metrics.get('rmse') is not None else 0.0,
+                "mape":            metrics.get('mape') if metrics.get('mape') is not None else 0.0,
+                "model_version":   model_version,
+            })
+
+        # 4. Kirim ke forecast_predictions
+        url_pred = f"{Config.BACKEND_API_URL}/forecast-predictions"
+        try:
+            resp = requests.post(url_pred, json={"predictions": pred_rows})
+            resp.raise_for_status()
+            print(f"[SAVED] {len(pred_rows)} baris → forecast_predictions")
+        except requests.RequestException as e:
+            print(f"[ERROR] Gagal simpan forecast_predictions: {e}")
+            # tetap lanjut ke tabel lain (optional)
+        
+        # 5. Siapkan data untuk forecast_runs
+        if self.model and hasattr(self.model, 'history') and not self.model.history.empty:
+            hist = self.model.history
+            train_start = hist['ds'].min().strftime('%Y-%m-%d')
+            train_end   = hist['ds'].max().strftime('%Y-%m-%d')
+        else:
+            train_start = train_end = 'unknown'
+
+        predict_start = forecast_array[0][date_key]
+        predict_end   = forecast_array[-1][date_key]
+
+        # menyiapkan json untuk metrics dan summary
+        now = datetime.now(timezone.utc).isoformat()
+        metrics_str = json.dumps(metrics) if metrics else "{}"
+        summary_str = json.dumps(summary) if summary else "{}"
+
+        data_quality = {
+            "date_range": {
+                "start": train_start,
+                "end": train_end
+            },
+            "training_rows": len(self.model.history) if self.model and hasattr(self.model, 'history') else 0,
+            "missing_dates_filled": 0
+        }
+        data_quality_str = json.dumps(data_quality)
+
+        run_payload = {
+            "store_id":          self.store_id,
+            "forecast_type":     "inventory",
+            "horizon_label":     horizon_label,
+            "horizon_days":      horizon_days,
+            "granularity":       "daily",
+            "model_name":        "prophet",
+            "model_version":     model_version,
+            "feature_version":   "v1",
+            "train_start_date":  train_start,
+            "train_end_date":    train_end,
+            "predict_start_date": predict_start,
+            "predict_end_date":   predict_end,
+            "metrics":           metrics_str,
+            "summary":           summary_str,
+            "data_quality":      data_quality_str,
+            "status":            "success",
+            "started_at":        now,
+            "finished_at":       now
+        }
+
+        # 6. Kirim ke forecast_runs
+        url_runs = f"{Config.BACKEND_API_URL}/forecast-runs"
+        run_id = None
+        try:
+            resp = requests.post(url_runs, json=run_payload)
+            resp.raise_for_status()
+            run_data = resp.json()
+            run_id = run_data.get('run_id')
+            if not run_id:
+                print("[ERROR] run_id tidak ditemukan")
+                return False
+            print(f"[SAVED] forecast_runs run_id={run_id}")
+        except requests.RequestException as e:
+            print(f"[ERROR] Gagal simpan forecast_runs: {e}")
+            return False
+
+        # 7. Siapkan data untuk forecast_results
+        results = []
+        for item in forecast_array:
+            # ambil confidence_score dari hasil predict
+            conf_score = result.get('model_confidence', {}).get('confidence_score', 0)
+            # bulatkan ke integer (atau biarkan float – sesuaikan dengan tipe di DB)
+            conf_level = int(round(conf_score))
+
+            results.append({
+                "target_date":      item[date_key],
+                "predicted_value":  item.get('predicted_usage', 0.0),
+                "lower_bound":      item.get('lower_bound'),
+                "upper_bound":      item.get('upper_bound'),
+                "confidence_level": conf_level,   # diambil dari metrik asli
+                "item_id":          self.ingredient_id,
+                "item_type":        "ingredient"
+            })
+
+        # 8. Kirim ke forecast_results
+        url_results = f"{Config.BACKEND_API_URL}/forecast-results"
+        try:
+            resp = requests.post(url_results, json={"run_id": run_id, "results": results})
+            resp.raise_for_status()
+            print(f"[SAVED] {len(results)} baris → forecast_results untuk run_id={run_id}")
+            return True
+        except requests.RequestException as e:
+            print(f"[ERROR] Gagal simpan forecast_results: {e}")
+            return False
