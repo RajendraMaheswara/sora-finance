@@ -3,7 +3,8 @@ import pandas as pd
 import numpy as np
 import joblib
 import os
-from datetime import timedelta
+import json
+from datetime import timedelta, datetime, timezone
 from config import Config
 
 class SalesForecaster:
@@ -204,7 +205,8 @@ class SalesForecaster:
             cl = max(0.0, 100.0 - ((s_sum/p_sum)*100)) if p_sum > 0 else 0
             label = f"{n_bulan[m.month-1]} {m.year}"
             res.append({
-                "period_identifier": str(m), 
+                # FIX DI SINI: Mengubah '2020-07' menjadi format lengkap '2020-07-01'
+                "period_identifier": m.start_time.strftime('%Y-%m-%d'), 
                 "period_label": label, 
                 "forecast_omzet_total": int(p_sum), 
                 "estimated_range": {"lower_bound": int(max(0, p_sum-(1.96*s_sum))), "upper_bound": int(p_sum+(1.96*s_sum))}, 
@@ -236,3 +238,123 @@ class SalesForecaster:
             "insights": [f"Prediksi {n_months} bulan ke depan.", f"Puncak omzet pada {h['period_label']}."], 
             "forecast_data": res
         }, None
+    # ==========================================
+    # SAVE TO DATABASE (GOLANG API)
+    # ==========================================
+    def save_forecast_to_db(self, store_id, granularity='daily', periods=1):
+        if granularity == 'daily':
+            result, err = self.predict_daily(store_id)
+            horizon_label = 'daily'
+            horizon_days = 7
+        elif granularity == 'weekly':
+            result, err = self.predict_weekly(store_id)
+            horizon_label = 'weekly'
+            horizon_days = 28
+        elif granularity == 'monthly':
+            result, err = self.predict_monthly(store_id, n_months=periods)
+            horizon_label = 'monthly'
+            horizon_days = periods * 30
+        else:
+            return False, "Granularity harus 'daily', 'weekly', atau 'monthly'"
+
+        if err and not isinstance(err, dict): return False, err
+
+        metrics = result.get('metrics', {})
+        summary = result.get('forecast_summary', {})
+        forecast_array = result.get('forecast_data', [])
+        
+        if not forecast_array:
+            return False, "Array forecast kosong, prediksi gagal."
+
+        model_version = "1.0.0"
+
+        # 1. Siapkan & Kirim ke forecast_predictions (Dashboard Cepat)
+        pred_rows = []
+        for item in forecast_array:
+            pred_rows.append({
+                "store_id": store_id,
+                "module": "sales",
+                "horizon_label": horizon_label,
+                "horizon_days": horizon_days,
+                "prediction_date": item['period_identifier'],
+                "predicted_value": float(item.get('forecast_omzet_total', 0)),
+                "lower_bound": float(item.get('estimated_range', {}).get('lower_bound', 0)),
+                "upper_bound": float(item.get('estimated_range', {}).get('upper_bound', 0)),
+                "mae": metrics.get('mae', 0.0),
+                "rmse": metrics.get('rmse', 0.0),
+                "mape": metrics.get('mape', 0.0),
+                "model_version": model_version,
+            })
+
+        try:
+            resp_pred = requests.post(f"{Config.BACKEND_API_URL}/forecast-predictions", json={"predictions": pred_rows})
+            resp_pred.raise_for_status()
+            print(f"[SAVED] {len(forecast_array)} baris ke forecast_predictions")
+        except Exception as e:
+            err_text = getattr(e.response, 'text', str(e)) if hasattr(e, 'response') and e.response else str(e)
+            print(f"[ERROR] Gagal simpan forecast_predictions: {err_text}")
+            return False, f"Gagal simpan forecast_predictions: {err_text}"
+
+        # 2. Siapkan & Kirim ke forecast_runs (Tabel Header/Induk)
+        now = datetime.now(timezone.utc).isoformat()
+        
+        md = self.global_model_data
+        train_end = "2024-12-31" 
+        if md and 'last_dates' in md and store_id in md['last_dates']:
+            train_end = md['last_dates'][store_id].strftime('%Y-%m-%d')
+
+        run_payload = {
+            "store_id": store_id,
+            "forecast_type": "sales",
+            "horizon_label": horizon_label,
+            "horizon_days": horizon_days,
+            "granularity": granularity,
+            "model_name": "random forest global",
+            "model_version": model_version,
+            "feature_version": "v1",
+            "train_start_date": "2020-01-01",
+            "train_end_date": train_end,
+            "predict_start_date": forecast_array[0]['period_identifier'],
+            "predict_end_date": forecast_array[-1]['period_identifier'],
+            "metrics": json.dumps(metrics),
+            "summary": json.dumps(summary),
+            "data_quality": json.dumps({"date_range": {"start": "2020-01-01", "end": train_end}}),
+            "status": "success",
+            "started_at": now,
+            "finished_at": now
+        }
+
+        run_id = None
+        try:
+            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-runs", json=run_payload)
+            resp.raise_for_status()
+            run_data = resp.json()
+            run_id = run_data.get('run_id') or run_data.get('data', {}).get('id')
+            if not run_id: return False, "Berhasil insert forecast_runs tapi run_id tidak kembali."
+            print(f"[SAVED] forecast_runs run_id={run_id}")
+        except Exception as e:
+            return False, f"Gagal simpan forecast_runs: {e}"
+
+        # 3. Siapkan & Kirim ke forecast_results (Tabel Detail Harian/Mingguan/Bulanan)
+        results_data = []
+        conf_score = result.get('model_confidence', {}).get('confidence_score', 0)
+        
+        for item in forecast_array:
+            results_data.append({
+                "target_date": item['period_identifier'],
+                "predicted_value": float(item.get('forecast_omzet_total', 0)),
+                "lower_bound": float(item.get('estimated_range', {}).get('lower_bound', 0)),
+                "upper_bound": float(item.get('estimated_range', {}).get('upper_bound', 0)),
+                "confidence_level": int(round(conf_score)),
+                "item_id": None, 
+                "item_type": "sales"
+            })
+
+        try:
+            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-results", json={"run_id": run_id, "results": results_data})
+            resp.raise_for_status()
+            print(f"[SAVED] {len(forecast_array)} baris ke forecast_results untuk run_id={run_id}")
+        except Exception as e:
+            return False, f"Gagal simpan forecast_results: {e}"
+
+        return True, f"Semua data forecast {granularity} berhasil disimpan ke database!"
