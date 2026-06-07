@@ -1,0 +1,89 @@
+# Secrets and env files
+.env
+*.env
+!.env.example
+
+# OS and IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.iml
+
+# Logs
+*.log
+logs/
+
+# Archives
+*.zip
+*.tar.gz
+*.rar
+
+# Temporary
+*.tmp
+*.swp
+*.swo
+*~
+
+# =====================
+# backend (Go)
+# =====================
+backend/bin/
+backend/pkg/
+backend/tmp/
+backend/dist/
+backend/coverage.out
+backend/*.exe
+backend/*.exe~
+backend/*.dll
+backend/*.so
+backend/*.dylib
+backend/*.test
+backend/*.out
+backend/.air*
+backend/vendor/
+
+# =====================
+# forecast-service (Python)
+# =====================
+forecast-service/__pycache__/
+forecast-service/*.py[cod]
+forecast-service/*$py.class
+forecast-service/.venv/
+forecast-service/venv/
+forecast-service/env/
+forecast-service/env.bak/
+forecast-service/.pytest_cache/
+forecast-service/.mypy_cache/
+forecast-service/.ruff_cache/
+forecast-service/.coverage
+forecast-service/.coverage.*
+forecast-service/htmlcov/
+forecast-service/.ipynb_checkpoints/
+forecast-service/saved_models/
+forecast-service/*.pkl
+forecast-service/*.h5
+forecast-service/*.pt
+forecast-service/*.ckpt
+
+# =====================
+# frontend (Flutter)
+# =====================
+frontend/.dart_tool/
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
+frontend/.pub-cache/
+frontend/.pub/
+frontend/build/
+frontend/coverage/
+
+frontend/android/.gradle/
+frontend/android/captures/
+frontend/android/local.properties
+frontend/android/app/debug/
+frontend/android/app/profile/
+frontend/android/app/release/
+
+frontend/ios/Pods/
+frontend/ios/.symlinks/
+frontend/ios/Flutter/ephemeral/
