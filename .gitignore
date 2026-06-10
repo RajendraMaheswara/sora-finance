@@ -46,25 +46,25 @@ backend/vendor/
 # =====================
 # forecast-service (Python)
 # =====================
-forecast-service/__pycache__/
-forecast-service/*.py[cod]
-forecast-service/*$py.class
-forecast-service/.venv/
-forecast-service/venv/
-forecast-service/env/
-forecast-service/env.bak/
-forecast-service/.pytest_cache/
-forecast-service/.mypy_cache/
-forecast-service/.ruff_cache/
-forecast-service/.coverage
-forecast-service/.coverage.*
-forecast-service/htmlcov/
-forecast-service/.ipynb_checkpoints/
-forecast-service/saved_models/
-forecast-service/*.pkl
-forecast-service/*.h5
-forecast-service/*.pt
-forecast-service/*.ckpt
+forecast-service/modules/visitors/__pycache__/
+forecast-service/modules/visitors/*.py[cod]
+forecast-service/modules/visitors/*$py.class
+forecast-service/modules/visitors/.venv/
+forecast-service/modules/visitors/venv/
+forecast-service/modules/visitors/env/
+forecast-service/modules/visitors/env.bak/
+forecast-service/modules/visitors/.pytest_cache/
+forecast-service/modules/visitors/.mypy_cache/
+forecast-service/modules/visitors/.ruff_cache/
+forecast-service/modules/visitors/.coverage
+forecast-service/modules/visitors/.coverage.*
+forecast-service/modules/visitors/htmlcov/
+forecast-service/modules/visitors/.ipynb_checkpoints/
+forecast-service/models/visitors/
+forecast-service/modules/visitors/*.pkl
+forecast-service/modules/visitors/*.h5
+forecast-service/modules/visitors/*.pt
+forecast-service/modules/visitors/*.ckpt
 
 # =====================
 # frontend (Flutter)
