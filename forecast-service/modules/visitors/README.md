@@ -39,7 +39,6 @@ forecast-service/modules/visitors/
 │   ├── forecast_client.go           # Go client untuk memanggil Python service
 │   └── forecast_handler.go          # Go HTTP handler (chi router)
 │
-├── train_manual.py                  # Script training mandiri (offline)
 ├── main.py                          # Entry point FastAPI
 ├── requirements.txt
 └── .env
@@ -88,15 +87,7 @@ python main.py
 uvicorn main:app --host 0.0.0.0 --port 5000 --reload
 ```
 
-### 4. Training Awal (Opsional — bisa via API)
 
-```bash
-# Menggunakan data dari Golang API
-python train_manual.py --store_id <UUID_STORE_ANDA>
-
-# Testing offline dengan data dummy
-python train_manual.py --store_id test-store-001 --use_dummy
-```
 
 ---
 

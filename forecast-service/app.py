@@ -8,9 +8,9 @@ import sys
 import asyncio
 from datetime import datetime, date
 
-from modules.visitors.app.services.forecast_service import forecast_service as visitors_forecast_service
-from modules.visitors.app.training.trainer import trainer as visitors_trainer
-from modules.visitors.app.services.golang_client import golang_client
+from modules.visitors.forecaster import forecast_service as visitors_forecast_service
+from modules.visitors.trainer import trainer as visitors_trainer
+from modules.visitors.forecaster import golang_client
 
 # Import modul inventory
 from modules.inventory.forecaster import InventoryForecaster
@@ -80,14 +80,53 @@ scheduler.start()
 atexit.register(lambda: scheduler.shutdown())
 
 # ============================================
-# ROUTE MODUL LAIN (VISITOR, SALES, dll.)
-# ============================================
-
-# ============================================
 # ROUTE MODUL VISITORS
 # ============================================
 
-@app.route('/api/forecast/visitors/predict', methods=['POST'])
+@app.route('/health', methods=['GET'])
+def health_check():
+    golang_reachable = asyncio.run(golang_client.is_reachable())
+    loaded_models = visitors_trainer.list_trained_stores()
+    return jsonify({
+        "status": "healthy" if golang_reachable else "degraded",
+        "service": "sora-forecast-service",
+        "version": "1.0.0",
+        "golang_api_reachable": golang_reachable,
+        "loaded_models": loaded_models,
+        "timestamp": datetime.utcnow().isoformat()
+    }), 200
+
+@app.route('/api/forecast/visitors/models', methods=['GET'])
+def visitors_list_models():
+    stores = visitors_trainer.list_trained_stores()
+    return jsonify({
+        "status": "success",
+        "trained_store_count": len(stores),
+        "store_ids": stores,
+    }), 200
+
+@app.route('/api/forecast/visitors/retrain', methods=['POST'])
+def visitors_retrain():
+    req = request.get_json()
+    if not req or 'store_id' not in req:
+        return jsonify({"detail": "store_id wajib diisi"}), 400
+    
+    store_id = req['store_id']
+    force = req.get('force', False)
+
+    try:
+        result = asyncio.run(visitors_forecast_service.retrain(
+            store_id=store_id,
+            force=force
+        ))
+        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"detail": f"Retrain gagal: {str(e)}"}), 500
+
+@app.route('/api/forecast/visitors/daily', methods=['POST'])
 def visitors_predict():
     req = request.get_json()
     if not req or 'store_id' not in req:
@@ -164,49 +203,6 @@ def visitors_predict_monthly():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
-
-@app.route('/api/forecast/visitors/retrain', methods=['POST'])
-def visitors_retrain():
-    req = request.get_json()
-    if not req or 'store_id' not in req:
-        return jsonify({"detail": "store_id wajib diisi"}), 400
-    
-    store_id = req['store_id']
-    force = req.get('force', False)
-
-    try:
-        result = asyncio.run(visitors_forecast_service.retrain(
-            store_id=store_id,
-            force=force
-        ))
-        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
-    except ValueError as e:
-        return jsonify({"detail": str(e)}), 400
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"detail": f"Retrain gagal: {str(e)}"}), 500
-
-@app.route('/api/forecast/visitors/models', methods=['GET'])
-def visitors_list_models():
-    stores = visitors_trainer.list_trained_stores()
-    return jsonify({
-        "status": "success",
-        "trained_store_count": len(stores),
-        "store_ids": stores,
-    }), 200
-
-@app.route('/health', methods=['GET'])
-def health_check():
-    golang_reachable = asyncio.run(golang_client.is_reachable())
-    loaded_models = visitors_trainer.list_trained_stores()
-    return jsonify({
-        "status": "healthy" if golang_reachable else "degraded",
-        "service": "sora-forecast-service",
-        "version": "1.0.0",
-        "golang_api_reachable": golang_reachable,
-        "loaded_models": loaded_models,
-        "timestamp": datetime.utcnow().isoformat()
-    }), 200
 
 # ============================================
 # ROUTE MODUL SALES (TRAINING)
