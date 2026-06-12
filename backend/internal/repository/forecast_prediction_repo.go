@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sora-finance-api/internal/models"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -45,7 +46,7 @@ func (r *ForecastPredictionRepository) GetAll(ctx context.Context) ([]models.For
 	return items, nil
 }
 
-func (r *ForecastPredictionRepository) GetByID(ctx context.Context, id int64) (*models.ForecastPrediction, error) {
+func (r *ForecastPredictionRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.ForecastPrediction, error) {
 	var item models.ForecastPrediction
 	err := r.db.QueryRow(ctx, `
 		SELECT id, store_id, module, horizon_label, horizon_days, prediction_date,
@@ -94,4 +95,36 @@ func (r *ForecastPredictionRepository) BulkInsert(ctx context.Context, predictio
 		}
 	}
 	return nil
+}
+
+func (r *ForecastPredictionRepository) GetByStore(ctx context.Context, storeID, module, horizonLabel string) ([]models.ForecastPrediction, error) {
+	query := `
+		SELECT id, store_id, module, horizon_label, horizon_days, prediction_date,
+		       predicted_value, lower_bound, upper_bound, mae, rmse, mape, model_version, created_at
+		FROM forecast_predictions
+		WHERE store_id = $1
+		  AND ($2 = '' OR module = $2)
+		  AND ($3 = '' OR horizon_label = $3)
+		ORDER BY module ASC, horizon_days ASC, prediction_date ASC
+	`
+	rows, err := r.db.Query(ctx, query, storeID, module, horizonLabel)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var items []models.ForecastPrediction
+	for rows.Next() {
+		var item models.ForecastPrediction
+		err := rows.Scan(
+			&item.ID, &item.StoreID, &item.Module, &item.HorizonLabel, &item.HorizonDays,
+			&item.PredictionDate, &item.PredictedValue, &item.LowerBound, &item.UpperBound,
+			&item.MAE, &item.RMSE, &item.MAPE, &item.ModelVersion, &item.CreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
 }

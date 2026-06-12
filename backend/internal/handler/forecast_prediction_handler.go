@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 	"sora-finance-api/internal/service"
 
@@ -88,5 +89,33 @@ func (h *ForecastPredictionHandler) Save(w http.ResponseWriter, r *http.Request)
 	respondWithJSON(w, http.StatusCreated, map[string]string{
 		"status":  "success",
 		"message": "Predictions saved",
+	})
+}
+
+func (h *ForecastPredictionHandler) GetMyStoreForecast(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		respondWithJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	if claims.StoreID == "" {
+		respondWithJSON(w, http.StatusForbidden, map[string]string{"error": "user tidak memiliki store_id"})
+		return
+	}
+
+	module := r.URL.Query().Get("module")
+	horizonLabel := r.URL.Query().Get("horizon_label")
+
+	items, err := h.service.GetByStore(r.Context(), claims.StoreID, module, horizonLabel)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"store_id":      claims.StoreID,
+		"module":        module,
+		"horizon_label": horizonLabel,
+		"data":          items,
 	})
 }

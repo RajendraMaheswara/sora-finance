@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 
+	authpkg "sora-finance-api/internal/auth"
 	"sora-finance-api/internal/handler"
 	"sora-finance-api/internal/repository"
 	"sora-finance-api/internal/service"
@@ -58,6 +59,14 @@ func main() {
 	userRepo := repository.NewUserRepository(pool)
 	userService := service.NewUserService(userRepo)
 	userHandler := handler.NewUserHandler(userService)
+
+	jwtSecret := os.Getenv("JWT_SECRET")
+	if jwtSecret == "" {
+		log.Println("WARNING: JWT_SECRET belum diatur. Gunakan value kuat di file .env sebelum production.")
+		jwtSecret = "dev-secret-change-me"
+	}
+	authService := service.NewAuthService(userRepo, jwtSecret)
+	authHandler := handler.NewAuthHandler(authService)
 
 	customerRepo := repository.NewCustomerRepository(pool)
 	customerService := service.NewCustomerService(customerRepo)
@@ -183,7 +192,6 @@ func main() {
 	salesMonthlySummaryService := service.NewSalesMonthlySummaryService(salesMonthlySummaryRepo)
 	salesMonthlySummaryHandler := handler.NewSalesMonthlySummaryHandler(salesMonthlySummaryService)
 
-
 	// Router
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -206,6 +214,19 @@ func main() {
 	r.Get("/swagger/*", httpSwagger.Handler(
 		httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
 	))
+
+	r.Route("/api/auth", func(r chi.Router) {
+		r.Post("/login", authHandler.Login)
+		r.Group(func(r chi.Router) {
+			r.Use(authpkg.Middleware(jwtSecret))
+			r.Get("/me", authHandler.Me)
+		})
+	})
+
+	r.Group(func(r chi.Router) {
+		r.Use(authpkg.Middleware(jwtSecret))
+		r.Get("/api/dashboard/forecast", forecastPredictionHandler.GetMyStoreForecast)
+	})
 
 	r.Route("/api/stores", func(r chi.Router) {
 		r.Get("/", storeHandler.GetAll)
@@ -346,7 +367,6 @@ func main() {
 	})
 	// -------------------------------------------
 
-
 	r.Route("/api/food-ingredients", func(r chi.Router) {
 		r.Get("/", foodIngredientHandler.GetAll)
 		r.Get("/{id}", foodIngredientHandler.GetByID)
@@ -453,9 +473,9 @@ func main() {
 		r.Get("/{id}", forecastResultHandler.GetByID)
 		r.Post("/", forecastResultHandler.BulkCreate)
 	})
-	
+
 	r.Route("/api/forecast-runs", func(r chi.Router) {
-    r.Post("/", forecastRunHandler.Create)
+		r.Post("/", forecastRunHandler.Create)
 	})
 
 	r.Route("/api/finance-monthly-summaries", func(r chi.Router) {

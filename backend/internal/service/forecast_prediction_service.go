@@ -5,7 +5,8 @@ import (
 	"errors"
 	"sora-finance-api/internal/models"
 	"sora-finance-api/internal/repository"
-	"strconv"
+
+	"github.com/google/uuid"
 )
 
 type ForecastPredictionService struct {
@@ -21,11 +22,11 @@ func (s *ForecastPredictionService) GetAll(ctx context.Context) ([]models.Foreca
 }
 
 func (s *ForecastPredictionService) GetByID(ctx context.Context, id string) (*models.ForecastPrediction, error) {
-	intID, err := strconv.ParseInt(id, 10, 64)
+	uuidID, err := uuid.Parse(id)
 	if err != nil {
-		return nil, errors.New("invalid id format")
+		return nil, errors.New("invalid uuid format")
 	}
-	return s.repo.GetByID(ctx, intID)
+	return s.repo.GetByID(ctx, uuidID)
 }
 
 // SavePredictions menghapus data lama lalu menyimpan prediksi baru
@@ -38,4 +39,11 @@ func (s *ForecastPredictionService) SavePredictions(ctx context.Context, predict
 		return err
 	}
 	return s.repo.BulkInsert(ctx, predictions)
+}
+
+func (s *ForecastPredictionService) GetByStore(ctx context.Context, storeID, module, horizonLabel string) ([]models.ForecastPrediction, error) {
+	if storeID == "" {
+		return nil, errors.New("store_id tidak ditemukan pada token")
+	}
+	return s.repo.GetByStore(ctx, storeID, module, horizonLabel)
 }

@@ -77,3 +77,25 @@ func (r *UserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Use
 	}
 	return &u, nil
 }
+func (r *UserRepository) FindByCredential(ctx context.Context, identifier, password string) (*models.AuthUser, error) {
+	var u models.AuthUser
+	err := r.db.QueryRow(ctx, `
+		SELECT u.id, u.m_store_id, u.m_role_id, u.username, u.name, u.email, s.name AS store_name
+		FROM m_users u
+		LEFT JOIN m_stores s ON s.id = u.m_store_id AND s.deleted_at IS NULL
+		WHERE (LOWER(u.username) = LOWER($1) OR LOWER(COALESCE(u.email, '')) = LOWER($1))
+		  AND u.password = extensions.crypt($2, u.password)
+		  AND u.is_active = true
+		  AND u.deleted_at IS NULL
+		LIMIT 1
+	`, identifier, password).Scan(
+		&u.ID, &u.StoreID, &u.RoleID, &u.Username, &u.Name, &u.Email, &u.StoreName,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &u, nil
+}
