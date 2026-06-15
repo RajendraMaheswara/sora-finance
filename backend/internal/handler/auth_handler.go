@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
@@ -40,4 +41,13 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respondWithJSON(w, http.StatusOK, claims)
+}
+
+func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+		auth.InvalidateToken(token)
+	}
+	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Logout berhasil"})
 }

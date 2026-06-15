@@ -9,10 +9,22 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"sora-finance-api/internal/models"
 )
+
+var tokenBlacklist sync.Map
+
+func InvalidateToken(token string) {
+	tokenBlacklist.Store(token, true)
+}
+
+func isTokenBlacklisted(token string) bool {
+	_, ok := tokenBlacklist.Load(token)
+	return ok
+}
 
 type contextKey string
 
@@ -104,6 +116,11 @@ func Middleware(secret string) func(http.Handler) http.Handler {
 			}
 
 			token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+			if isTokenBlacklisted(token) {
+				writeAuthError(w, http.StatusUnauthorized, "token has been logged out")
+				return
+			}
+
 			claims, err := ParseToken(secret, token)
 			if err != nil {
 				writeAuthError(w, http.StatusUnauthorized, err.Error())

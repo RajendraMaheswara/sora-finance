@@ -220,6 +220,7 @@ func main() {
 		r.Group(func(r chi.Router) {
 			r.Use(authpkg.Middleware(jwtSecret))
 			r.Get("/me", authHandler.Me)
+			r.Post("/logout", authHandler.Logout)
 		})
 	})
 
