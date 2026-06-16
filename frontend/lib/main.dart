@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-
-import 'pages/home_page.dart';
+import 'package:sora2/pages/auth/splash_page.dart';
 
 void main() {
   runApp(const MyApp());
@@ -18,7 +17,8 @@ class MyApp extends StatelessWidget {
         useMaterial3: true,
         colorSchemeSeed: Colors.indigo,
       ),
-      home: const HomePage(),
+     home: const SplashPage(),
     );
   }
+
 }

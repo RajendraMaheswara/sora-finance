@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:sora2/widgets/sidebar.dart';
 
 import '../../core/services/api_service.dart';
 import '../../models/visitor_forecast_model.dart';
+import '../../core/services/auth_service.dart';
 
 // ==========================================
 // KONFIGURASI
@@ -34,6 +36,7 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
   void initState() {
     super.initState();
     _future = _fetch();
+    _loadUser();
   }
 
   Future<VisitorForecastModel> _fetch() async {
@@ -47,6 +50,25 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
     });
   }
 
+  String _userName = 'Loading...';
+  String _name = 'User';
+
+  Future<void> _loadUser() async {
+  try {
+    final user = await AuthService().getCurrentUser();
+
+    setState(() {
+      _userName = user.username;
+      _name = user.name;
+    });
+  } catch (_) {
+    setState(() {
+      _userName = 'Guest';
+      _name = '-';
+    });
+  }
+}
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -54,7 +76,10 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const _FullSidebar(),
+          SidebarWidget(
+            userName: _userName,
+            name: _name,
+          ),
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(32, 24, 32, 32),
@@ -79,128 +104,6 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
                   );
                 },
               ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ==========================================
-// SIDEBAR (full menu)
-// ==========================================
-class _FullSidebar extends StatelessWidget {
-  const _FullSidebar();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 150,
-      color: Colors.white,
-      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          // Logo
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.eco, color: Colors.lightGreen[600], size: 22),
-              const SizedBox(width: 4),
-              Text(
-                'sora',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.lightGreen[700],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.grey.shade200, width: 2),
-              color: Colors.grey.shade200,
-            ),
-            child: const ClipOval(
-              child: Icon(Icons.person, size: 56, color: Colors.white),
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Aminah',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-          ),
-          const SizedBox(height: 2),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: const [
-              Text(
-                'Admin',
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              SizedBox(width: 4),
-              Text('🔴', style: TextStyle(fontSize: 9)),
-            ],
-          ),
-          const SizedBox(height: 28),
-
-          // Active menu: Dasbor saja
-          const _SidebarItem(
-            icon: Icons.pie_chart,
-            title: 'Dasbor',
-            isActive: true,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SidebarItem extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final bool isActive;
-  const _SidebarItem({
-    required this.icon,
-    required this.title,
-    this.isActive = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 70,
-      height: 70,
-      decoration: BoxDecoration(
-        color: isActive ? _kPrimaryGreen : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            icon,
-            color: isActive ? Colors.white : Colors.grey[700],
-            size: 26,
-          ),
-          const SizedBox(height: 4),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: isActive ? Colors.white : Colors.grey[700],
             ),
           ),
         ],
@@ -984,7 +887,7 @@ class _HistoricalBarChart extends StatelessWidget {
         barTouchData: BarTouchData(
           enabled: true,
           touchTooltipData: BarTouchTooltipData(
-            getTooltipItem: (group, _, rod, __) => BarTooltipItem(
+            getTooltipItem: (group, _, rod, _) => BarTooltipItem(
               rod.toY.toStringAsFixed(0),
               const TextStyle(color: Colors.white, fontSize: 11),
             ),
