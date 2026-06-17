@@ -78,6 +78,17 @@ func (r *ForecastPredictionRepository) DeleteByStoreAndModule(ctx context.Contex
 
 // BulkInsert menyimpan banyak prediksi sekaligus
 func (r *ForecastPredictionRepository) BulkInsert(ctx context.Context, predictions []models.ForecastPredictionInput) error {
+	if len(predictions) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	batch := &pgx.Batch{}
 	query := `
 		INSERT INTO forecast_predictions 
 			(store_id, module, horizon_label, horizon_days, prediction_date, 
@@ -85,16 +96,23 @@ func (r *ForecastPredictionRepository) BulkInsert(ctx context.Context, predictio
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
 	for _, p := range predictions {
-		_, err := r.db.Exec(ctx, query,
+		batch.Queue(query, 
 			p.StoreID, p.Module, p.HorizonLabel, p.HorizonDays,
 			p.PredictionDate, p.PredictedValue, p.LowerBound, p.UpperBound,
 			p.MAE, p.RMSE, p.MAPE, p.ModelVersion,
 		)
-		if err != nil {
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	for range predictions {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
 			return err
 		}
 	}
-	return nil
+	br.Close()
+
+	return tx.Commit(ctx)
 }
 
 func (r *ForecastPredictionRepository) GetByStore(ctx context.Context, storeID, module, horizonLabel string) ([]models.ForecastPrediction, error) {

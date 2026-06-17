@@ -67,6 +67,17 @@ func (r *ForecastResultRepository) GetByID(ctx context.Context, id int64) (*mode
 }
 
 func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, items []models.ForecastResultInput) error {
+    if len(items) == 0 {
+        return nil
+    }
+
+    tx, err := r.db.Begin(ctx)
+    if err != nil {
+        return err
+    }
+    defer tx.Rollback(ctx)
+
+    batch := &pgx.Batch{}
     query := `
         INSERT INTO forecast_results (
             run_id, target_date, predicted_value, lower_bound, upper_bound,
@@ -74,13 +85,20 @@ func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, 
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
     `
     for _, item := range items {
-        _, err := r.db.Exec(ctx, query,
+        batch.Queue(query,
             runID, item.TargetDate, item.PredictedValue, item.LowerBound, item.UpperBound,
             item.ConfidenceLevel, item.ItemID, item.ItemType,
         )
-        if err != nil {
+    }
+
+    br := tx.SendBatch(ctx, batch)
+    for range items {
+        if _, err := br.Exec(); err != nil {
+            br.Close()
             return err
         }
     }
-    return nil
+    br.Close()
+
+    return tx.Commit(ctx)
 }

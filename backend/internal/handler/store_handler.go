@@ -26,7 +26,7 @@ func NewStoreHandler(service *service.StoreService) *StoreHandler {
 func (h *StoreHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	stores, err := h.service.GetAll(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, stores)
@@ -46,11 +46,11 @@ func (h *StoreHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	store, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
 	if store == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "store not found"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, store)

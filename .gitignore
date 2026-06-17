@@ -75,7 +75,6 @@ package-lock.json
 # =====================
 backend/.env
 backend/bin/
-backend/pkg/
 backend/tmp/
 backend/dist/
 backend/coverage.out

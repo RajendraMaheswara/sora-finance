@@ -20,6 +20,7 @@ func NewAuthHandler(service *service.AuthService) *AuthHandler {
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1_048_576) // Limit 1MB
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
 		return

@@ -15,6 +15,8 @@ import (
 	"sora-finance-api/internal/models"
 )
 
+// tokenBlacklist is an in-memory store for blacklisted tokens.
+// LIMITATION: This will be reset if the server restarts. In production, use Redis.
 var tokenBlacklist sync.Map
 
 func InvalidateToken(token string) {

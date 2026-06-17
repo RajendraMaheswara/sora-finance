@@ -23,7 +23,7 @@ type User struct {
 	IsPhoneVerified        bool       `json:"is_phone_verified"`
 	Name                   string     `json:"name"`
 	NIP                    *string    `json:"nip,omitempty"`
-	Password               string     `json:"password,omitempty"` // omit from response
+	Password               string     `json:"-"` // NEVER expose password in API response
 	Phone                  *string    `json:"phone,omitempty"`
 	PhoneVerifiedAt        *time.Time `json:"phone_verified_at,omitempty"`
 	Username               string     `json:"username"`
