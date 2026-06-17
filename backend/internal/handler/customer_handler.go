@@ -26,7 +26,7 @@ func NewCustomerHandler(service *service.CustomerService) *CustomerHandler {
 func (h *CustomerHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	customers, err := h.service.GetAll(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, customers)
@@ -46,11 +46,11 @@ func (h *CustomerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	customer, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if customer == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, customer)

@@ -28,7 +28,7 @@ func NewForecastResultHandler(service *service.ForecastResultService) *ForecastR
 func (h *ForecastResultHandler) GetAll(w http.ResponseWriter, r *http.Request) {
     items, err := h.service.GetAll(r.Context())
     if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
+        respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
         return
     }
     respondWithJSON(w, http.StatusOK, items)
@@ -48,11 +48,11 @@ func (h *ForecastResultHandler) GetByID(w http.ResponseWriter, r *http.Request) 
     id := chi.URLParam(r, "id")
     item, err := h.service.GetByID(r.Context(), id)
     if err != nil {
-        http.Error(w, err.Error(), http.StatusBadRequest)
+        respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
         return
     }
     if item == nil {
-        http.Error(w, "not found", http.StatusNotFound)
+        respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
         return
     }
     respondWithJSON(w, http.StatusOK, item)
