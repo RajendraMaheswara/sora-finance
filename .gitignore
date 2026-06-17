@@ -32,6 +32,7 @@ logs/
 # Database
 *.sqlite3
 *.db
+*.sql
 
 # Jupyter
 .ipynb_checkpoints/
@@ -50,6 +51,16 @@ venv/
 env/
 .venv/
 env.bak/
+
+# Node.js / Web
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+package.json
+package-lock.json
 
 # Go / General
 *.exe
@@ -97,7 +108,7 @@ forecast-service/.coverage.*
 forecast-service/htmlcov/
 forecast-service/.ipynb_checkpoints/
 forecast-service/saved_models/
-forecast-service/models/visitors/
+forecast-service/models/
 forecast-service/**/*.pkl
 forecast-service/**/*.h5
 forecast-service/**/*.pt
