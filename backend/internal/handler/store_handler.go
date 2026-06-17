@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"sora-finance-api/internal/service"
 
 	"github.com/go-chi/chi/v5"
@@ -20,11 +21,16 @@ func NewStoreHandler(service *service.StoreService) *StoreHandler {
 // @Description  Mengembalikan daftar semua store yang aktif
 // @Tags         Stores
 // @Produce      json
+// @Param        page   query     int  false  "Page number"
+// @Param        limit  query     int  false  "Limit per page"
 // @Success      200  {array}  models.Store
 // @Failure      500  {object}  map[string]interface{}
 // @Router       /stores [get]
 func (h *StoreHandler) GetAll(w http.ResponseWriter, r *http.Request) {
-	stores, err := h.service.GetAll(r.Context())
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	stores, err := h.service.GetAll(r.Context(), page, limit)
 	if err != nil {
 		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return

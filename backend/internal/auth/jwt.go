@@ -9,23 +9,36 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"sora-finance-api/internal/models"
+
+	"github.com/redis/go-redis/v9"
 )
 
-// tokenBlacklist is an in-memory store for blacklisted tokens.
-// LIMITATION: This will be reset if the server restarts. In production, use Redis.
-var tokenBlacklist sync.Map
+var redisClient *redis.Client
 
-func InvalidateToken(token string) {
-	tokenBlacklist.Store(token, true)
+func InitRedis(client *redis.Client) {
+	redisClient = client
+}
+
+func InvalidateToken(token string, exp time.Time) {
+	if redisClient != nil {
+		ttl := time.Until(exp)
+		if ttl > 0 {
+			redisClient.Set(context.Background(), "blacklist:"+token, "true", ttl)
+		}
+	}
 }
 
 func isTokenBlacklisted(token string) bool {
-	_, ok := tokenBlacklist.Load(token)
-	return ok
+	if redisClient != nil {
+		val, err := redisClient.Get(context.Background(), "blacklist:"+token).Result()
+		if err == nil && val == "true" {
+			return true
+		}
+	}
+	return false
 }
 
 type contextKey string

@@ -4,11 +4,13 @@ import (
 	"log"
 	"os"
 
+	authpkg "sora-finance-api/internal/auth"
 	"sora-finance-api/internal/handler"
 	"sora-finance-api/internal/repository"
 	"sora-finance-api/internal/service"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/redis/go-redis/v9"
 )
 
 type AppDependencies struct {
@@ -62,6 +64,20 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 	if jwtSecret == "" {
 		log.Fatal("FATAL: JWT_SECRET environment variable is required")
 	}
+
+	redisURL := os.Getenv("REDIS_URL")
+	if redisURL != "" {
+		opt, err := redis.ParseURL(redisURL)
+		if err != nil {
+			log.Fatalf("FATAL: Failed to parse REDIS_URL: %v", err)
+		}
+		redisClient := redis.NewClient(opt)
+		authpkg.InitRedis(redisClient)
+		log.Println("Redis initialized for token blacklist")
+	} else {
+		log.Println("WARNING: REDIS_URL not set, token blacklist will not be persistent across restarts")
+	}
+
 	authService := service.NewAuthService(userRepo, jwtSecret)
 	authHandler := handler.NewAuthHandler(authService)
 

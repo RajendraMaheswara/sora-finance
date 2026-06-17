@@ -4,11 +4,13 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	authpkg "sora-finance-api/internal/auth"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/go-chi/httprate"
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
@@ -74,7 +76,8 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 	))
 
 	r.Route("/api/auth", func(r chi.Router) {
-		r.Post("/login", deps.AuthHandler.Login)
+		// Limit login to 5 requests per minute per IP
+		r.With(httprate.LimitByIP(5, 1*time.Minute)).Post("/login", deps.AuthHandler.Login)
 		r.Group(func(r chi.Router) {
 			r.Use(authpkg.Middleware(deps.JWTSecret))
 			r.Get("/me", deps.AuthHandler.Me)

@@ -18,7 +18,15 @@ func NewOrderRepository(db *pgxpool.Pool) *OrderRepository {
 	return &OrderRepository{db: db}
 }
 
-func (r *OrderRepository) GetAll(ctx context.Context) ([]models.Order, error) {
+func (r *OrderRepository) GetAll(ctx context.Context, page, limit int) ([]models.Order, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 100
+	}
+	offset := (page - 1) * limit
+
 	rows, err := r.db.Query(ctx, `
 		SELECT id, m_store_id, m_customer_id, m_table_id, m_store_payment_method_id, m_menu_online_order_type_id,
 		       m_store_regulation_ids, m_order_status_id, m_order_payment_status_id, m_cashier_id, order_number,
@@ -29,7 +37,8 @@ func (r *OrderRepository) GetAll(ctx context.Context) ([]models.Order, error) {
 		FROM t_orders
 		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
-	`)
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
 	if err != nil {
 		return nil, err
 	}

@@ -18,8 +18,16 @@ func NewStoreRepository(db *pgxpool.Pool) *StoreRepository {
 	return &StoreRepository{db: db}
 }
 
-// GetAll mengambil semua store yang belum dihapus (soft delete)
-func (r *StoreRepository) GetAll(ctx context.Context) ([]models.Store, error) {
+// GetAll mengambil semua store yang belum dihapus (soft delete) dengan pagination
+func (r *StoreRepository) GetAll(ctx context.Context, page, limit int) ([]models.Store, error) {
+	if page < 1 {
+		page = 1
+	}
+	if limit < 1 {
+		limit = 100 // default limit
+	}
+	offset := (page - 1) * limit
+
 	rows, err := r.db.Query(ctx, `
 		SELECT id, m_subscription_type_id, coins, expired_date, is_active, name,
 		       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by,
@@ -27,7 +35,8 @@ func (r *StoreRepository) GetAll(ctx context.Context) ([]models.Store, error) {
 		FROM m_stores
 		WHERE deleted_at IS NULL
 		ORDER BY created_at DESC
-	`)
+		LIMIT $1 OFFSET $2
+	`, limit, offset)
 	if err != nil {
 		return nil, err
 	}

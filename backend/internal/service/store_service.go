@@ -17,8 +17,8 @@ func NewStoreService(repo *repository.StoreRepository) *StoreService {
 	return &StoreService{repo: repo}
 }
 
-func (s *StoreService) GetAll(ctx context.Context) ([]models.Store, error) {
-	return s.repo.GetAll(ctx)
+func (s *StoreService) GetAll(ctx context.Context, page, limit int) ([]models.Store, error) {
+	return s.repo.GetAll(ctx, page, limit)
 }
 
 func (s *StoreService) GetByID(ctx context.Context, id string) (*models.Store, error) {
