@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
 	"github.com/google/uuid"
@@ -19,14 +20,21 @@ func NewSalesMonthlySummaryRepository(db *pgxpool.Pool) *SalesMonthlySummaryRepo
 }
 
 func (r *SalesMonthlySummaryRepository) GetAll(ctx context.Context) ([]models.SalesMonthlySummary, error) {
-	rows, err := r.db.Query(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, date, total_omzet, total_hpp, total_profit, total_discount,
 		       total_regulation, total_transaction, created_at, created_by, updated_at, updated_by,
 		       deleted_at, deleted_by, total_rounding
 		FROM t_sales_monthly_summaries
-		WHERE deleted_at IS NULL
-		ORDER BY created_at DESC
-	`)
+		WHERE deleted_at IS NULL`
+	var args []interface{}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $1`
+		args = append(args, claims.StoreID)
+	}
+	query += `
+		ORDER BY created_at DESC`
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -50,13 +58,20 @@ func (r *SalesMonthlySummaryRepository) GetAll(ctx context.Context) ([]models.Sa
 
 func (r *SalesMonthlySummaryRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.SalesMonthlySummary, error) {
 	var item models.SalesMonthlySummary
-	err := r.db.QueryRow(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, date, total_omzet, total_hpp, total_profit, total_discount,
 		       total_regulation, total_transaction, created_at, created_by, updated_at, updated_by,
 		       deleted_at, deleted_by, total_rounding
 		FROM t_sales_monthly_summaries
 		WHERE id = $1 AND deleted_at IS NULL
-	`, id).Scan(
+	`
+	args := []interface{}{id}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $2`
+		args = append(args, claims.StoreID)
+	}
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.StoreID, &item.Date, &item.TotalOmzet, &item.TotalHpp, &item.TotalProfit,
 		&item.TotalDiscount, &item.TotalRegulation, &item.TotalTransaction, &item.CreatedAt, &item.CreatedBy,
 		&item.UpdatedAt, &item.UpdatedBy, &item.DeletedAt, &item.DeletedBy, &item.TotalRounding,

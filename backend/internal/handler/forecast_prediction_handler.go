@@ -75,10 +75,23 @@ type bulkPredictionsRequest struct {
 // @Failure      500   {object}  map[string]interface{}
 // @Router       /forecast-predictions [post]
 func (h *ForecastPredictionHandler) Save(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req bulkPredictionsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
 		return
+	}
+
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		respondWithJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	for i := range req.Predictions {
+		if !auth.IsSystemAdmin(claims) {
+			req.Predictions[i].StoreID = claims.StoreID
+		}
 	}
 
 	if err := h.service.SavePredictions(r.Context(), req.Predictions); err != nil {

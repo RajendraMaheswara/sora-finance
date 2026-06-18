@@ -14,6 +14,14 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger"
 )
 
+func envBool(key string, defaultValue bool) bool {
+	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
+	if value == "" {
+		return defaultValue
+	}
+	return value == "1" || value == "true" || value == "yes" || value == "on"
+}
+
 func setupRouter(deps *AppDependencies) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -21,6 +29,8 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 
 	// Security & CORS Middleware
 	allowedOriginsStr := os.Getenv("ALLOWED_ORIGINS")
+	appEnv := strings.ToLower(strings.TrimSpace(os.Getenv("APP_ENV")))
+	isProd := appEnv == "production" || appEnv == "prod"
 	var allowedOrigins []string
 	if allowedOriginsStr != "" {
 		allowedOrigins = strings.Split(allowedOriginsStr, ",")
@@ -30,25 +40,27 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
 			allow := false
-			if len(allowedOrigins) == 0 {
-				allow = true // Fallback: if not set, allow all
-			} else {
-				for _, o := range allowedOrigins {
-					if strings.TrimSpace(o) == origin {
-						allow = true
-						break
+
+			if origin != "" {
+				if len(allowedOrigins) == 0 && !isProd {
+					allow = true
+				} else {
+					for _, o := range allowedOrigins {
+						if strings.TrimSpace(o) == origin {
+							allow = true
+							break
+						}
 					}
 				}
 			}
 
 			if allow {
 				w.Header().Set("Access-Control-Allow-Origin", origin)
-			} else if len(allowedOrigins) == 0 {
-				w.Header().Set("Access-Control-Allow-Origin", "*")
+				w.Header().Set("Vary", "Origin")
 			}
 
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Service-Key")
 
 			// Security Headers
 			w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -71,9 +83,11 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 		w.Write([]byte(`{"status": "ok"}`))
 	})
 
-	r.Get("/swagger/*", httpSwagger.Handler(
-		httpSwagger.URL("http://localhost:8080/swagger/doc.json"),
-	))
+	if envBool("ENABLE_SWAGGER", !isProd) {
+		r.Get("/swagger/*", httpSwagger.Handler(
+			httpSwagger.URL("/swagger/doc.json"),
+		))
+	}
 
 	r.Route("/api/auth", func(r chi.Router) {
 		// Limit login to 5 requests per minute per IP
@@ -87,6 +101,7 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 
 	r.Group(func(r chi.Router) {
 		r.Use(authpkg.Middleware(deps.JWTSecret))
+		r.Use(authpkg.StoreMiddleware)
 		r.Get("/api/dashboard/forecast", deps.ForecastPredictionHandler.GetMyStoreForecast)
 
 		r.Route("/api/stores", func(r chi.Router) {
@@ -104,10 +119,12 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/{id}", deps.CustomerHandler.GetByID)
 		})
 
-		r.Route("/api/test-table", func(r chi.Router) {
-			r.Get("/", deps.TestTableHandler.GetAll)
-			r.Get("/{id}", deps.TestTableHandler.GetByID)
-		})
+		if envBool("ENABLE_TEST_ROUTES", !isProd) {
+			r.Route("/api/test-table", func(r chi.Router) {
+				r.Get("/", deps.TestTableHandler.GetAll)
+				r.Get("/{id}", deps.TestTableHandler.GetByID)
+			})
+		}
 
 		r.Route("/api/food-ingredients", func(r chi.Router) {
 			r.Get("/", deps.FoodIngredientHandler.GetAll)

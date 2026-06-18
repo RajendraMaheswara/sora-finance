@@ -42,6 +42,7 @@ type AuthUser struct {
 	Name      string     `json:"name"`
 	Email     *string    `json:"email,omitempty"`
 	StoreName *string    `json:"store_name,omitempty"`
+	RoleName  *string    `json:"role_name,omitempty"`
 }
 
 type LoginRequest struct {

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"sora-finance-api/internal/models"
@@ -17,28 +18,47 @@ import (
 )
 
 var redisClient *redis.Client
+var localBlacklist sync.Map // token string -> exp unix seconds; fallback when Redis is not configured
 
 func InitRedis(client *redis.Client) {
 	redisClient = client
 }
 
 func InvalidateToken(token string, exp time.Time) {
-	if redisClient != nil {
-		ttl := time.Until(exp)
-		if ttl > 0 {
-			redisClient.Set(context.Background(), "blacklist:"+token, "true", ttl)
-		}
+	ttl := time.Until(exp)
+	if ttl <= 0 {
+		return
 	}
+
+	if redisClient != nil {
+		_ = redisClient.Set(context.Background(), "blacklist:"+token, "true", ttl).Err()
+		return
+	}
+
+	// Development/single-instance fallback. This makes logout work locally,
+	// but production should use Redis so the blacklist survives restarts and
+	// works across multiple backend instances.
+	localBlacklist.Store(token, exp.Unix())
 }
 
 func isTokenBlacklisted(token string) bool {
 	if redisClient != nil {
 		val, err := redisClient.Get(context.Background(), "blacklist:"+token).Result()
-		if err == nil && val == "true" {
-			return true
-		}
+		return err == nil && val == "true"
 	}
-	return false
+
+	value, ok := localBlacklist.Load(token)
+	if !ok {
+		return false
+	}
+
+	expUnix, ok := value.(int64)
+	if !ok || expUnix <= time.Now().Unix() {
+		localBlacklist.Delete(token)
+		return false
+	}
+
+	return true
 }
 
 type contextKey string
@@ -48,8 +68,10 @@ const claimsContextKey contextKey = "auth_claims"
 type Claims struct {
 	UserID    string `json:"user_id"`
 	StoreID   string `json:"store_id,omitempty"`
+	RoleID    string `json:"role_id,omitempty"`
 	Username  string `json:"username"`
 	Name      string `json:"name"`
+	RoleName  string `json:"role_name,omitempty"`
 	ExpiresAt int64  `json:"exp"`
 }
 
@@ -63,6 +85,16 @@ func GenerateToken(secret string, user *models.AuthUser, ttl time.Duration) (str
 		storeID = user.StoreID.String()
 	}
 
+	roleID := ""
+	if user.RoleID != nil {
+		roleID = user.RoleID.String()
+	}
+
+	roleName := ""
+	if user.RoleName != nil {
+		roleName = *user.RoleName
+	}
+
 	header := map[string]string{
 		"alg": "HS256",
 		"typ": "JWT",
@@ -70,8 +102,10 @@ func GenerateToken(secret string, user *models.AuthUser, ttl time.Duration) (str
 	claims := Claims{
 		UserID:    user.ID.String(),
 		StoreID:   storeID,
+		RoleID:    roleID,
 		Username:  user.Username,
 		Name:      user.Name,
+		RoleName:  roleName,
 		ExpiresAt: time.Now().Add(ttl).Unix(),
 	}
 

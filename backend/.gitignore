@@ -1,0 +1,24 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Build output
+bin/
+build/
+dist/
+*.exe
+*.out
+
+# Database dumps
+*.sql
+*.dump
+*.backup
+
+# Logs / temp
+*.log
+tmp/
+.DS_Store
+
+# Go cache/vendor generated locally
+coverage.out
