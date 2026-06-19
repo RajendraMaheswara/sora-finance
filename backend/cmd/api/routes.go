@@ -273,5 +273,74 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 		})
 	})
 
+	// Internal routes for forecast-service machine-to-machine communication.
+	// These routes do not use user JWT. They require:
+	// - X-Service-Key matching INTERNAL_SERVICE_KEY
+	// - store_id/m_store_id or X-Store-ID so repository filtering still scopes data to one store.
+	r.Route("/internal", func(r chi.Router) {
+		r.Use(authpkg.ServiceKeyMiddleware(deps.InternalServiceKey))
+
+		r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`{"status":"ok","service":"backend-internal"}`))
+		})
+
+		r.Route("/forecast", func(r chi.Router) {
+			r.Use(authpkg.ForecastStoreScopeMiddleware)
+
+			// Read endpoints used by forecast-service for training/prediction data.
+			r.Get("/stores", deps.StoreHandler.GetAll)
+			r.Get("/stores/{id}", deps.StoreHandler.GetByID)
+			r.Get("/orders", deps.OrderHandler.GetAll)
+			r.Get("/orders/{id}", deps.OrderHandler.GetByID)
+			r.Get("/order-items", deps.OrderItemHandler.GetAll)
+			r.Get("/order-items/{id}", deps.OrderItemHandler.GetByID)
+			r.Get("/food-ingredients", deps.FoodIngredientHandler.GetAll)
+			r.Get("/food-ingredients/{id}", deps.FoodIngredientHandler.GetByID)
+			r.Get("/ingredient-stock-histories", deps.IngredientStockHistoryHandler.GetAll)
+			r.Get("/ingredient-stock-histories/{id}", deps.IngredientStockHistoryHandler.GetByID)
+			r.Get("/sales-daily-summaries", deps.SalesDailySummaryHandler.GetAll)
+			r.Get("/sales-daily-summaries/{id}", deps.SalesDailySummaryHandler.GetByID)
+			r.Get("/sales-monthly-summaries", deps.SalesMonthlySummaryHandler.GetAll)
+			r.Get("/sales-monthly-summaries/{id}", deps.SalesMonthlySummaryHandler.GetByID)
+			r.Get("/forecast-predictions", deps.ForecastPredictionHandler.GetAll)
+			r.Get("/forecast-predictions/{id}", deps.ForecastPredictionHandler.GetByID)
+			r.Get("/forecast-results", deps.ForecastResultHandler.GetAll)
+			r.Get("/forecast-results/{id}", deps.ForecastResultHandler.GetByID)
+
+			// Write endpoints used by forecast-service to save forecast output.
+			r.Post("/forecast-predictions", deps.ForecastPredictionHandler.Save)
+			r.Post("/forecast-runs", deps.ForecastRunHandler.Create)
+			r.Post("/forecast-results", deps.ForecastResultHandler.BulkCreate)
+		})
+
+		// Backward-compatible alias for earlier Phase 3 drafts.
+		r.Route("/api", func(r chi.Router) {
+			r.Use(authpkg.ForecastStoreScopeMiddleware)
+			r.Get("/stores", deps.StoreHandler.GetAll)
+			r.Get("/stores/{id}", deps.StoreHandler.GetByID)
+			r.Get("/orders", deps.OrderHandler.GetAll)
+			r.Get("/orders/{id}", deps.OrderHandler.GetByID)
+			r.Get("/order-items", deps.OrderItemHandler.GetAll)
+			r.Get("/order-items/{id}", deps.OrderItemHandler.GetByID)
+			r.Get("/food-ingredients", deps.FoodIngredientHandler.GetAll)
+			r.Get("/food-ingredients/{id}", deps.FoodIngredientHandler.GetByID)
+			r.Get("/ingredient-stock-histories", deps.IngredientStockHistoryHandler.GetAll)
+			r.Get("/ingredient-stock-histories/{id}", deps.IngredientStockHistoryHandler.GetByID)
+			r.Get("/sales-daily-summaries", deps.SalesDailySummaryHandler.GetAll)
+			r.Get("/sales-daily-summaries/{id}", deps.SalesDailySummaryHandler.GetByID)
+			r.Get("/sales-monthly-summaries", deps.SalesMonthlySummaryHandler.GetAll)
+			r.Get("/sales-monthly-summaries/{id}", deps.SalesMonthlySummaryHandler.GetByID)
+			r.Get("/forecast-predictions", deps.ForecastPredictionHandler.GetAll)
+			r.Get("/forecast-predictions/{id}", deps.ForecastPredictionHandler.GetByID)
+			r.Get("/forecast-results", deps.ForecastResultHandler.GetAll)
+			r.Get("/forecast-results/{id}", deps.ForecastResultHandler.GetByID)
+			r.Post("/forecast-predictions", deps.ForecastPredictionHandler.Save)
+			r.Post("/forecast-runs", deps.ForecastRunHandler.Create)
+			r.Post("/forecast-results", deps.ForecastResultHandler.BulkCreate)
+		})
+	})
+
 	return r
 }

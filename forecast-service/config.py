@@ -5,15 +5,6 @@ load_dotenv()
 
 class Config:
     BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://localhost:8080/api')
-
-    # Forecast execution mode
-    # manual    = scheduler mati, forecast hanya jalan ketika endpoint dipanggil manual
-    # scheduler = scheduler aktif bila ENABLE_FORECAST_SCHEDULER=true
-    FORECAST_MODE = os.getenv('FORECAST_MODE', 'manual').lower()
-    ENABLE_FORECAST_SCHEDULER = os.getenv('ENABLE_FORECAST_SCHEDULER', 'false').lower() == 'true'
-    FORECAST_RUN_AFTER_CLOSE_MINUTES = int(os.getenv('FORECAST_RUN_AFTER_CLOSE_MINUTES', 60))
-    FORECAST_24H_RUN_TIME = os.getenv('FORECAST_24H_RUN_TIME', '02:00')
-    BACKEND_REQUEST_TIMEOUT_SECONDS = int(os.getenv('BACKEND_REQUEST_TIMEOUT_SECONDS', 30))
     
     # Inventory Configs
     MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models')
