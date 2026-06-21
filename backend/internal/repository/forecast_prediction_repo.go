@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
 	"github.com/google/uuid"
@@ -19,12 +20,21 @@ func NewForecastPredictionRepository(db *pgxpool.Pool) *ForecastPredictionReposi
 }
 
 func (r *ForecastPredictionRepository) GetAll(ctx context.Context) ([]models.ForecastPrediction, error) {
-	rows, err := r.db.Query(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, store_id, module, horizon_label, horizon_days, prediction_date,
 		       predicted_value, lower_bound, upper_bound, mae, rmse, mape, model_version, created_at
 		FROM forecast_predictions
-		ORDER BY created_at DESC
-	`)
+        WHERE 1=1
+	`
+	var args []interface{}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND store_id = $1`
+		args = append(args, claims.StoreID)
+	}
+	query += ` ORDER BY created_at DESC`
+
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -48,12 +58,20 @@ func (r *ForecastPredictionRepository) GetAll(ctx context.Context) ([]models.For
 
 func (r *ForecastPredictionRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.ForecastPrediction, error) {
 	var item models.ForecastPrediction
-	err := r.db.QueryRow(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, store_id, module, horizon_label, horizon_days, prediction_date,
 		       predicted_value, lower_bound, upper_bound, mae, rmse, mape, model_version, created_at
 		FROM forecast_predictions
 		WHERE id = $1
-	`, id).Scan(
+	`
+	args := []interface{}{id}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND store_id = $2`
+		args = append(args, claims.StoreID)
+	}
+
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.StoreID, &item.Module, &item.HorizonLabel, &item.HorizonDays,
 		&item.PredictionDate, &item.PredictedValue, &item.LowerBound, &item.UpperBound,
 		&item.MAE, &item.RMSE, &item.MAPE, &item.ModelVersion, &item.CreatedAt,
@@ -78,6 +96,17 @@ func (r *ForecastPredictionRepository) DeleteByStoreAndModule(ctx context.Contex
 
 // BulkInsert menyimpan banyak prediksi sekaligus
 func (r *ForecastPredictionRepository) BulkInsert(ctx context.Context, predictions []models.ForecastPredictionInput) error {
+	if len(predictions) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	batch := &pgx.Batch{}
 	query := `
 		INSERT INTO forecast_predictions 
 			(store_id, module, horizon_label, horizon_days, prediction_date, 
@@ -85,16 +114,23 @@ func (r *ForecastPredictionRepository) BulkInsert(ctx context.Context, predictio
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 	`
 	for _, p := range predictions {
-		_, err := r.db.Exec(ctx, query,
+		batch.Queue(query,
 			p.StoreID, p.Module, p.HorizonLabel, p.HorizonDays,
 			p.PredictionDate, p.PredictedValue, p.LowerBound, p.UpperBound,
 			p.MAE, p.RMSE, p.MAPE, p.ModelVersion,
 		)
-		if err != nil {
+	}
+
+	br := tx.SendBatch(ctx, batch)
+	for range predictions {
+		if _, err := br.Exec(); err != nil {
+			br.Close()
 			return err
 		}
 	}
-	return nil
+	br.Close()
+
+	return tx.Commit(ctx)
 }
 
 func (r *ForecastPredictionRepository) GetByStore(ctx context.Context, storeID, module, horizonLabel string) ([]models.ForecastPrediction, error) {

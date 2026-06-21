@@ -13,7 +13,7 @@ class SalesForecaster:
 
     def fetch_data(self, endpoint):
         try:
-            response = requests.get(f"{Config.BACKEND_API_URL}/{endpoint}")
+            response = requests.get(f"{Config.BACKEND_API_URL}/{endpoint}", headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             if response.status_code == 200: return response.json()
             return []
         except: return []
@@ -287,7 +287,7 @@ class SalesForecaster:
             })
 
         try:
-            resp_pred = requests.post(f"{Config.BACKEND_API_URL}/forecast-predictions", json={"predictions": pred_rows})
+            resp_pred = requests.post(f"{Config.BACKEND_API_URL}/forecast-predictions", json={"predictions": pred_rows}, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp_pred.raise_for_status()
             print(f"[SAVED] {len(forecast_array)} baris ke forecast_predictions")
         except Exception as e:
@@ -326,7 +326,7 @@ class SalesForecaster:
 
         run_id = None
         try:
-            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-runs", json=run_payload)
+            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-runs", json=run_payload, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
             run_data = resp.json()
             run_id = run_data.get('run_id') or run_data.get('data', {}).get('id')
@@ -351,7 +351,7 @@ class SalesForecaster:
             })
 
         try:
-            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-results", json={"run_id": run_id, "results": results_data})
+            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-results", json={"run_id": run_id, "results": results_data}, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
             print(f"[SAVED] {len(forecast_array)} baris ke forecast_results untuk run_id={run_id}")
         except Exception as e:

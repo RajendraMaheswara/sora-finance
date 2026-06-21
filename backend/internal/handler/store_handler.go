@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"sora-finance-api/internal/service"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -20,13 +21,18 @@ func NewStoreHandler(service *service.StoreService) *StoreHandler {
 // @Description  Mengembalikan daftar semua store yang aktif
 // @Tags         Stores
 // @Produce      json
+// @Param        page   query     int  false  "Page number"
+// @Param        limit  query     int  false  "Limit per page"
 // @Success      200  {array}  models.Store
 // @Failure      500  {object}  map[string]interface{}
 // @Router       /stores [get]
 func (h *StoreHandler) GetAll(w http.ResponseWriter, r *http.Request) {
-	stores, err := h.service.GetAll(r.Context())
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	stores, err := h.service.GetAll(r.Context(), page, limit)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, stores)
@@ -46,11 +52,11 @@ func (h *StoreHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	store, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 		return
 	}
 	if store == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "store not found"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, store)

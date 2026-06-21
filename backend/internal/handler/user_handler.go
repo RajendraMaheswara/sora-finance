@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/service"
 
 	"github.com/go-chi/chi/v5"
@@ -24,9 +25,20 @@ func NewUserHandler(service *service.UserService) *UserHandler {
 // @Failure      500  {object}  map[string]interface{}
 // @Router       /users [get]
 func (h *UserHandler) GetAll(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		respondWithJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	if auth.IsMember(claims) {
+		respondWithJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden: members cannot access users"})
+		return
+	}
+
 	users, err := h.service.GetAll(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	// Hilangkan password dari response
@@ -50,11 +62,11 @@ func (h *UserHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	user, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if user == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	user.Password = ""

@@ -119,7 +119,7 @@ class GolangAPIClient:
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.get(url, params=params)
+                    response = await client.get(url, params=params, headers=Config.backend_headers())
                     response.raise_for_status()
                     return response.json()
             except httpx.HTTPStatusError as e:
@@ -135,7 +135,7 @@ class GolangAPIClient:
     async def is_reachable(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(f"{self.base_url}/stores")
+                response = await client.get(f"{self.base_url}/stores", headers=Config.backend_headers())
                 return response.status_code < 500
         except Exception:
             return False

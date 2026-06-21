@@ -1,23 +1,23 @@
 package repository
 
 import (
-    "context"
-    "sora-finance-api/internal/models"
+	"context"
+	"sora-finance-api/internal/models"
 
-    "github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type ForecastRunRepository struct {
-    db *pgxpool.Pool
+	db *pgxpool.Pool
 }
 
 func NewForecastRunRepository(db *pgxpool.Pool) *ForecastRunRepository {
-    return &ForecastRunRepository{db: db}
+	return &ForecastRunRepository{db: db}
 }
 
 func (r *ForecastRunRepository) Create(ctx context.Context, input models.ForecastRunInput) (int64, error) {
-    var id int64
-    err := r.db.QueryRow(ctx, `
+	var id int64
+	err := r.db.QueryRow(ctx, `
         INSERT INTO forecast_runs (
             store_id, forecast_type, horizon_label, horizon_days, granularity,
             model_name, model_version, feature_version,
@@ -30,11 +30,11 @@ func (r *ForecastRunRepository) Create(ctx context.Context, input models.Forecas
         )
         RETURNING id
     `,
-        input.StoreID, input.ForecastType, input.HorizonLabel, input.HorizonDays, input.Granularity,
-        input.ModelName, input.ModelVersion, input.FeatureVersion,
-        input.TrainStartDate, input.TrainEndDate, input.PredictStartDate, input.PredictEndDate,
-        input.Metrics, input.Summary, input.DataQuality, input.Status,
-        input.StartedAt, input.FinishedAt,
-    ).Scan(&id)
-    return id, err
+		input.StoreID, input.ForecastType, input.HorizonLabel, input.HorizonDays, input.Granularity,
+		input.ModelName, input.ModelVersion, input.FeatureVersion,
+		input.TrainStartDate, input.TrainEndDate, input.PredictStartDate, input.PredictEndDate,
+		input.Metrics, input.Summary, input.DataQuality, input.Status,
+		input.StartedAt, input.FinishedAt,
+	).Scan(&id)
+	return id, err
 }

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
 	"github.com/google/uuid"
@@ -19,13 +20,20 @@ func NewStoreOperationalHourRepository(db *pgxpool.Pool) *StoreOperationalHourRe
 }
 
 func (r *StoreOperationalHourRepository) GetAll(ctx context.Context) ([]models.StoreOperationalHour, error) {
-	rows, err := r.db.Query(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, close_time, day_of_week, is_active, open_time,
 		       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
 		FROM m_store_operational_hours
-		WHERE deleted_at IS NULL
-		ORDER BY created_at DESC
-	`)
+		WHERE deleted_at IS NULL`
+	var args []interface{}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $1`
+		args = append(args, claims.StoreID)
+	}
+	query += `
+		ORDER BY created_at DESC`
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -48,12 +56,19 @@ func (r *StoreOperationalHourRepository) GetAll(ctx context.Context) ([]models.S
 
 func (r *StoreOperationalHourRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.StoreOperationalHour, error) {
 	var item models.StoreOperationalHour
-	err := r.db.QueryRow(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, close_time, day_of_week, is_active, open_time,
 		       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
 		FROM m_store_operational_hours
 		WHERE id = $1 AND deleted_at IS NULL
-	`, id).Scan(
+	`
+	args := []interface{}{id}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $2`
+		args = append(args, claims.StoreID)
+	}
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.StoreID, &item.CloseTime, &item.DayOfWeek, &item.IsActive, &item.OpenTime,
 		&item.CreatedAt, &item.CreatedBy, &item.UpdatedAt, &item.UpdatedBy, &item.DeletedAt, &item.DeletedBy,
 	)

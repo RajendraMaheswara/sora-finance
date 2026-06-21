@@ -1,20 +1,21 @@
 package handler
 
 import (
-    "encoding/json"
-    "net/http"
-    "sora-finance-api/internal/models"
-    "sora-finance-api/internal/service"
+	"encoding/json"
+	"net/http"
+	"sora-finance-api/internal/models"
+	"sora-finance-api/internal/service"
+	"strings"
 
-    "github.com/go-chi/chi/v5"
+	"github.com/go-chi/chi/v5"
 )
 
 type ForecastResultHandler struct {
-    service *service.ForecastResultService
+	service *service.ForecastResultService
 }
 
 func NewForecastResultHandler(service *service.ForecastResultService) *ForecastResultHandler {
-    return &ForecastResultHandler{service: service}
+	return &ForecastResultHandler{service: service}
 }
 
 // GetAll godoc
@@ -26,12 +27,12 @@ func NewForecastResultHandler(service *service.ForecastResultService) *ForecastR
 // @Failure      500  {object}  map[string]interface{}
 // @Router       /forecast-results [get]
 func (h *ForecastResultHandler) GetAll(w http.ResponseWriter, r *http.Request) {
-    items, err := h.service.GetAll(r.Context())
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusInternalServerError)
-        return
-    }
-    respondWithJSON(w, http.StatusOK, items)
+	items, err := h.service.GetAll(r.Context())
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	respondWithJSON(w, http.StatusOK, items)
 }
 
 // GetByID godoc
@@ -45,39 +46,48 @@ func (h *ForecastResultHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 // @Failure      404  {object}  map[string]interface{}
 // @Router       /forecast-results/{id} [get]
 func (h *ForecastResultHandler) GetByID(w http.ResponseWriter, r *http.Request) {
-    id := chi.URLParam(r, "id")
-    item, err := h.service.GetByID(r.Context(), id)
-    if err != nil {
-        http.Error(w, err.Error(), http.StatusBadRequest)
-        return
-    }
-    if item == nil {
-        http.Error(w, "not found", http.StatusNotFound)
-        return
-    }
-    respondWithJSON(w, http.StatusOK, item)
+	id := chi.URLParam(r, "id")
+	item, err := h.service.GetByID(r.Context(), id)
+	if err != nil {
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if item == nil {
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	respondWithJSON(w, http.StatusOK, item)
 }
 
 type BulkResultRequest struct {
-    RunID   int64                        `json:"run_id"`
-    Results []models.ForecastResultInput `json:"results"`
+	RunID   int64                        `json:"run_id"`
+	Results []models.ForecastResultInput `json:"results"`
 }
 
 func (h *ForecastResultHandler) BulkCreate(w http.ResponseWriter, r *http.Request) {
-    var req BulkResultRequest
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
-        return
-    }
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req BulkResultRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
+		return
+	}
 
-    if err := h.service.BulkInsert(r.Context(), req.RunID, req.Results); err != nil {
-        respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-        return
-    }
+	if err := h.service.BulkInsert(r.Context(), req.RunID, req.Results); err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "forbidden") {
+			status = http.StatusForbidden
+		} else if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		} else if strings.Contains(err.Error(), "unauthorized") {
+			status = http.StatusUnauthorized
+		}
+		respondWithJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
 
-    respondWithJSON(w, http.StatusCreated, map[string]interface{}{
-        "status":  "success",
-        "message": "Results saved",
-        "count":   len(req.Results),
-    })
+	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
+		"status":  "success",
+		"message": "Results saved",
+		"count":   len(req.Results),
+	})
 }

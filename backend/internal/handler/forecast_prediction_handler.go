@@ -29,7 +29,7 @@ func NewForecastPredictionHandler(service *service.ForecastPredictionService) *F
 func (h *ForecastPredictionHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	items, err := h.service.GetAll(r.Context())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, items)
@@ -49,11 +49,11 @@ func (h *ForecastPredictionHandler) GetByID(w http.ResponseWriter, r *http.Reque
 	id := chi.URLParam(r, "id")
 	item, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if item == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, item)
@@ -75,10 +75,23 @@ type bulkPredictionsRequest struct {
 // @Failure      500   {object}  map[string]interface{}
 // @Router       /forecast-predictions [post]
 func (h *ForecastPredictionHandler) Save(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req bulkPredictionsRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
 		return
+	}
+
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		respondWithJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+
+	for i := range req.Predictions {
+		if !auth.IsSystemAdmin(claims) {
+			req.Predictions[i].StoreID = claims.StoreID
+		}
 	}
 
 	if err := h.service.SavePredictions(r.Context(), req.Predictions); err != nil {

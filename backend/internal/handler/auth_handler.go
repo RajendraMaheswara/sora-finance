@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
@@ -20,6 +21,7 @@ func NewAuthHandler(service *service.AuthService) *AuthHandler {
 
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var req models.LoginRequest
+	r.Body = http.MaxBytesReader(w, r.Body, 1_048_576) // Limit 1MB
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "Invalid JSON"})
 		return
@@ -44,10 +46,16 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.ClaimsFromContext(r.Context())
+	if !ok {
+		respondWithJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
 	authHeader := r.Header.Get("Authorization")
 	if strings.HasPrefix(authHeader, "Bearer ") {
 		token := strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		auth.InvalidateToken(token)
+		exp := time.Unix(claims.ExpiresAt, 0)
+		auth.InvalidateToken(token, exp)
 	}
 	respondWithJSON(w, http.StatusOK, map[string]string{"message": "Logout berhasil"})
 }

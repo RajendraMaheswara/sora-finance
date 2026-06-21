@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
 	"github.com/google/uuid"
@@ -19,16 +20,23 @@ func NewSalesMenuSummaryRepository(db *pgxpool.Pool) *SalesMenuSummaryRepository
 }
 
 func (r *SalesMenuSummaryRepository) GetAll(ctx context.Context) ([]models.SalesMenuSummary, error) {
-	rows, err := r.db.Query(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, m_menu_id, m_menu_variant_id, m_menu_packaging_id, m_menu_offer_id,
 		       m_menu_online_order_id, date, menu_name, menu_offer_name, menu_online_order_name,
 		       menu_packaging_name, menu_variant_name, qty, total_menu_price, total_menu_offer_price,
 		       total_menu_online_order_price, total_menu_packaging_price, total_menu_variant_price,
 		       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
 		FROM t_sales_menu_summaries
-		WHERE deleted_at IS NULL
-		ORDER BY created_at DESC
-	`)
+		WHERE deleted_at IS NULL`
+	var args []interface{}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $1`
+		args = append(args, claims.StoreID)
+	}
+	query += `
+		ORDER BY created_at DESC`
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +63,8 @@ func (r *SalesMenuSummaryRepository) GetAll(ctx context.Context) ([]models.Sales
 
 func (r *SalesMenuSummaryRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.SalesMenuSummary, error) {
 	var item models.SalesMenuSummary
-	err := r.db.QueryRow(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, m_menu_id, m_menu_variant_id, m_menu_packaging_id, m_menu_offer_id,
 		       m_menu_online_order_id, date, menu_name, menu_offer_name, menu_online_order_name,
 		       menu_packaging_name, menu_variant_name, qty, total_menu_price, total_menu_offer_price,
@@ -63,7 +72,13 @@ func (r *SalesMenuSummaryRepository) GetByID(ctx context.Context, id uuid.UUID) 
 		       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
 		FROM t_sales_menu_summaries
 		WHERE id = $1 AND deleted_at IS NULL
-	`, id).Scan(
+	`
+	args := []interface{}{id}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $2`
+		args = append(args, claims.StoreID)
+	}
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.StoreID, &item.MenuID, &item.MenuVariantID, &item.MenuPackagingID, &item.MenuOfferID,
 		&item.MenuOnlineOrderID, &item.Date, &item.MenuName, &item.MenuOfferName, &item.MenuOnlineOrderName,
 		&item.MenuPackagingName, &item.MenuVariantName, &item.Qty, &item.TotalMenuPrice,

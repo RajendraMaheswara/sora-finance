@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
 	"github.com/google/uuid"
@@ -19,13 +20,20 @@ func NewMenuOnlineOrderRepository(db *pgxpool.Pool) *MenuOnlineOrderRepository {
 }
 
 func (r *MenuOnlineOrderRepository) GetAll(ctx context.Context) ([]models.MenuOnlineOrder, error) {
-	rows, err := r.db.Query(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, m_menu_online_order_type_id, m_menu_id, m_menu_packaging_id, is_percentage,
 		       name, price, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
 		FROM m_menu_online_orders
-		WHERE deleted_at IS NULL
-		ORDER BY created_at DESC
-	`)
+		WHERE deleted_at IS NULL`
+	var args []interface{}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $1`
+		args = append(args, claims.StoreID)
+	}
+	query += `
+		ORDER BY created_at DESC`
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -49,12 +57,19 @@ func (r *MenuOnlineOrderRepository) GetAll(ctx context.Context) ([]models.MenuOn
 
 func (r *MenuOnlineOrderRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.MenuOnlineOrder, error) {
 	var item models.MenuOnlineOrder
-	err := r.db.QueryRow(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, m_menu_online_order_type_id, m_menu_id, m_menu_packaging_id, is_percentage,
 		       name, price, created_at, created_by, updated_at, updated_by, deleted_at, deleted_by
 		FROM m_menu_online_orders
 		WHERE id = $1 AND deleted_at IS NULL
-	`, id).Scan(
+	`
+	args := []interface{}{id}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $2`
+		args = append(args, claims.StoreID)
+	}
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.StoreID, &item.MenuOnlineOrderTypeID, &item.MenuID, &item.MenuPackagingID,
 		&item.IsPercentage, &item.Name, &item.Price, &item.CreatedAt, &item.CreatedBy,
 		&item.UpdatedAt, &item.UpdatedBy, &item.DeletedAt, &item.DeletedBy,
