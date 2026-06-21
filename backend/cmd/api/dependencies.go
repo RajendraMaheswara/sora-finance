@@ -49,7 +49,6 @@ type AppDependencies struct {
 	SalesMenuSummaryHandler              *handler.SalesMenuSummaryHandler
 	SalesMonthlySummaryHandler           *handler.SalesMonthlySummaryHandler
 	JWTSecret                            string
-	InternalServiceKey                   string
 }
 
 func initDependencies(pool *pgxpool.Pool) *AppDependencies {
@@ -242,6 +241,5 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 		SalesMenuSummaryHandler:              salesMenuSummaryHandler,
 		SalesMonthlySummaryHandler:           salesMonthlySummaryHandler,
 		JWTSecret:                            jwtSecret,
-		InternalServiceKey:                   os.Getenv("INTERNAL_SERVICE_KEY"),
 	}
 }

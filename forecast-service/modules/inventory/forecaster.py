@@ -47,7 +47,7 @@ class InventoryForecaster:
 
         url = f"{Config.BACKEND_API_URL}/ingredient-stock-histories"
         try:
-            resp = requests.get(url)
+            resp = requests.get(url, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
         except requests.RequestException as e:
             raise ValueError(f"Gagal mengambil data dari API: {e}")
@@ -522,7 +522,7 @@ class InventoryForecaster:
         # 4. Kirim ke forecast_predictions
         url_pred = f"{Config.BACKEND_API_URL}/forecast-predictions"
         try:
-            resp = requests.post(url_pred, json={"predictions": pred_rows})
+            resp = requests.post(url_pred, json={"predictions": pred_rows}, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
             print(f"[SAVED] {len(pred_rows)} baris → forecast_predictions")
         except requests.RequestException as e:
@@ -580,7 +580,7 @@ class InventoryForecaster:
         url_runs = f"{Config.BACKEND_API_URL}/forecast-runs"
         run_id = None
         try:
-            resp = requests.post(url_runs, json=run_payload)
+            resp = requests.post(url_runs, json=run_payload, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
             run_data = resp.json()
             run_id = run_data.get('run_id')
@@ -613,7 +613,7 @@ class InventoryForecaster:
         # 8. Kirim ke forecast_results
         url_results = f"{Config.BACKEND_API_URL}/forecast-results"
         try:
-            resp = requests.post(url_results, json={"run_id": run_id, "results": results})
+            resp = requests.post(url_results, json={"run_id": run_id, "results": results}, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
             print(f"[SAVED] {len(results)} baris → forecast_results untuk run_id={run_id}")
             return True
