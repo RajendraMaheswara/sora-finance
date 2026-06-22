@@ -1,11 +1,14 @@
+# =====================
+# Global Ignores
+# =====================
+# Secrets and env files
 .env
+*.env
+!.env.example
 
-# ---------- General ----------
-# macOS / Windows
+# OS and IDE
 .DS_Store
 Thumbs.db
-
-# Editor / IDE
 .vscode/
 .idea/
 *.iml
@@ -19,92 +22,53 @@ logs/
 *.tar.gz
 *.rar
 
-# ---------- Python / forecast-service ----------
-# Byte-compiled / cache
+# Temporary
+*.tmp
+*.swp
+*.swo
+*~
+~*
+
+# Database
+*.sqlite3
+*.db
+*.sql
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python / General
 __pycache__/
 *.py[cod]
 *$py.class
-
-# Virtual environments
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
 venv/
 env/
 .venv/
 env.bak/
 
-# Python tooling
-.pytest_cache/
-.mypy_cache/
-.coverage
-.coverage.*
-htmlcov/
+# Node.js / Web
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 
-# Model artifacts
-saved_models/
-*.pkl
-*.h5
-*.pt
-*.ckpt
+package.json
+package-lock.json
 
-# ---------- Go / backend ----------
-# Binaries for programs and plugins
-/bin/
-/pkg/
+# Go / General
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
 *.test
-
-# Build outputs
-build/
-dist/
-
-# Vendor
-vendor/
-
-# ---------- Flutter / frontend ----------
-.flutter-plugins
-.flutter-plugins-dependencies
-.packages
-.dart_tool/
-.pub-cache/
-pubspec.lock
-/.dart_tool/
-
-# Build outputs
-/build/
-/android/app/build/
-/ios/Flutter/Flutter.framework
-/ios/Pods/
-
-# Flutter workspace files
-.flutter-plugins
-.metadata
-
-# ---------- Other ----------
-# Database
-*.sqlite3
-*.db
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Temporary
-*.tmp
-*.swp
-*.swo
-~*
-=======
-# Secrets and env files
-.env
-*.env
-!.env.example
-
-# OS and logs
-.DS_Store
-Thumbs.db
-*.log
 
 # =====================
 # backend (Go)
@@ -115,26 +79,39 @@ backend/tmp/
 backend/dist/
 backend/coverage.out
 backend/*.exe
+backend/*.exe~
+backend/*.dll
+backend/*.so
+backend/*.dylib
 backend/*.test
 backend/*.out
 backend/.air*
+backend/vendor/
 
 # =====================
 # forecast-service (Python)
 # =====================
 forecast-service/.env
 forecast-service/__pycache__/
-forecast-service/*.py[cod]
+forecast-service/**/*.py[cod]
+forecast-service/**/*$py.class
 forecast-service/.venv/
 forecast-service/venv/
 forecast-service/env/
+forecast-service/env.bak/
 forecast-service/.pytest_cache/
 forecast-service/.mypy_cache/
 forecast-service/.ruff_cache/
 forecast-service/.coverage
+forecast-service/.coverage.*
 forecast-service/htmlcov/
 forecast-service/.ipynb_checkpoints/
 forecast-service/saved_models/
+forecast-service/models/
+forecast-service/**/*.pkl
+forecast-service/**/*.h5
+forecast-service/**/*.pt
+forecast-service/**/*.ckpt
 
 # =====================
 # frontend (Flutter)
@@ -143,8 +120,11 @@ frontend/.env
 frontend/.dart_tool/
 frontend/.flutter-plugins
 frontend/.flutter-plugins-dependencies
+frontend/.packages
 frontend/.pub-cache/
 frontend/.pub/
+frontend/pubspec.lock
+frontend/.metadata
 frontend/build/
 frontend/coverage/
 
@@ -154,7 +134,9 @@ frontend/android/local.properties
 frontend/android/app/debug/
 frontend/android/app/profile/
 frontend/android/app/release/
+frontend/android/app/build/
 
 frontend/ios/Pods/
 frontend/ios/.symlinks/
 frontend/ios/Flutter/ephemeral/
+frontend/ios/Flutter/Flutter.framework

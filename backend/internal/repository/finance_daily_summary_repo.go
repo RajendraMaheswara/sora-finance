@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
 	"github.com/google/uuid"
@@ -19,15 +20,22 @@ func NewFinanceDailySummaryRepository(db *pgxpool.Pool) *FinanceDailySummaryRepo
 }
 
 func (r *FinanceDailySummaryRepository) GetAll(ctx context.Context) ([]models.FinanceDailySummary, error) {
-	rows, err := r.db.Query(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, date, total_cash, total_rounding, total_debit, total_ewallet,
 		       total_income, total_regulation_outlet, total_regulation_customer, total_hpp,
 		       total_discount, total_cost_and_expense, total_net_income, created_at, created_by,
 		       updated_at, updated_by, deleted_at, deleted_by
 		FROM t_finance_daily_summaries
-		WHERE deleted_at IS NULL
-		ORDER BY created_at DESC
-	`)
+		WHERE deleted_at IS NULL`
+	var args []interface{}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $1`
+		args = append(args, claims.StoreID)
+	}
+	query += `
+		ORDER BY created_at DESC`
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -52,14 +60,21 @@ func (r *FinanceDailySummaryRepository) GetAll(ctx context.Context) ([]models.Fi
 
 func (r *FinanceDailySummaryRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.FinanceDailySummary, error) {
 	var item models.FinanceDailySummary
-	err := r.db.QueryRow(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, date, total_cash, total_rounding, total_debit, total_ewallet,
 		       total_income, total_regulation_outlet, total_regulation_customer, total_hpp,
 		       total_discount, total_cost_and_expense, total_net_income, created_at, created_by,
 		       updated_at, updated_by, deleted_at, deleted_by
 		FROM t_finance_daily_summaries
 		WHERE id = $1 AND deleted_at IS NULL
-	`, id).Scan(
+	`
+	args := []interface{}{id}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $2`
+		args = append(args, claims.StoreID)
+	}
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.StoreID, &item.Date, &item.TotalCash, &item.TotalRounding, &item.TotalDebit,
 		&item.TotalEwallet, &item.TotalIncome, &item.TotalRegulationOutlet, &item.TotalRegulationCustomer,
 		&item.TotalHpp, &item.TotalDiscount, &item.TotalCostAndExpense, &item.TotalNetIncome,

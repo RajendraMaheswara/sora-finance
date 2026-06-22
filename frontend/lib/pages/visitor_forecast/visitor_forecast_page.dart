@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:fl_chart/fl_chart.dart';
+import 'package:sora2/widgets/sidebar.dart';
 
 import '../../core/services/api_service.dart';
 import '../../models/visitor_forecast_model.dart';
+import '../../core/services/auth_service.dart';
 
 // ==========================================
 // KONFIGURASI
@@ -12,7 +14,7 @@ const Color _kPrimaryGreenDark = Color(0xFF24CC14);
 const Color _kAccentOrange = Color(0xFFF59E0B);
 const Color _kBarBlueLight = Color(0xFFD7DEE8);
 
-String _visitorForecastEndpoint(String storeId) => 'forecast/visitors/$storeId';
+const String _kForecastPredictionsEndpoint = 'forecast-predictions';
 
 // ==========================================
 // PAGE
@@ -34,13 +36,12 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
   void initState() {
     super.initState();
     _future = _fetch();
+    _loadUser();
   }
 
   Future<VisitorForecastModel> _fetch() async {
-    final raw = await _apiService.fetchObject(
-      _visitorForecastEndpoint(widget.storeId),
-    );
-    return VisitorForecastModel.fromJson(raw);
+    final raw = await _apiService.fetchData(_kForecastPredictionsEndpoint);
+    return VisitorForecastModel.fromPredictionList(raw);
   }
 
   void _refresh() {
@@ -49,6 +50,25 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
     });
   }
 
+  String _userName = 'Loading...';
+  String _name = 'User';
+
+  Future<void> _loadUser() async {
+  try {
+    final user = await AuthService().getCurrentUser();
+
+    setState(() {
+      _userName = user.username;
+      _name = user.name;
+    });
+  } catch (_) {
+    setState(() {
+      _userName = 'Guest';
+      _name = '-';
+    });
+  }
+}
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -56,7 +76,10 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
       body: Row(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const _FullSidebar(),
+          SidebarWidget(
+            userName: _userName,
+            name: _name,
+          ),
           Expanded(
             child: SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(32, 24, 32, 32),
@@ -81,128 +104,6 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
                   );
                 },
               ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ==========================================
-// SIDEBAR (full menu)
-// ==========================================
-class _FullSidebar extends StatelessWidget {
-  const _FullSidebar();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 150,
-      color: Colors.white,
-      padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: [
-          // Logo
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(Icons.eco, color: Colors.lightGreen[600], size: 22),
-              const SizedBox(width: 4),
-              Text(
-                'sora',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.lightGreen[700],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          Container(
-            width: 80,
-            height: 80,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: Colors.grey.shade200, width: 2),
-              color: Colors.grey.shade200,
-            ),
-            child: const ClipOval(
-              child: Icon(Icons.person, size: 56, color: Colors.white),
-            ),
-          ),
-          const SizedBox(height: 8),
-          const Text(
-            'Aminah',
-            style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-          ),
-          const SizedBox(height: 2),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: const [
-              Text(
-                'Admin',
-                style: TextStyle(
-                  color: Colors.grey,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              SizedBox(width: 4),
-              Text('🔴', style: TextStyle(fontSize: 9)),
-            ],
-          ),
-          const SizedBox(height: 28),
-
-          // Active menu: Dasbor saja
-          const _SidebarItem(
-            icon: Icons.pie_chart,
-            title: 'Dasbor',
-            isActive: true,
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _SidebarItem extends StatelessWidget {
-  final IconData icon;
-  final String title;
-  final bool isActive;
-  const _SidebarItem({
-    required this.icon,
-    required this.title,
-    this.isActive = false,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 70,
-      height: 70,
-      decoration: BoxDecoration(
-        color: isActive ? _kPrimaryGreen : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            icon,
-            color: isActive ? Colors.white : Colors.grey[700],
-            size: 26,
-          ),
-          const SizedBox(height: 4),
-          Text(
-            title,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: isActive ? Colors.white : Colors.grey[700],
             ),
           ),
         ],
@@ -373,13 +274,11 @@ class _ErrorPanel extends StatelessWidget {
 // ==========================================
 // PERIOD ENUM + HELPER
 // ==========================================
-enum ForecastPeriod { daily, weekly, monthly }
+enum ForecastPeriod { weekly, monthly }
 
 extension on ForecastPeriod {
   String get label {
     switch (this) {
-      case ForecastPeriod.daily:
-        return 'Harian';
       case ForecastPeriod.weekly:
         return 'Mingguan';
       case ForecastPeriod.monthly:
@@ -410,18 +309,6 @@ List<_PeriodAggregate> _aggregateForPeriod(
   ForecastPeriod period,
 ) {
   switch (period) {
-    case ForecastPeriod.daily:
-      // 7 titik harian dari weekly_forecast
-      return data.weeklyForecast
-          .map(
-            (p) => _PeriodAggregate(
-              label: _formatShortDate(p.date),
-              dateLabel: _formatLongDate(p.date),
-              value: p.predictedVisitors,
-            ),
-          )
-          .toList();
-
     case ForecastPeriod.weekly:
       // Pecah monthly_forecast (30 hari) jadi grup 7-harian.
       final src = data.monthlyForecast;
@@ -522,7 +409,7 @@ class _ForecastBody extends StatefulWidget {
 }
 
 class _ForecastBodyState extends State<_ForecastBody> {
-  ForecastPeriod _period = ForecastPeriod.daily;
+  ForecastPeriod _period = ForecastPeriod.weekly;
 
   @override
   Widget build(BuildContext context) {
@@ -618,40 +505,30 @@ class _SummaryCardsRow extends StatelessWidget {
   Widget build(BuildContext context) {
     // Card 1: angka aktual untuk periode yang dipilih
     final card1Title = switch (period) {
-      ForecastPeriod.daily => 'Pengunjung Hari Ini',
       ForecastPeriod.weekly => 'Total Pengunjung Minggu Ini',
       ForecastPeriod.monthly => 'Total Pengunjung Bulan Ini',
     };
     final card1Value = switch (period) {
-      ForecastPeriod.daily =>
-        data.weeklyForecast.isNotEmpty
-            ? '${data.weeklyForecast.first.predictedVisitors} Orang'
-            : '0 Orang',
       ForecastPeriod.weekly => '${data.totalNext7Days} Orang',
       ForecastPeriod.monthly => '${data.totalNext30Days} Orang',
     };
     final card1Subtitle = switch (period) {
-      ForecastPeriod.daily => 'Update terakhir ${_currentTimeWIB()}',
       ForecastPeriod.weekly => 'Akumulasi prediksi 7 hari',
       ForecastPeriod.monthly => 'Akumulasi prediksi 30 hari',
     };
 
     // Card 2: rata-rata
     final card2Title = switch (period) {
-      ForecastPeriod.daily => 'Rata-rata Harian',
       ForecastPeriod.weekly => 'Rata-rata Mingguan',
       ForecastPeriod.monthly => 'Rata-rata Bulanan',
     };
     final card2Value = switch (period) {
-      ForecastPeriod.daily =>
-        '${data.avgDailyNext7Days.toStringAsFixed(0)} Orang',
       ForecastPeriod.weekly =>
         '${(data.avgDailyNext7Days * 7).toStringAsFixed(0)} Orang',
       ForecastPeriod.monthly =>
         '${(data.avgDailyNext30Days * 30).toStringAsFixed(0)} Orang',
     };
     final card2Subtitle = switch (period) {
-      ForecastPeriod.daily => 'Berdasarkan 7 hari prediksi',
       ForecastPeriod.weekly => 'Estimasi total per minggu',
       ForecastPeriod.monthly => 'Estimasi total per bulan',
     };
@@ -821,7 +698,6 @@ class _HistoricalChartCard extends StatelessWidget {
 
     // Multiplier per periode supaya bentuk bar terlihat berbeda.
     final factors = switch (period) {
-      ForecastPeriod.daily => [0.92, 0.88, 1.05, 0.78, 1.0],
       ForecastPeriod.weekly => [0.95, 0.85, 1.02, 0.92],
       ForecastPeriod.monthly => [0.94, 1.06, 0.88],
     };
@@ -1011,7 +887,7 @@ class _HistoricalBarChart extends StatelessWidget {
         barTouchData: BarTouchData(
           enabled: true,
           touchTooltipData: BarTouchTooltipData(
-            getTooltipItem: (group, _, rod, __) => BarTooltipItem(
+            getTooltipItem: (group, _, rod, _) => BarTooltipItem(
               rod.toY.toStringAsFixed(0),
               const TextStyle(color: Colors.white, fontSize: 11),
             ),
@@ -1171,7 +1047,6 @@ class _ConfidenceTableCard extends StatelessWidget {
     }).toList();
 
     final dateColumnTitle = switch (period) {
-      ForecastPeriod.daily => 'Tanggal',
       ForecastPeriod.weekly => 'Minggu',
       ForecastPeriod.monthly => 'Bulan',
     };

@@ -17,8 +17,8 @@ func NewOrderService(repo *repository.OrderRepository) *OrderService {
 	return &OrderService{repo: repo}
 }
 
-func (s *OrderService) GetAll(ctx context.Context) ([]models.Order, error) {
-	return s.repo.GetAll(ctx)
+func (s *OrderService) GetAll(ctx context.Context, page, limit int) ([]models.Order, error) {
+	return s.repo.GetAll(ctx, page, limit)
 }
 
 func (s *OrderService) GetByID(ctx context.Context, id string) (*models.Order, error) {

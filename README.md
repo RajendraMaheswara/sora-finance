@@ -213,6 +213,7 @@ Gunakan endpoint `POST /api/inventory/forecast` dengan body JSON.
 
 Contoh harian (7 hari ke depan):
 
+### Flutter
 ```bash
 curl -X POST http://localhost:5000/api/inventory/forecast \
   -H "Content-Type: application/json" \

@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"errors"
+	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
 	"github.com/google/uuid"
@@ -19,7 +20,8 @@ func NewOrderItemRepository(db *pgxpool.Pool) *OrderItemRepository {
 }
 
 func (r *OrderItemRepository) GetAll(ctx context.Context) ([]models.OrderItem, error) {
-	rows, err := r.db.Query(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, t_order_id, m_customer_id, m_menu_id, m_menu_variant_id, m_menu_packaging_id,
 		       m_menu_offer_id, m_menu_online_order_id, m_store_discount_id, is_ready, menu_name, menu_offer_name,
 		       menu_online_order_name, menu_packaging_name, menu_variant_name, menu_cogs, menu_price,
@@ -29,9 +31,15 @@ func (r *OrderItemRepository) GetAll(ctx context.Context) ([]models.OrderItem, e
 		       created_at, created_by, updated_at, updated_by, deleted_at, deleted_by, m_order_type_id, note,
 		       menu_category_name, order_type_name
 		FROM t_order_items
-		WHERE deleted_at IS NULL
-		ORDER BY created_at DESC
-	`)
+		WHERE deleted_at IS NULL`
+	var args []interface{}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $1`
+		args = append(args, claims.StoreID)
+	}
+	query += `
+		ORDER BY created_at DESC`
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +69,8 @@ func (r *OrderItemRepository) GetAll(ctx context.Context) ([]models.OrderItem, e
 
 func (r *OrderItemRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.OrderItem, error) {
 	var item models.OrderItem
-	err := r.db.QueryRow(ctx, `
+	claims, _ := auth.ClaimsFromContext(ctx)
+	query := `
 		SELECT id, m_store_id, t_order_id, m_customer_id, m_menu_id, m_menu_variant_id, m_menu_packaging_id,
 		       m_menu_offer_id, m_menu_online_order_id, m_store_discount_id, is_ready, menu_name, menu_offer_name,
 		       menu_online_order_name, menu_packaging_name, menu_variant_name, menu_cogs, menu_price,
@@ -72,7 +81,13 @@ func (r *OrderItemRepository) GetByID(ctx context.Context, id uuid.UUID) (*model
 		       menu_category_name, order_type_name
 		FROM t_order_items
 		WHERE id = $1 AND deleted_at IS NULL
-	`, id).Scan(
+	`
+	args := []interface{}{id}
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		query += ` AND m_store_id = $2`
+		args = append(args, claims.StoreID)
+	}
+	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&item.ID, &item.StoreID, &item.OrderID, &item.CustomerID, &item.MenuID, &item.MenuVariantID,
 		&item.MenuPackagingID, &item.MenuOfferID, &item.MenuOnlineOrderID, &item.StoreDiscountID,
 		&item.IsReady, &item.MenuName, &item.MenuOfferName, &item.MenuOnlineOrderName, &item.MenuPackagingName,

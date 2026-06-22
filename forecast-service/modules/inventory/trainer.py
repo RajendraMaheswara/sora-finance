@@ -76,7 +76,7 @@ def train_all_inventory_models(task_id: str | None = None):
     # Ambil semua pasangan dari API
     url = f"{Config.BACKEND_API_URL}/ingredient-stock-histories"
     try:
-        resp = requests.get(url)
+        resp = requests.get(url, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
         resp.raise_for_status()
     except requests.RequestException as e:
         if task_id:

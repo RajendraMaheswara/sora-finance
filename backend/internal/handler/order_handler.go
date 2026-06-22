@@ -3,6 +3,7 @@ package handler
 import (
 	"net/http"
 	"sora-finance-api/internal/service"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -20,13 +21,18 @@ func NewOrderHandler(service *service.OrderService) *OrderHandler {
 // @Description  Mengembalikan daftar semua orders
 // @Tags         Orders
 // @Produce      json
+// @Param        page   query     int  false  "Page number"
+// @Param        limit  query     int  false  "Limit per page"
 // @Success      200  {array}  models.Order
 // @Failure      500  {object}  map[string]interface{}
 // @Router       /orders [get]
 func (h *OrderHandler) GetAll(w http.ResponseWriter, r *http.Request) {
-	items, err := h.service.GetAll(r.Context())
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	items, err := h.service.GetAll(r.Context(), page, limit)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, items)
@@ -46,11 +52,11 @@ func (h *OrderHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	item, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	if item == nil {
-		http.Error(w, "not found", http.StatusNotFound)
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, item)
