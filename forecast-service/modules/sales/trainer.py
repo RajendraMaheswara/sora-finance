@@ -1,137 +1,188 @@
-import pandas as pd
-import numpy as np
-import joblib
 import os
+import json
+import joblib
+import numpy as np
+import pandas as pd
+from datetime import datetime
+from typing import Dict, Tuple, Any
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import (
-    mean_absolute_error, mean_squared_error, r2_score, 
-    mean_absolute_percentage_error, explained_variance_score
-)
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.preprocessing import StandardScaler
+import logging
+
 from config import Config
-from modules.sales.forecaster import SalesForecaster
 
-def get_global_rf_model():
-    # Model Global raksasa
-    return RandomForestRegressor(
-        n_estimators=300, max_depth=16, min_samples_split=4, 
-        min_samples_leaf=2, random_state=42, n_jobs=-1
-    )
+logger = logging.getLogger("sales_trainer")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+    logger.addHandler(ch)
 
-def calculate_advanced_metrics(y_true, y_pred):
-    mae = mean_absolute_error(y_true, y_pred)
-    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
-    if (y_true == 0).any():
-        non_zero_mask = y_true != 0
-        mape = np.mean(np.abs((y_true[non_zero_mask] - y_pred[non_zero_mask]) / y_true[non_zero_mask])) * 100 if non_zero_mask.sum() > 0 else 20.0
-    else:
-        mape = mean_absolute_percentage_error(y_true, y_pred) * 100
-    r2 = r2_score(y_true, y_pred)
-    ev = explained_variance_score(y_true, y_pred)
-    return {"mae": round(float(mae), 3), "rmse": round(float(rmse), 3), "mape": round(float(mape), 4), "r2_score": round(float(r2), 4), "explained_variance": round(float(ev), 4)}
+class SalesForecasterTrainer:
+    """
+    Melatih model Random Forest untuk prediksi sales/omzet harian.
+    Menggunakan TimeSeriesSplit untuk cross-validation yang tepat pada data time series.
+    """
+
+    def __init__(self):
+        self.model_dir = Config.SALES_MODELS_DIR
+        os.makedirs(self.model_dir, exist_ok=True)
+
+    def _artifact_basename(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        clean_granularity = (granularity or "daily").strip().lower()
+        clean_store_id = str(store_id).strip()
+        return f"sales_{clean_granularity}_{kind}_store_{clean_store_id}.{ext}"
+
+    def _artifact_path(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        return os.path.join(self.model_dir, self._artifact_basename(store_id, granularity, kind, ext))
+
+    def _model_path(self, store_id: str, granularity: str) -> str:
+        return self._artifact_path(store_id, granularity, "model", "joblib")
+
+    def _meta_path(self, store_id: str, granularity: str) -> str:
+        return self._artifact_path(store_id, granularity, "metadata", "json")
+
+    def _scaler_path(self, store_id: str, granularity: str) -> str:
+        return self._artifact_path(store_id, granularity, "scaler", "joblib")
+
+    def _feature_cols_path(self, store_id: str, granularity: str) -> str:
+        return self._artifact_path(store_id, granularity, "features", "json")
+
+    def train(
+        self,
+        df: pd.DataFrame,
+        feature_cols: list,
+        store_id: str,
+        granularity: str = "daily",
+    ) -> Dict[str, Any]:
+        """
+        Latih model Random Forest dengan cross-validation berbasis time series.
+        """
+        logger.info(f"Mulai training untuk store {store_id} | {len(df)} data points")
+
+        X = df[feature_cols].values
+        y = df["omzet"].values.astype(float)
+
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+
+        tscv = TimeSeriesSplit(n_splits=5)
+        mae_scores, rmse_scores = [], []
+
+        for fold, (train_idx, val_idx) in enumerate(tscv.split(X_scaled)):
+            X_train, X_val = X_scaled[train_idx], X_scaled[val_idx]
+            y_train, y_val = y[train_idx], y[val_idx]
+
+            fold_model = RandomForestRegressor(
+                n_estimators=200,
+                max_depth=12,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features="sqrt",
+                bootstrap=True,
+                random_state=42,
+                n_jobs=-1,
+            )
+            fold_model.fit(X_train, y_train)
+            y_pred = fold_model.predict(X_val)
+            y_pred = np.maximum(y_pred, 0)
+
+            mae = mean_absolute_error(y_val, y_pred)
+            rmse = np.sqrt(mean_squared_error(y_val, y_pred))
+            mae_scores.append(mae)
+            rmse_scores.append(rmse)
+            logger.info(f"  Fold {fold + 1}: MAE={mae:.2f}, RMSE={rmse:.2f}")
+
+        cv_mae = float(np.mean(mae_scores))
+        cv_rmse = float(np.mean(rmse_scores))
+        logger.info(f"Cross-validation selesai → MAE={cv_mae:.2f}, RMSE={cv_rmse:.2f}")
+
+        final_model = RandomForestRegressor(
+            n_estimators=300,
+            max_depth=12,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            max_features="sqrt",
+            bootstrap=True,
+            random_state=42,
+            n_jobs=-1,
+        )
+        final_model.fit(X_scaled, y)
+
+        importance = dict(
+            zip(feature_cols, final_model.feature_importances_.round(4).tolist())
+        )
+        top_features = dict(
+            sorted(importance.items(), key=lambda x: x[1], reverse=True)[:10]
+        )
+
+        joblib.dump(final_model, self._model_path(store_id, granularity))
+        joblib.dump(scaler, self._scaler_path(store_id, granularity))
+
+        with open(self._feature_cols_path(store_id, granularity), "w") as f:
+            json.dump(feature_cols, f)
+
+        meta = {
+            "store_id": store_id,
+            "granularity": granularity,
+            "trained_at": datetime.utcnow().isoformat(),
+            "training_data_points": len(df),
+            "feature_count": len(feature_cols),
+            "cv_mae": cv_mae,
+            "cv_rmse": cv_rmse,
+            "feature_importance": importance,
+            "top_features": top_features,
+        }
+        with open(self._meta_path(store_id, granularity), "w") as f:
+            json.dump(meta, f, indent=2)
+
+        logger.info(f"Model tersimpan: {self._model_path(store_id, granularity)}")
+        return meta
+
+    def load_model(
+        self, store_id: str, granularity: str = "daily"
+    ) -> Tuple[RandomForestRegressor, StandardScaler, list, dict]:
+        model_path = self._model_path(store_id, granularity)
+        scaler_path = self._scaler_path(store_id, granularity)
+        feature_path = self._feature_cols_path(store_id, granularity)
+        meta_path = self._meta_path(store_id, granularity)
+
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(
+                f"Model untuk store {store_id} tidak ditemukan. "
+                "Jalankan /forecast/sales/retrain terlebih dahulu."
+            )
+
+        model = joblib.load(model_path)
+        scaler = joblib.load(scaler_path)
+
+        with open(feature_path) as f:
+            feature_cols = json.load(f)
+
+        with open(meta_path) as f:
+            meta = json.load(f)
+
+        logger.info(f"Model loaded: store={store_id}, trained_at={meta.get('trained_at')}")
+        return model, scaler, feature_cols, meta
+
+    def model_exists(self, store_id: str, granularity: str = "daily") -> bool:
+        model_path = self._model_path(store_id, granularity)
+        return os.path.exists(model_path)
+
+    def list_trained_stores(self, granularity: str = "daily") -> list:
+        stores = set()
+        prefix = f"sales_{granularity}_model_store_"
+
+        for fname in os.listdir(self.model_dir):
+            if fname.startswith(prefix) and fname.endswith(".joblib"):
+                store_id = fname.replace(prefix, "").replace(".joblib", "")
+                stores.add(store_id)
+
+        return sorted(stores)
+
+trainer = SalesForecasterTrainer()
 
 def train_all():
-    Config.init_app()
-    forecaster = SalesForecaster()
-    GLOBAL_MODEL_PATH = os.path.join(os.path.dirname(Config.DAILY_MODEL_PATH), 'models_rf_global.joblib')
-    
-    # Ambil Data Harian
-    sales_daily = forecaster.fetch_data("sales-daily-summaries")
-    
-    print("=== [TRAINER] MULAI TRAINING GLOBAL MODEL (DNA STORE PROFILING) ===")
-    if sales_daily:
-        df_d = pd.DataFrame(sales_daily)
-        df_d['date'] = pd.to_datetime(df_d['date'])
-        
-        # 1. EKSTRAKSI DNA TOKO (Karakteristik Unik Masing-Masing Toko)
-        store_stats = {}
-        for store_id in df_d['m_store_id'].unique():
-            df_store = df_d[df_d['m_store_id'] == store_id].copy()
-            df_store['day_of_week'] = df_store['date'].dt.dayofweek
-            
-            mean_omzet = df_store['total_omzet'].mean()
-            std_omzet = df_store['total_omzet'].std()
-            if pd.isna(std_omzet): std_omzet = 0
-            
-            # Hitung perbandingan ramai weekend vs weekday
-            wd_mean = df_store[df_store['day_of_week'] < 5]['total_omzet'].mean()
-            we_mean = df_store[df_store['day_of_week'] >= 5]['total_omzet'].mean()
-            wd_mean = 0 if pd.isna(wd_mean) else wd_mean
-            we_mean = 0 if pd.isna(we_mean) else we_mean
-            weekend_ratio = we_mean / (wd_mean + 1) # Tambah 1 untuk menghindari pembagian dengan nol
-            
-            store_stats[store_id] = {
-                'store_mean': float(mean_omzet),
-                'store_std': float(std_omzet),
-                'weekend_ratio': float(weekend_ratio)
-            }
-        
-        # Mapping DNA Toko kembali ke DataFrame Harian
-        df_d['store_mean_omzet'] = df_d['m_store_id'].apply(lambda x: store_stats[x]['store_mean'])
-        df_d['store_std_omzet'] = df_d['m_store_id'].apply(lambda x: store_stats[x]['store_std'])
-        df_d['store_weekend_ratio'] = df_d['m_store_id'].apply(lambda x: store_stats[x]['weekend_ratio'])
-        
-        # Label Encoding untuk store_id
-        le = LabelEncoder()
-        df_d['store_id_encoded'] = le.fit_transform(df_d['m_store_id'])
-        
-        # 2. FEATURE ENGINEERING WAKTU (Kalender)
-        df_d['day_of_week'] = df_d['date'].dt.dayofweek 
-        df_d['month'] = df_d['date'].dt.month
-        df_d['day_of_month'] = df_d['date'].dt.day
-        df_d['week_of_month'] = ((df_d['date'].dt.day - 1) // 7) + 1
-        df_d['is_weekend'] = df_d['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
-        df_d['is_payday'] = df_d['day_of_month'].apply(lambda x: 1 if (x >= 25 or x <= 5) else 0)
-        df_d['total_discount'] = df_d.get('total_discount', 0).fillna(0)
-        
-        df_d = df_d.dropna().sort_values('date')
-        
-        # List Fitur X Gabungan (DNA Toko + Kalender)
-        fitur_x = [
-            'store_id_encoded', 'store_mean_omzet', 'store_std_omzet', 'store_weekend_ratio', 
-            'day_of_week', 'month', 'day_of_month', 'week_of_month', 'is_weekend', 'is_payday', 'total_discount'
-        ]
-        X, y = df_d[fitur_x], df_d['total_omzet']
-        
-        if len(X) < 20:
-            print("Data keseluruhan terlalu kecil untuk dilatih.")
-            return
-
-        # Ujian Akurasi (Simulasi)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.15, shuffle=False)
-        rf_eval = get_global_rf_model()
-        rf_eval.fit(X_train, y_train)
-        metrics = calculate_advanced_metrics(y_test, rf_eval.predict(X_test))
-
-        print(f"   -> Evaluasi Global Model selesai (R2 Keseluruhan: {metrics['r2_score']})")
-
-        # Train Full Model untuk Produksi
-        rf_final = get_global_rf_model()
-        rf_final.fit(X, y)
-        
-        # Catat last_date per toko untuk titik mulai forecasting
-        last_dates = df_d.groupby('m_store_id')['date'].max().to_dict()
-        
-        # Kemas semua ke dalam 1 file pintar
-        global_model_dict = {
-            "model": rf_final,
-            "fitur_x": fitur_x,
-            "label_encoder": le,
-            "store_stats": store_stats,
-            "last_dates": last_dates,
-            "metrics": metrics
-        }
-        
-        os.makedirs(os.path.dirname(GLOBAL_MODEL_PATH), exist_ok=True)
-        joblib.dump(global_model_dict, GLOBAL_MODEL_PATH)
-        print(f"==> Tersimpan di {GLOBAL_MODEL_PATH}\n")
-
-        # Pembersihan Model Lama (Agar rapi)
-        for old_model in [Config.DAILY_MODEL_PATH, Config.WEEKLY_MODEL_PATH, Config.MONTHLY_MODEL_PATH]:
-            if os.path.exists(old_model):
-                try: os.remove(old_model)
-                except: pass
-
-if __name__ == '__main__':
-    train_all()
+    pass

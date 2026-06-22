@@ -1,307 +1,745 @@
+import os
+import httpx
 import requests
+import asyncio
+import logging
+import psycopg2
+import psycopg2.extras
 import pandas as pd
 import numpy as np
-import joblib
-import os
 import json
-from datetime import timedelta, datetime, timezone
+from datetime import datetime, date, timedelta, timezone
+from typing import Dict, List, Tuple, Any, Optional
+from pydantic import BaseModel, Field
+
 from config import Config
+from modules.sales.trainer import trainer
 
-class SalesForecaster:
+# =========================================================================
+# LOGGER SETUP
+# =========================================================================
+
+logger = logging.getLogger("sales_forecaster")
+logger.setLevel(logging.INFO)
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+    logger.addHandler(ch)
+
+# =========================================================================
+# SCHEMAS
+# =========================================================================
+
+class DailyForecast(BaseModel):
+    date: date
+    predicted_omzet: int = Field(..., description="Prediksi jumlah omzet")
+    lower_bound: int = Field(..., description="Batas bawah prediksi (confidence interval)")
+    upper_bound: int = Field(..., description="Batas atas prediksi (confidence interval)")
+    day_of_week: str = Field(..., description="Nama hari (Senin, Selasa, dst)")
+    is_weekend: bool
+
+class WeeklyForecast(BaseModel):
+    period_start: date
+    period_end: date
+    predicted_omzet: int
+    lower_bound: int
+    upper_bound: int
+    week_of_year: int
+    year: int
+
+class MonthlyForecast(BaseModel):
+    period_start: date
+    period_end: date
+    predicted_omzet: int
+    lower_bound: int
+    upper_bound: int
+    month: int
+    year: int
+
+class ModelMetadata(BaseModel):
+    trained_at: Optional[datetime]
+    training_data_points: int
+    feature_importance: dict
+    cv_mae: float = Field(..., description="Mean Absolute Error dari cross-validation")
+    cv_rmse: float = Field(..., description="Root Mean Squared Error dari cross-validation")
+
+class ForecastResponse(BaseModel):
+    store_id: str
+    generated_at: datetime
+    forecast_horizon_days: int
+    forecasts: List[DailyForecast]
+    model_metadata: ModelMetadata
+    status: str = "success"
+    message: str = ""
+    model_config = {"protected_namespaces": ()}
+
+class WeeklyForecastResponse(BaseModel):
+    store_id: str
+    generated_at: datetime
+    forecast_horizon_weeks: int
+    forecasts: List[WeeklyForecast]
+    model_metadata: ModelMetadata
+    status: str = "success"
+    message: str = ""
+    model_config = {"protected_namespaces": ()}
+
+class MonthlyForecastResponse(BaseModel):
+    store_id: str
+    generated_at: datetime
+    forecast_horizon_months: int
+    forecasts: List[MonthlyForecast]
+    model_metadata: ModelMetadata
+    status: str = "success"
+    message: str = ""
+    model_config = {"protected_namespaces": ()}
+
+class RetrainResponse(BaseModel):
+    store_id: str
+    status: str
+    message: str
+    training_data_points: int
+    cv_mae: float
+    cv_rmse: float
+    trained_at: datetime
+    feature_importance: dict
+
+
+# =========================================================================
+# CLIENTS (Golang & DB)
+# =========================================================================
+
+class GolangAPIClient:
     def __init__(self):
-        self.global_model_data = None
+        self.base_url = Config.GOLANG_API_BASE_URL.rstrip("/")
+        self.timeout = httpx.Timeout(30.0, connect=10.0)
 
-    def fetch_data(self, endpoint):
+    async def _get(self, endpoint: str, params: Optional[Dict] = None) -> Any:
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        for attempt in range(3):
+            try:
+                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                    response = await client.get(url, params=params, headers=Config.backend_headers())
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error {e.response.status_code} on {url}: {e}")
+                raise
+            except httpx.RequestError as e:
+                logger.warning(f"Request error attempt {attempt + 1}/3 on {url}: {e}")
+                if attempt < 2:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    raise
+
+    async def fetch_sales_daily_summaries(self, store_id: str) -> List[Dict]:
+        logger.info(f"Fetching sales daily summaries for store {store_id}")
         try:
-            response = requests.get(f"{Config.BACKEND_API_URL}/{endpoint}", headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
-            if response.status_code == 200: return response.json()
+            data = await self._get("sales-daily-summaries", params={"store_id": store_id})
+            if isinstance(data, list): return data
+            if isinstance(data, dict): return data.get("data", data.get("items", []))
             return []
-        except: return []
+        except Exception as e:
+            logger.error(f"Failed to fetch sales daily summaries: {e}")
+            return []
 
-    def load_models(self):
-        global_path = os.path.join(os.path.dirname(Config.DAILY_MODEL_PATH), 'models_rf_global.joblib')
-        try: self.global_model_data = joblib.load(global_path)
-        except: pass
-
-    def get_confidence(self, metrics):
-        conf_score = max(0, min(99.9, 100 - metrics.get('mape', 20)))
-        conf_str = "HIGH" if conf_score >= 80 else "MEDIUM" if conf_score >= 60 else "LOW"
-        return round(conf_score, 2), conf_str
-
-    # ==========================================
-    # ENGINE PREDIKSI BOTTOM-UP GLOBAL
-    # ==========================================
-    def _predict_days(self, store_id, days_to_predict):
-        if not self.global_model_data: return None, "Model Global tidak ditemukan."
-        md = self.global_model_data
-        
-        # Validasi toko
+    async def fetch_sales_monthly_summaries(self, store_id: str) -> List[Dict]:
+        logger.info(f"Fetching sales monthly summaries for store {store_id}")
         try:
-            store_encoded = md['label_encoder'].transform([store_id])[0]
-        except ValueError:
-            return None, "Toko tidak dikenali di dalam Model Global (Cold-Start gagal mapping)."
-            
-        # Ambil DNA Toko
-        store_dna = md['store_stats'].get(store_id, {'store_mean': 0, 'store_std': 0, 'weekend_ratio': 1})
-        last_date = md['last_dates'].get(store_id, pd.Timestamp.now())
-        rf = md['model']
-        fx = md['fitur_x']
-        met = md['metrics']
+            data = await self._get("sales-monthly-summaries", params={"store_id": store_id})
+            if isinstance(data, list): return data
+            if isinstance(data, dict): return data.get("data", data.get("items", []))
+            return []
+        except Exception as e:
+            logger.error(f"Failed to fetch sales monthly summaries: {e}")
+            return []
 
-        fd = [last_date + timedelta(days=i) for i in range(1, days_to_predict + 1)]
-        df = pd.DataFrame({'date': fd})
-        
-        # Masukkan DNA Toko ke data masa depan
-        df['store_id_encoded'] = store_encoded
-        df['store_mean_omzet'] = store_dna['store_mean']
-        df['store_std_omzet'] = store_dna['store_std']
-        df['store_weekend_ratio'] = store_dna['weekend_ratio']
-        
-        # Masukkan Waktu Kalender
-        df['day_of_week'] = df['date'].dt.dayofweek
-        df['month'] = df['date'].dt.month
-        df['day_of_month'] = df['date'].dt.day
-        df['week_of_month'] = ((df['date'].dt.day - 1) // 7) + 1
-        df['is_weekend'] = df['day_of_week'].apply(lambda x: 1 if x >= 5 else 0)
-        df['is_payday'] = df['day_of_month'].apply(lambda x: 1 if (x >= 25 or x <= 5) else 0)
-        df['total_discount'] = 0 
-        
-        preds = np.array([tree.predict(df[fx].values) for tree in rf.estimators_])
-        m_preds, s_preds = preds.mean(axis=0), preds.std(axis=0)
-        
-        s_preds = np.clip(s_preds, 0, m_preds * 0.15)
-        
-        res = []
-        for i, d in enumerate(fd):
-            res.append({
-                "date": d,
-                "p": m_preds[i],
-                "s": s_preds[i]
-            })
-            
-        return res, met
+    async def fetch_orders(self, store_id: str) -> List[Dict]:
+        logger.info(f"Fetching orders for store {store_id}")
+        try:
+            data = await self._get("orders", params={"store_id": store_id})
+            if isinstance(data, list): return data
+            if isinstance(data, dict): return data.get("data", data.get("items", []))
+            return []
+        except Exception as e:
+            logger.error(f"Failed to fetch orders: {e}")
+            return []
 
-    # ==========================================
-    # PREDIKSI HARIAN (7 HARI)
-    # ==========================================
-    def predict_daily(self, store_id):
-        raw_res, err = self._predict_days(store_id, 7)
-        if err and not isinstance(err, dict): return None, err
-        met = err
+    async def fetch_all_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
+        logger.info(f"Fetching all historical data for store {store_id}")
+        daily_task = self.fetch_sales_daily_summaries(store_id)
+        monthly_task = self.fetch_sales_monthly_summaries(store_id)
+        orders_task = self.fetch_orders(store_id)
 
-        n_hari = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-        res = []
-        for r in raw_res:
-            p, s, d = r["p"], r["s"], r["date"]
-            cl = max(0.0, 100.0 - ((s/p)*100)) if p > 0 else 0
-            idx = d.weekday()
-            res.append({
-                "period_identifier": d.strftime('%Y-%m-%d'), 
-                "period_label": n_hari[idx], 
-                "forecast_omzet_total": int(p), 
-                "estimated_range": {"lower_bound": int(max(0, p-(1.96*s))), "upper_bound": int(p+(1.96*s))}, 
-                "confidence_level": f"{round(cl, 2)}%"
-            })
-
-        tot = sum(x['forecast_omzet_total'] for x in res)
-        h = max(res, key=lambda x: x['forecast_omzet_total'])
-        trend = "UPWARD" if sum(x['forecast_omzet_total'] for x in res[3:])/4 > sum(x['forecast_omzet_total'] for x in res[:3])/3 else "DOWNWARD"
-        sc, sl = self.get_confidence(met)
+        daily, monthly, orders = await asyncio.gather(
+            daily_task, monthly_task, orders_task, return_exceptions=True
+        )
 
         return {
-            "store_id": store_id, 
-            "metrics": met, 
-            "forecast_summary": {
-                "total_predicted_omzet": int(tot), 
-                "average_omzet": round(tot/7, 2),
-                "period_count": 7,
-                "period_type": "day"
-            }, 
-            "prediction_analysis": {
-                "highest_prediction_period": h['period_label'], 
-                "trend_direction": trend
-            }, 
-            "model_confidence": {
-                "confidence_score": sc, 
-                "confidence_level": sl
-            }, 
-            "insights": [f"Prediksi 7 hari ke depan cenderung {trend.lower()}.", f"Puncak omzet pada {h['period_label']}."], 
-            "forecast_data": res
-        }, None
+            "sales_daily": daily if not isinstance(daily, Exception) else [],
+            "sales_monthly": monthly if not isinstance(monthly, Exception) else [],
+            "orders": orders if not isinstance(orders, Exception) else [],
+        }
 
-    # ==========================================
-    # PREDIKSI MINGGUAN (4 MINGGU)
-    # ==========================================
-    def predict_weekly(self, store_id):
-        raw_res, err = self._predict_days(store_id, 28)
-        if err and not isinstance(err, dict): return None, err
-        met = err
+golang_client = GolangAPIClient()
 
-        df = pd.DataFrame(raw_res)
-        df['week_idx'] = np.arange(len(df)) // 7
-        
-        res = []
-        for w, group in df.groupby('week_idx'):
-            p_sum = group['p'].sum()
-            s_sum = np.sqrt((group['s']**2).sum())
-            start_date = group['date'].iloc[0]
-            
-            cl = max(0.0, 100.0 - ((s_sum/p_sum)*100)) if p_sum > 0 else 0
-            label = f"Minggu ke-{w+1}"
-            res.append({
-                "period_identifier": start_date.strftime('%Y-%m-%d'), 
-                "period_label": label, 
-                "forecast_omzet_total": int(p_sum), 
-                "estimated_range": {"lower_bound": int(max(0, p_sum-(1.96*s_sum))), "upper_bound": int(p_sum+(1.96*s_sum))}, 
-                "confidence_level": f"{round(cl, 2)}%"
-            })
 
-        tot = sum(x['forecast_omzet_total'] for x in res)
-        h = max(res, key=lambda x: x['forecast_omzet_total'])
-        trend = "UPWARD" if sum(x['forecast_omzet_total'] for x in res[2:])/2 > sum(x['forecast_omzet_total'] for x in res[:2])/2 else "DOWNWARD"
-        sc, sl = self.get_confidence(met)
+class PostgresClient:
+    def __init__(self) -> None:
+        pass
 
+    def _connect(self):
+        return psycopg2.connect(
+            host=os.getenv("DB_HOST", ""),
+            port=os.getenv("DB_PORT", ""),
+            user=os.getenv("DB_USER", ""),
+            password=os.getenv("DB_PASSWORD", ""),
+            dbname=os.getenv("DB_NAME", ""),
+            sslmode=os.getenv("DB_SSLMODE", "disable"),
+        )
+
+    def fetch_sales_daily_summaries(self, store_id: str) -> List[Dict[str, Any]]:
+        sql = """
+            SELECT date, total_transaction, total_omzet
+            FROM t_sales_daily_summaries
+            WHERE m_store_id = %s AND deleted_at IS NULL
+            ORDER BY date ASC
+        """
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                    cur.execute(sql, (store_id,))
+                    return [dict(row) for row in cur.fetchall()]
+        except Exception as exc:
+            logger.error(f"DB error fetch_sales_daily_summaries: {exc}")
+            return []
+
+    def fetch_orders(self, store_id: str) -> List[Dict[str, Any]]:
+        sql = """
+            SELECT id, created_at, total_price
+            FROM t_orders
+            WHERE m_store_id = %s AND deleted_at IS NULL
+            ORDER BY created_at ASC
+        """
+        try:
+            with self._connect() as conn:
+                with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                    cur.execute(sql, (store_id,))
+                    return [dict(row) for row in cur.fetchall()]
+        except Exception as exc:
+            logger.error(f"DB error fetch_orders: {exc}")
+            return []
+
+    def fetch_all_historical_data(self, store_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        daily = self.fetch_sales_daily_summaries(store_id)
+        orders = self.fetch_orders(store_id)
         return {
-            "store_id": store_id, 
-            "metrics": met, 
-            "forecast_summary": {
-                "total_predicted_omzet": int(tot), 
-                "average_omzet": round(tot/4, 2),
-                "period_count": 4,
-                "period_type": "week"
-            }, 
-            "prediction_analysis": {
-                "highest_prediction_period": h['period_label'], 
-                "trend_direction": trend
-            }, 
-            "model_confidence": {
-                "confidence_score": sc, 
-                "confidence_level": sl
-            }, 
-            "insights": [f"Prediksi 4 minggu ke depan cenderung {trend.lower()}.", f"Puncak omzet pada {h['period_label']}."], 
-            "forecast_data": res
-        }, None
+            "sales_daily": daily,
+            "sales_monthly": [],
+            "orders": orders,
+        }
 
-    # ==========================================
-    # PREDIKSI BULANAN
-    # ==========================================
-    def predict_monthly(self, store_id, n_months=1):
-        raw_res, err = self._predict_days(store_id, n_months * 30) 
-        if err and not isinstance(err, dict): return None, err
-        met = err
+db_client = PostgresClient()
 
-        df = pd.DataFrame(raw_res)
-        df['year_month'] = df['date'].dt.to_period('M')
+
+# =========================================================================
+# PREPROCESSING & FEATURE ENGINEERING
+# =========================================================================
+
+HARI_INDONESIA = {
+    0: "Senin", 1: "Selasa", 2: "Rabu", 3: "Kamis",
+    4: "Jumat", 5: "Sabtu", 6: "Minggu"
+}
+
+class SalesPreprocessor:
+    def build_daily_dataframe(self, raw_data: Dict[str, List[Dict]]) -> pd.DataFrame:
+        df = self._build_from_sales_daily(raw_data.get("sales_daily", []))
+        if df.empty:
+            logger.warning("sales_daily kosong, fallback ke data orders")
+            df = self._build_from_orders(raw_data.get("orders", []))
+        if df.empty:
+            logger.error("Tidak ada data historis yang bisa digunakan")
+            return pd.DataFrame()
+
+        df = df.sort_values("date").reset_index(drop=True)
+        return df
+
+    def build_weekly_dataframe(self, raw_data: Dict[str, List[Dict]]) -> pd.DataFrame:
+        df_daily = self.build_daily_dataframe(raw_data)
+        if df_daily.empty:
+            return pd.DataFrame()
+
+        df_daily = df_daily.copy()
+        df_daily["date"] = pd.to_datetime(df_daily["date"])
+        df_daily = df_daily.set_index("date").sort_index()
+
+        weekly = df_daily.resample("W-SUN").sum(numeric_only=True)
+        weekly = weekly.reset_index().rename(columns={"date": "period_end"})
+        weekly["date"] = weekly["period_end"] - pd.Timedelta(days=6)
+        return weekly[["date", "omzet"]].copy()
+
+    def build_monthly_dataframe(self, raw_data: Dict[str, List[Dict]]) -> pd.DataFrame:
+        df_daily = self.build_daily_dataframe(raw_data)
+        if df_daily.empty:
+            return pd.DataFrame()
+
+        df_daily = df_daily.copy()
+        df_daily["date"] = pd.to_datetime(df_daily["date"])
+        df_daily = df_daily.set_index("date").sort_index()
+
+        monthly = df_daily.resample("MS").sum(numeric_only=True)
+        monthly = monthly.reset_index()
+        return monthly[["date", "omzet"]].copy()
+
+    def _build_from_sales_daily(self, records: List[Dict]) -> pd.DataFrame:
+        if not records:
+            return pd.DataFrame()
+        try:
+            df = pd.DataFrame(records)
+            df["date"] = pd.to_datetime(df["date"]).dt.date
+            df["total_omzet"] = pd.to_numeric(
+                df.get("total_omzet", df.get("totalOmzet", 0)), errors="coerce"
+            ).fillna(0)
+            return df[["date", "total_omzet"]].rename(columns={"total_omzet": "omzet"})
+        except Exception as e:
+            logger.error(f"Error parsing sales_daily: {e}")
+            return pd.DataFrame()
+
+    def _build_from_orders(self, records: List[Dict]) -> pd.DataFrame:
+        if not records:
+            return pd.DataFrame()
+        try:
+            df = pd.DataFrame(records)
+            date_col = next((c for c in ["created_at", "createdAt", "date"] if c in df.columns), None)
+            if not date_col:
+                return pd.DataFrame()
+            df["date"] = pd.to_datetime(df[date_col]).dt.date
+            daily = df.groupby("date").agg(
+                omzet=("total_price", lambda x: pd.to_numeric(x, errors="coerce").sum())
+            ).reset_index()
+            return daily
+        except Exception as e:
+            logger.error(f"Error parsing orders: {e}")
+            return pd.DataFrame()
+
+    def engineer_features(self, df: pd.DataFrame, lags: List[int] | None = None, windows: List[int] | None = None, expanding_min_periods: int | None = None) -> pd.DataFrame:
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+
+        lags = lags or [1, 2, 3, 7, 14, 21, 28]
+        windows = windows or [7, 14, 28]
+        max_lag = max(lags)
+        expanding_min_periods = expanding_min_periods or max(7, min(windows))
+
+        df["day_of_week"] = df["date"].dt.dayofweek
+        df["day_of_month"] = df["date"].dt.day
+        df["month"] = df["date"].dt.month
+        df["quarter"] = df["date"].dt.quarter
+        df["week_of_year"] = df["date"].dt.isocalendar().week.astype(int)
+        df["is_weekend"] = df["day_of_week"].isin([5, 6]).astype(int)
+        df["is_month_start"] = df["date"].dt.is_month_start.astype(int)
+        df["is_month_end"] = df["date"].dt.is_month_end.astype(int)
+
+        df["sin_dow"] = np.sin(2 * np.pi * df["day_of_week"] / 7)
+        df["cos_dow"] = np.cos(2 * np.pi * df["day_of_week"] / 7)
+        df["sin_month"] = np.sin(2 * np.pi * df["month"] / 12)
+        df["cos_month"] = np.cos(2 * np.pi * df["month"] / 12)
+
+        for lag in lags:
+            df[f"lag_{lag}"] = df["omzet"].shift(lag)
+
+        for window in windows:
+            df[f"rolling_mean_{window}"] = df["omzet"].shift(1).rolling(window=window, min_periods=1).mean()
+            df[f"rolling_std_{window}"] = df["omzet"].shift(1).rolling(window=window, min_periods=1).std().fillna(0)
+            df[f"rolling_max_{window}"] = df["omzet"].shift(1).rolling(window=window, min_periods=1).max()
+            df[f"rolling_min_{window}"] = df["omzet"].shift(1).rolling(window=window, min_periods=1).min()
+
+        df["expanding_mean"] = df["omzet"].shift(1).expanding(min_periods=expanding_min_periods).mean()
+
+        df = df.dropna(subset=[f"lag_{max_lag}"]).reset_index(drop=True)
+        return df
+
+    def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
+        exclude = {"date", "omzet"}
+        return [c for c in df.columns if c not in exclude]
+
+    def _build_future_row(self, target_date: pd.Timestamp, history: pd.DataFrame, lags: List[int] | None = None, windows: List[int] | None = None) -> Dict[str, Any]:
+        row: Dict[str, Any] = {}
+        lags = lags or [1, 2, 3, 7, 14, 21, 28]
+        windows = windows or [7, 14, 28]
+
+        row["day_of_week"] = target_date.dayofweek
+        row["day_of_month"] = target_date.day
+        row["month"] = target_date.month
+        row["quarter"] = target_date.quarter
+        row["week_of_year"] = target_date.isocalendar()[1]
+        row["is_weekend"] = int(target_date.dayofweek in [5, 6])
+        row["is_month_start"] = int(target_date.is_month_start)
+        row["is_month_end"] = int(target_date.is_month_end)
+
+        row["sin_dow"] = np.sin(2 * np.pi * row["day_of_week"] / 7)
+        row["cos_dow"] = np.cos(2 * np.pi * row["day_of_week"] / 7)
+        row["sin_month"] = np.sin(2 * np.pi * row["month"] / 12)
+        row["cos_month"] = np.cos(2 * np.pi * row["month"] / 12)
+
+        hist_omzet = history["omzet"].values
+        for lag in lags:
+            idx = len(hist_omzet) - lag
+            row[f"lag_{lag}"] = float(hist_omzet[idx]) if idx >= 0 else 0.0
+
+        for window in windows:
+            recent = hist_omzet[-window:] if len(hist_omzet) >= window else hist_omzet
+            row[f"rolling_mean_{window}"] = float(np.mean(recent)) if len(recent) > 0 else 0.0
+            row[f"rolling_std_{window}"] = float(np.std(recent)) if len(recent) > 1 else 0.0
+            row[f"rolling_max_{window}"] = float(np.max(recent)) if len(recent) > 0 else 0.0
+            row[f"rolling_min_{window}"] = float(np.min(recent)) if len(recent) > 0 else 0.0
+
+        row["expanding_mean"] = float(np.mean(hist_omzet)) if len(hist_omzet) > 0 else 0.0
+
+        row["date"] = target_date
+        return row
+
+# =========================================================================
+# FORECAST SERVICE
+# =========================================================================
+
+class SalesForecastService:
+    def __init__(self):
+        self.preprocessor = SalesPreprocessor()
+        self.period_configs = {
+            "weekly": {
+                "lags": [1, 2, 3, 4, 8, 12],
+                "windows": [4, 8, 12],
+                "expanding_min_periods": 4,
+            },
+            "monthly": {
+                "lags": [1, 2, 3, 6, 12],
+                "windows": [3, 6, 12],
+                "expanding_min_periods": 3,
+            },
+        }
+
+    async def _fetch_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
+        if raw_data.get("sales_daily") or raw_data.get("orders"):
+            return raw_data
+
+        logger.warning(
+            f"Backend Golang tidak mengembalikan data historis untuk store {store_id}. "
+            "Mencoba fallback direct DB."
+        )
+        return db_client.fetch_all_historical_data(store_id)
+
+    async def retrain(self, store_id: str, force: bool = False) -> RetrainResponse:
+        logger.info(f"[RETRAIN] store={store_id}, force={force}")
+        raw_data = await self._fetch_historical_data(store_id)
+        df_daily = self.preprocessor.build_daily_dataframe(raw_data)
         
-        unique_months = df['year_month'].unique()[:n_months]
-        
-        n_bulan = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agt", "Sep", "Okt", "Nov", "Des"]
-        res = []
-        for m in unique_months:
-            group = df[df['year_month'] == m]
-            p_sum = group['p'].sum()
-            s_sum = np.sqrt((group['s']**2).sum())
-            
-            cl = max(0.0, 100.0 - ((s_sum/p_sum)*100)) if p_sum > 0 else 0
-            label = f"{n_bulan[m.month-1]} {m.year}"
-            res.append({
-                # FIX DI SINI: Mengubah '2020-07' menjadi format lengkap '2020-07-01'
-                "period_identifier": m.start_time.strftime('%Y-%m-%d'), 
-                "period_label": label, 
-                "forecast_omzet_total": int(p_sum), 
-                "estimated_range": {"lower_bound": int(max(0, p_sum-(1.96*s_sum))), "upper_bound": int(p_sum+(1.96*s_sum))}, 
-                "confidence_level": f"{round(cl, 2)}%"
-            })
+        if df_daily.empty:
+            raise ValueError(f"Tidak ada data historis untuk store {store_id}.")
 
-        tot = sum(x['forecast_omzet_total'] for x in res)
-        h = max(res, key=lambda x: x['forecast_omzet_total'])
-        trend = "UPWARD" if len(res) > 1 and sum(x['forecast_omzet_total'] for x in res[len(res)//2:])/max(1, len(res)//2) > sum(x['forecast_omzet_total'] for x in res[:len(res)//2])/max(1, len(res)//2) else "STABIL" if len(res) == 1 else "DOWNWARD"
-        sc, sl = self.get_confidence(met)
+        if len(df_daily) < 30:
+            raise ValueError(f"Data historis terlalu sedikit: {len(df_daily)} hari. Minimal 30 hari data.")
 
-        return {
-            "store_id": store_id, 
-            "metrics": met, 
-            "forecast_summary": {
-                "total_predicted_omzet": int(tot), 
-                "average_omzet": round(tot/n_months, 2),
-                "period_count": n_months,
-                "period_type": "month"
-            }, 
-            "prediction_analysis": {
-                "highest_prediction_period": h['period_label'], 
-                "trend_direction": trend
-            }, 
-            "model_confidence": {
-                "confidence_score": sc, 
-                "confidence_level": sl
-            }, 
-            "insights": [f"Prediksi {n_months} bulan ke depan.", f"Puncak omzet pada {h['period_label']}."], 
-            "forecast_data": res
-        }, None
-    # ==========================================
-    # SAVE TO DATABASE (GOLANG API)
-    # ==========================================
-    def save_forecast_to_db(self, store_id, granularity='daily', periods=1):
-        if granularity == 'daily':
-            result, err = self.predict_daily(store_id)
-            horizon_label = 'daily'
-            horizon_days = 7
-        elif granularity == 'weekly':
-            result, err = self.predict_weekly(store_id)
-            horizon_label = 'weekly'
-            horizon_days = 28
-        elif granularity == 'monthly':
-            result, err = self.predict_monthly(store_id, n_months=periods)
-            horizon_label = 'monthly'
-            horizon_days = periods * 30
+        df_features = self.preprocessor.engineer_features(df_daily)
+        feature_cols = self.preprocessor.get_feature_columns(df_features)
+
+        meta = trainer.train(df_features, feature_cols, store_id)
+
+        return RetrainResponse(
+            store_id=store_id,
+            status="success",
+            message=f"Model berhasil dilatih dengan {meta['training_data_points']} data points",
+            training_data_points=meta["training_data_points"],
+            cv_mae=meta["cv_mae"],
+            cv_rmse=meta["cv_rmse"],
+            trained_at=datetime.fromisoformat(meta["trained_at"]),
+            feature_importance=meta["top_features"],
+        )
+
+    async def forecast(self, store_id: str, forecast_days: int, start_date: date) -> ForecastResponse:
+        logger.info(f"[FORECAST] store={store_id}, days={forecast_days}, start={start_date}")
+
+        if not trainer.model_exists(store_id):
+            logger.info(f"Model belum ada untuk store {store_id}, auto-training...")
+            await self.retrain(store_id)
+
+        model, scaler, feature_cols, meta = trainer.load_model(store_id)
+        raw_data = await self._fetch_historical_data(store_id)
+        df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+
+        if df_daily.empty:
+            raise ValueError(f"Tidak ada data historis untuk store {store_id}")
+
+        hist_std = float(df_daily["omzet"].std()) if len(df_daily) > 1 else 100000.0
+        ci_multiplier = 1.28
+
+        forecasts = []
+        running_history = df_daily[["date", "omzet"]].copy()
+        running_history["date"] = pd.to_datetime(running_history["date"])
+
+        for day_offset in range(forecast_days):
+            target_date = pd.Timestamp(start_date) + timedelta(days=day_offset)
+            row = self.preprocessor._build_future_row(target_date, running_history)
+            X_row = np.array([[row.get(col, 0.0) for col in feature_cols]])
+            X_scaled = scaler.transform(X_row)
+
+            tree_preds = np.array([tree.predict(X_scaled)[0] for tree in model.estimators_])
+            pred_mean = float(np.mean(tree_preds))
+            pred_std = float(np.std(tree_preds))
+
+            predicted_omzet = max(0, round(pred_mean))
+            lower = max(0, round(pred_mean - ci_multiplier * (pred_std + hist_std * 0.15)))
+            upper = max(predicted_omzet, round(pred_mean + ci_multiplier * (pred_std + hist_std * 0.15)))
+
+            day_name = HARI_INDONESIA.get(target_date.dayofweek, "")
+            is_weekend = target_date.dayofweek in [5, 6]
+
+            forecasts.append(DailyForecast(
+                date=target_date.date(),
+                predicted_omzet=predicted_omzet,
+                lower_bound=lower,
+                upper_bound=upper,
+                day_of_week=day_name,
+                is_weekend=is_weekend,
+            ))
+
+            new_row = pd.DataFrame([{"date": target_date, "omzet": float(predicted_omzet)}])
+            running_history = pd.concat([running_history, new_row], ignore_index=True)
+
+        return ForecastResponse(
+            store_id=store_id,
+            generated_at=datetime.utcnow(),
+            forecast_horizon_days=forecast_days,
+            forecasts=forecasts,
+            model_metadata=ModelMetadata(
+                trained_at=datetime.fromisoformat(meta["trained_at"]),
+                training_data_points=meta["training_data_points"],
+                feature_importance=meta.get("top_features", {}),
+                cv_mae=meta["cv_mae"],
+                cv_rmse=meta["cv_rmse"],
+            ),
+            status="success",
+            message=f"Berhasil memprediksi {forecast_days} hari ke depan",
+        )
+
+    def _get_period_config(self, granularity: str) -> Dict[str, Any]:
+        if granularity not in self.period_configs:
+            raise ValueError(f"Granularity tidak dikenal: {granularity}")
+        return self.period_configs[granularity]
+
+    def _align_start_date(self, start: date, granularity: str) -> pd.Timestamp:
+        ts = pd.Timestamp(start)
+        if granularity == "weekly":
+            return ts - pd.Timedelta(days=ts.dayofweek)
+        if granularity == "monthly":
+            return ts.replace(day=1)
+        return ts
+
+    def _next_start_date(self, last_date: pd.Timestamp, granularity: str) -> pd.Timestamp:
+        if granularity == "weekly":
+            days_to_add = 7 - last_date.dayofweek
+            return (last_date + pd.Timedelta(days=days_to_add)).normalize()
+        if granularity == "monthly":
+            return (last_date + pd.offsets.MonthBegin(1)).normalize()
+        return last_date
+
+    def _add_periods(self, start: pd.Timestamp, offset: int, granularity: str) -> pd.Timestamp:
+        if granularity == "weekly":
+            return start + pd.Timedelta(weeks=offset)
+        if granularity == "monthly":
+            return start + pd.DateOffset(months=offset)
+        return start
+
+    async def _retrain_periodic(self, store_id: str, granularity: str) -> Dict[str, Any]:
+        raw_data = await self._fetch_historical_data(store_id)
+        if granularity == "weekly":
+            df_period = self.preprocessor.build_weekly_dataframe(raw_data)
         else:
-            return False, "Granularity harus 'daily', 'weekly', atau 'monthly'"
+            df_period = self.preprocessor.build_monthly_dataframe(raw_data)
 
-        if err and not isinstance(err, dict): return False, err
+        if df_period.empty:
+            raise ValueError(f"Tidak ada data historis untuk store {store_id}.")
 
-        metrics = result.get('metrics', {})
-        summary = result.get('forecast_summary', {})
-        forecast_array = result.get('forecast_data', [])
+        config = self._get_period_config(granularity)
+        min_points = max(config["lags"]) + 1
+        if len(df_period) < min_points:
+            raise ValueError(f"Data historis terlalu sedikit: {len(df_period)} {granularity}. Minimal {min_points} periode.")
+
+        df_features = self.preprocessor.engineer_features(
+            df_period,
+            lags=config["lags"],
+            windows=config["windows"],
+            expanding_min_periods=config["expanding_min_periods"],
+        )
+        feature_cols = self.preprocessor.get_feature_columns(df_features)
+
+        meta = trainer.train(df_features, feature_cols, store_id, granularity=granularity)
+        return meta
+
+    async def _forecast_periodic(self, store_id: str, forecast_periods: int, start_date: date | None, granularity: str):
+        if not trainer.model_exists(store_id, granularity=granularity):
+            logger.info(f"Model {granularity} belum ada untuk store {store_id}, auto-training...")
+            await self._retrain_periodic(store_id, granularity)
+
+        model, scaler, feature_cols, meta = trainer.load_model(store_id, granularity=granularity)
+        raw_data = await self._fetch_historical_data(store_id)
         
-        if not forecast_array:
-            return False, "Array forecast kosong, prediksi gagal."
+        if granularity == "weekly":
+            df_period = self.preprocessor.build_weekly_dataframe(raw_data)
+        else:
+            df_period = self.preprocessor.build_monthly_dataframe(raw_data)
+
+        if df_period.empty:
+            raise ValueError(f"Tidak ada data historis untuk store {store_id}")
+
+        hist_std = float(df_period["omzet"].std()) if len(df_period) > 1 else 100000.0
+        ci_multiplier = 1.28
+
+        running_history = df_period[["date", "omzet"]].copy()
+        running_history["date"] = pd.to_datetime(running_history["date"])
+
+        if start_date:
+            start = self._align_start_date(start_date, granularity)
+        else:
+            start = self._next_start_date(running_history["date"].max(), granularity)
+
+        config = self._get_period_config(granularity)
+        forecasts = []
+
+        for offset in range(forecast_periods):
+            target_date = self._add_periods(start, offset, granularity)
+            row = self.preprocessor._build_future_row(target_date, running_history, lags=config["lags"], windows=config["windows"])
+            X_row = np.array([[row.get(col, 0.0) for col in feature_cols]])
+            X_scaled = scaler.transform(X_row)
+
+            tree_preds = np.array([tree.predict(X_scaled)[0] for tree in model.estimators_])
+            pred_mean = float(np.mean(tree_preds))
+            pred_std = float(np.std(tree_preds))
+
+            predicted_omzet = max(0, round(pred_mean))
+            lower = max(0, round(pred_mean - ci_multiplier * (pred_std + hist_std * 0.15)))
+            upper = max(predicted_omzet, round(pred_mean + ci_multiplier * (pred_std + hist_std * 0.15)))
+
+            if granularity == "weekly":
+                forecasts.append(WeeklyForecast(
+                    period_start=target_date.date(),
+                    period_end=(target_date + timedelta(days=6)).date(),
+                    predicted_omzet=predicted_omzet,
+                    lower_bound=lower,
+                    upper_bound=upper,
+                    week_of_year=int(target_date.isocalendar()[1]),
+                    year=int(target_date.year),
+                ))
+            else:
+                forecasts.append(MonthlyForecast(
+                    period_start=target_date.date(),
+                    period_end=(target_date + pd.offsets.MonthEnd(0)).date(),
+                    predicted_omzet=predicted_omzet,
+                    lower_bound=lower,
+                    upper_bound=upper,
+                    month=int(target_date.month),
+                    year=int(target_date.year),
+                ))
+
+            new_row = pd.DataFrame([{"date": target_date, "omzet": float(predicted_omzet)}])
+            running_history = pd.concat([running_history, new_row], ignore_index=True)
+
+        return forecasts, meta
+
+    async def forecast_weekly(self, store_id: str, forecast_weeks: int, start_date: date | None) -> WeeklyForecastResponse:
+        forecasts, meta = await self._forecast_periodic(store_id, forecast_weeks, start_date, "weekly")
+        return WeeklyForecastResponse(
+            store_id=store_id,
+            generated_at=datetime.utcnow(),
+            forecast_horizon_weeks=forecast_weeks,
+            forecasts=forecasts,
+            model_metadata=ModelMetadata(
+                trained_at=datetime.fromisoformat(meta["trained_at"]),
+                training_data_points=meta["training_data_points"],
+                feature_importance=meta.get("top_features", {}),
+                cv_mae=meta["cv_mae"],
+                cv_rmse=meta["cv_rmse"],
+            ),
+            status="success",
+            message=f"Berhasil memprediksi {forecast_weeks} minggu ke depan",
+        )
+
+    async def forecast_monthly(self, store_id: str, forecast_months: int, start_date: date | None) -> MonthlyForecastResponse:
+        forecasts, meta = await self._forecast_periodic(store_id, forecast_months, start_date, "monthly")
+        return MonthlyForecastResponse(
+            store_id=store_id,
+            generated_at=datetime.utcnow(),
+            forecast_horizon_months=forecast_months,
+            forecasts=forecasts,
+            model_metadata=ModelMetadata(
+                trained_at=datetime.fromisoformat(meta["trained_at"]),
+                training_data_points=meta["training_data_points"],
+                feature_importance=meta.get("top_features", {}),
+                cv_mae=meta["cv_mae"],
+                cv_rmse=meta["cv_rmse"],
+            ),
+            status="success",
+            message=f"Berhasil memprediksi {forecast_months} bulan ke depan",
+        )
+
+    async def save_forecast_to_db(self, store_id: str, forecast_response: dict, backend_token: str = None) -> Tuple[bool, str]:
+        # Same logic as original forecaster but adapted to the new schema
+        # We need to map the output of DailyForecast, WeeklyForecast, MonthlyForecast to the DB
+        # The save mechanism will push to /forecast-predictions, /forecast-runs, /forecast-results
+        
+        horizon_label = forecast_response.get("request_meta", {}).get("horizon_label", "daily")
+        granularity = horizon_label
+        
+        results_list = forecast_response.get("forecasts", [])
+        if not results_list:
+            return False, "Tidak ada data forecast untuk disimpan."
+
+        horizon_days = len(results_list)
+        if horizon_label == "weekly":
+            horizon_days = len(results_list) * 7
+        elif horizon_label == "monthly":
+            horizon_days = len(results_list) * 30
 
         model_version = "1.0.0"
+        metrics = forecast_response.get("model_metadata", {})
+        
+        # Prepare headers
+        headers = Config.backend_headers()
+        if backend_token:
+            headers['Authorization'] = f"Bearer {backend_token}"
 
-        # 1. Siapkan & Kirim ke forecast_predictions (Dashboard Cepat)
+        # 1. /forecast-predictions
         pred_rows = []
-        for item in forecast_array:
+        for item in results_list:
+            target_date = item.get("date") or item.get("period_start")
+            if hasattr(target_date, "isoformat"):
+                target_date = target_date.isoformat()
+            
             pred_rows.append({
                 "store_id": store_id,
                 "module": "sales",
                 "horizon_label": horizon_label,
                 "horizon_days": horizon_days,
-                "prediction_date": item['period_identifier'],
-                "predicted_value": float(item.get('forecast_omzet_total', 0)),
-                "lower_bound": float(item.get('estimated_range', {}).get('lower_bound', 0)),
-                "upper_bound": float(item.get('estimated_range', {}).get('upper_bound', 0)),
-                "mae": metrics.get('mae', 0.0),
-                "rmse": metrics.get('rmse', 0.0),
-                "mape": metrics.get('mape', 0.0),
+                "prediction_date": target_date,
+                "predicted_value": float(item.get("predicted_omzet", 0)),
+                "lower_bound": float(item.get("lower_bound", 0)),
+                "upper_bound": float(item.get("upper_bound", 0)),
+                "mae": metrics.get("cv_mae", 0.0),
+                "rmse": metrics.get("cv_rmse", 0.0),
+                "mape": 0.0, # Not calculated in current metrics
                 "model_version": model_version,
             })
 
         try:
-            resp_pred = requests.post(f"{Config.BACKEND_API_URL}/forecast-predictions", json={"predictions": pred_rows}, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
+            resp_pred = requests.post(f"{Config.BACKEND_API_URL}/forecast-predictions", json={"predictions": pred_rows}, headers=headers, timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp_pred.raise_for_status()
-            print(f"[SAVED] {len(forecast_array)} baris ke forecast_predictions")
         except Exception as e:
-            err_text = getattr(e.response, 'text', str(e)) if hasattr(e, 'response') and e.response else str(e)
-            print(f"[ERROR] Gagal simpan forecast_predictions: {err_text}")
-            return False, f"Gagal simpan forecast_predictions: {err_text}"
+            return False, f"Gagal simpan forecast_predictions: {e}"
 
-        # 2. Siapkan & Kirim ke forecast_runs (Tabel Header/Induk)
+        # 2. /forecast-runs
         now = datetime.now(timezone.utc).isoformat()
-        
-        md = self.global_model_data
-        train_end = "2024-12-31" 
-        if md and 'last_dates' in md and store_id in md['last_dates']:
-            train_end = md['last_dates'][store_id].strftime('%Y-%m-%d')
+        start_date_str = pred_rows[0]["prediction_date"]
+        end_date_str = pred_rows[-1]["prediction_date"]
 
         run_payload = {
             "store_id": store_id,
@@ -309,52 +747,53 @@ class SalesForecaster:
             "horizon_label": horizon_label,
             "horizon_days": horizon_days,
             "granularity": granularity,
-            "model_name": "random forest global",
+            "model_name": "random forest individual",
             "model_version": model_version,
-            "feature_version": "v1",
+            "feature_version": "v2",
             "train_start_date": "2020-01-01",
-            "train_end_date": train_end,
-            "predict_start_date": forecast_array[0]['period_identifier'],
-            "predict_end_date": forecast_array[-1]['period_identifier'],
+            "train_end_date": now, # Simplified
+            "predict_start_date": start_date_str,
+            "predict_end_date": end_date_str,
             "metrics": json.dumps(metrics),
-            "summary": json.dumps(summary),
-            "data_quality": json.dumps({"date_range": {"start": "2020-01-01", "end": train_end}}),
+            "summary": json.dumps({"period_count": len(results_list)}),
+            "data_quality": json.dumps({}),
             "status": "success",
             "started_at": now,
             "finished_at": now
         }
 
-        run_id = None
         try:
-            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-runs", json=run_payload, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
+            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-runs", json=run_payload, headers=headers, timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
             run_data = resp.json()
-            run_id = run_data.get('run_id') or run_data.get('data', {}).get('id')
+            run_id = run_data.get("run_id") or run_data.get("data", {}).get("id")
             if not run_id: return False, "Berhasil insert forecast_runs tapi run_id tidak kembali."
-            print(f"[SAVED] forecast_runs run_id={run_id}")
         except Exception as e:
             return False, f"Gagal simpan forecast_runs: {e}"
 
-        # 3. Siapkan & Kirim ke forecast_results (Tabel Detail Harian/Mingguan/Bulanan)
+        # 3. /forecast-results
         results_data = []
-        conf_score = result.get('model_confidence', {}).get('confidence_score', 0)
-        
-        for item in forecast_array:
+        for item in results_list:
+            target_date = item.get("date") or item.get("period_start")
+            if hasattr(target_date, "isoformat"):
+                target_date = target_date.isoformat()
+            
             results_data.append({
-                "target_date": item['period_identifier'],
-                "predicted_value": float(item.get('forecast_omzet_total', 0)),
-                "lower_bound": float(item.get('estimated_range', {}).get('lower_bound', 0)),
-                "upper_bound": float(item.get('estimated_range', {}).get('upper_bound', 0)),
-                "confidence_level": int(round(conf_score)),
+                "target_date": target_date,
+                "predicted_value": float(item.get("predicted_omzet", 0)),
+                "lower_bound": float(item.get("lower_bound", 0)),
+                "upper_bound": float(item.get("upper_bound", 0)),
+                "confidence_level": 90, # Approx for Random Forest ci_multiplier
                 "item_id": None, 
                 "item_type": "sales"
             })
 
         try:
-            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-results", json={"run_id": run_id, "results": results_data}, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
+            resp = requests.post(f"{Config.BACKEND_API_URL}/forecast-results", json={"run_id": run_id, "results": results_data}, headers=headers, timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
-            print(f"[SAVED] {len(forecast_array)} baris ke forecast_results untuk run_id={run_id}")
         except Exception as e:
             return False, f"Gagal simpan forecast_results: {e}"
 
         return True, f"Semua data forecast {granularity} berhasil disimpan ke database!"
+
+sales_forecast_service = SalesForecastService()

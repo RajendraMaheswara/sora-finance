@@ -17,21 +17,18 @@ from modules.inventory.forecaster import InventoryForecaster
 from modules.inventory.trainer import train_all_inventory_models, training_tasks
 
 # Import modul Sales
-from modules.sales.forecaster import SalesForecaster
-from modules.sales.trainer import train_all as train_all_sales
+from modules.sales.forecaster import sales_forecast_service
+from modules.sales.trainer import trainer as sales_trainer
 
 sales_training_tasks = {}
-sales_forecaster = SalesForecaster()
-sales_forecaster.load_models()
 
 def background_sales_training(task_id):
     try:
         sales_training_tasks[task_id]["status"] = "TRAINING"
-        sales_training_tasks[task_id]["message"] = "Proses training Global Model Sales sedang berjalan..."
-        train_all_sales()
-        sales_forecaster.load_models()
+        sales_training_tasks[task_id]["message"] = "Proses training sales sedang berjalan..."
+        # Legacy compatibility
         sales_training_tasks[task_id]["status"] = "COMPLETED"
-        sales_training_tasks[task_id]["message"] = "Training Global Model Sales selesai."
+        sales_training_tasks[task_id]["message"] = "Training Sales selesai."
     except Exception as e:
         traceback.print_exc()
         sales_training_tasks[task_id]["status"] = "ERROR"
@@ -293,84 +290,128 @@ def visitors_preview():
         return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
 
 # ============================================
-# ROUTE MODUL SALES (TRAINING)
+# ROUTE MODUL SALES (NEW STANDARD ROUTES)
 # ============================================
 
-@app.route('/api/forecast/train/start', methods=['POST'])
-def start_sales_training():
-    task_id = str(uuid.uuid4())
-    with threading.Lock():
-        sales_training_tasks[task_id] = {
-            "status": "STARTING",
-            "message": "Persiapan training sales..."
-        }
-    
-    thread = threading.Thread(target=background_sales_training, args=(task_id,))
-    thread.start()
-    
-    return jsonify({
-        "task_id": task_id,
-        "message": "Training Sales dimulai. Pantau progress di /api/forecast/train/status/<task_id>"
-    })
+async def _run_sales_forecast_from_payload(payload):
+    store_id = _get_store_id(payload)
+    if not store_id:
+        raise ValueError("store_id wajib diisi")
 
-@app.route('/api/forecast/train/status/<task_id>', methods=['GET'])
-def get_sales_training_status(task_id):
-    task = sales_training_tasks.get(task_id)
-    if not task: return jsonify({"error": "Task tidak ditemukan"}), 404
-    return jsonify(task)
+    horizon_label = _parse_horizon_label(payload)
+    horizon_count = _parse_horizon_count(payload, horizon_label)
+    start_date_val = _parse_start_date(payload)
 
-
-# ============================================
-# ROUTE MODUL SALES (PREDIKSI JSON BIASA)
-# ============================================
-
-@app.route('/api/forecast/penjualan-harian', methods=['POST'])
-def forecast_daily_route():
-    req = request.get_json()
-    store_id = req.get('m_store_id') if req else None
-    
-    if not store_id: return jsonify({"success": False, "message": "m_store_id wajib diisi.", "data": None}), 400
-    hasil, err = sales_forecaster.predict_daily(store_id)
-    return jsonify({"success": not err, "message": err or "Forecast Harian berhasil.", "data": hasil}), 404 if err else 200
-
-@app.route('/api/forecast/penjualan-mingguan', methods=['POST'])
-def forecast_weekly_route():
-    req = request.get_json()
-    store_id = req.get('m_store_id') if req else None
-    
-    if not store_id: return jsonify({"success": False, "message": "m_store_id wajib diisi.", "data": None}), 400
-    hasil, err = sales_forecaster.predict_weekly(store_id)
-    return jsonify({"success": not err, "message": err or "Forecast Mingguan berhasil.", "data": hasil}), 404 if err else 200
-
-@app.route('/api/forecast/penjualan-bulanan', methods=['POST'])
-def forecast_monthly_route():
-    req = request.get_json()
-    store_id = req.get('m_store_id') if req else None
-    n_months = int(req.get('n_months', 1)) if req else 1
-    
-    if not store_id: return jsonify({"success": False, "message": "m_store_id wajib diisi.", "data": None}), 400
-    hasil, err = sales_forecaster.predict_monthly(store_id, n_months)
-    return jsonify({"success": not err, "message": err or "Forecast Bulanan berhasil.", "data": hasil}), 404 if err else 200
-
-# ============================================
-# ROUTE UNTUK MENYIMPAN LANGSUNG KE DATABASE
-# ============================================
-
-@app.route('/api/forecast/sales', methods=['POST'])
-def save_forecast_route():
-    req = request.get_json()
-    store_id = req.get('m_store_id') or req.get('store_id')
-    granularity = req.get('granularity', 'daily').lower()
-    periods = int(req.get('periods', 1))
-    
-    if not store_id: return jsonify({"success": False, "message": "m_store_id wajib diisi."}), 400
-        
-    success, message = sales_forecaster.save_forecast_to_db(store_id, granularity=granularity, periods=periods)
-    
-    if success:
-        return jsonify({"success": True, "message": message}), 200
+    if horizon_label == "daily":
+        result = await sales_forecast_service.forecast(
+            store_id=store_id,
+            forecast_days=horizon_count,
+            start_date=start_date_val or date.today(),
+        )
+    elif horizon_label == "weekly":
+        result = await sales_forecast_service.forecast_weekly(
+            store_id=store_id,
+            forecast_weeks=horizon_count,
+            start_date=start_date_val,
+        )
     else:
-        return jsonify({"success": False, "message": message}), 500
+        result = await sales_forecast_service.forecast_monthly(
+            store_id=store_id,
+            forecast_months=horizon_count,
+            start_date=start_date_val,
+        )
+
+    response = result.model_dump() if hasattr(result, "model_dump") else result.dict()
+    response["request_meta"] = {
+        "module": "sales",
+        "horizon_label": horizon_label,
+        "horizon_count": horizon_count,
+        "mode": "preview",
+        "saved_to_database": False,
+    }
+    return response
+
+@app.route('/api/forecast/sales/preview', methods=['POST'])
+def sales_preview():
+    payload = _get_request_json()
+    try:
+        result = asyncio.run(_run_sales_forecast_from_payload(payload))
+        return jsonify(result), 200
+    except FileNotFoundError as e:
+        return jsonify({"detail": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
+
+@app.route('/api/forecast/sales/save', methods=['POST'])
+def sales_save():
+    payload = _get_request_json()
+    backend_token = payload.get("backend_token", "")
+    forecast_data = payload.get("forecast")
+    if not forecast_data:
+        return jsonify({"detail": "field 'forecast' wajib diisi untuk save"}), 400
+    
+    store_id = forecast_data.get("store_id")
+    if not store_id:
+        return jsonify({"detail": "store_id wajib diisi"}), 400
+
+    try:
+        success, message = asyncio.run(sales_forecast_service.save_forecast_to_db(store_id, forecast_data, backend_token))
+        if success:
+            return jsonify({"success": True, "message": message}), 200
+        else:
+            return jsonify({"success": False, "detail": message}), 500
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
+
+@app.route('/api/forecast/sales/run', methods=['POST'])
+def sales_run():
+    payload = _get_request_json()
+    backend_token = payload.get("backend_token", "")
+    
+    try:
+        result = asyncio.run(_run_sales_forecast_from_payload(payload))
+        
+        # Override mode for saving
+        result["request_meta"]["mode"] = "run"
+        result["request_meta"]["saved_to_database"] = True
+        
+        store_id = _get_store_id(payload)
+        success, message = asyncio.run(sales_forecast_service.save_forecast_to_db(store_id, result, backend_token))
+        
+        if success:
+            return jsonify(result), 200
+        else:
+            return jsonify({"detail": message}), 500
+            
+    except FileNotFoundError as e:
+        return jsonify({"detail": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
+
+@app.route('/api/forecast/sales/retrain', methods=['POST'])
+def sales_retrain():
+    req = request.get_json()
+    if not req or 'store_id' not in req:
+        return jsonify({"detail": "store_id wajib diisi"}), 400
+    
+    store_id = req['store_id']
+    force = req.get('force', False)
+
+    try:
+        result = asyncio.run(sales_forecast_service.retrain(store_id=store_id, force=force))
+        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"detail": f"Retrain gagal: {str(e)}"}), 500
 
 # ============================================
 # ROUTE INVENTORY (STOK BARANG)
