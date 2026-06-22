@@ -119,7 +119,7 @@ class GolangAPIClient:
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.get(url, params=params, headers=Config.backend_headers())
+                    response = await client.get(url, params=params)
                     response.raise_for_status()
                     return response.json()
             except httpx.HTTPStatusError as e:
@@ -135,7 +135,7 @@ class GolangAPIClient:
     async def is_reachable(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(f"{self.base_url}/stores", headers=Config.backend_headers())
+                response = await client.get(f"{self.base_url}/stores")
                 return response.status_code < 500
         except Exception:
             return False
@@ -443,9 +443,24 @@ class ForecastService:
             },
         }
 
+    async def _fetch_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
+        """
+        Sumber utama data visitors adalah backend Golang.
+        Direct DB hanya fallback agar jalur daily, weekly, monthly tetap konsisten.
+        """
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
+        if raw_data.get("sales_daily") or raw_data.get("orders"):
+            return raw_data
+
+        logger.warning(
+            f"Backend Golang tidak mengembalikan data historis untuk store {store_id}. "
+            "Mencoba fallback direct DB."
+        )
+        return db_client.fetch_all_historical_data(store_id)
+
     async def retrain(self, store_id: str, force: bool = False) -> RetrainResponse:
         logger.info(f"[RETRAIN] store={store_id}, force={force}")
-        raw_data = await golang_client.fetch_all_historical_data(store_id)
+        raw_data = await self._fetch_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
         
         if df_daily.empty:
@@ -478,7 +493,7 @@ class ForecastService:
             await self.retrain(store_id)
 
         model, scaler, feature_cols, meta = trainer.load_model(store_id)
-        raw_data = await golang_client.fetch_all_historical_data(store_id)
+        raw_data = await self._fetch_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
 
         if df_daily.empty:
@@ -566,7 +581,7 @@ class ForecastService:
         return start
 
     async def _retrain_periodic(self, store_id: str, granularity: str) -> Dict[str, Any]:
-        raw_data = db_client.fetch_all_historical_data(store_id)
+        raw_data = await self._fetch_historical_data(store_id)
         if granularity == "weekly":
             df_period = self.preprocessor.build_weekly_dataframe(raw_data)
         else:
@@ -597,7 +612,7 @@ class ForecastService:
             await self._retrain_periodic(store_id, granularity)
 
         model, scaler, feature_cols, meta = trainer.load_model(store_id, granularity=granularity)
-        raw_data = db_client.fetch_all_historical_data(store_id)
+        raw_data = await self._fetch_historical_data(store_id)
         
         if granularity == "weekly":
             df_period = self.preprocessor.build_weekly_dataframe(raw_data)
