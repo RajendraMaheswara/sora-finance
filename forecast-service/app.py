@@ -204,6 +204,94 @@ def visitors_predict_monthly():
         traceback.print_exc()
         return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
 
+
+def _get_request_json():
+    return request.get_json(silent=True) or {}
+
+
+def _get_store_id(payload):
+    return payload.get("store_id") or payload.get("m_store_id")
+
+
+def _parse_start_date(payload):
+    start_date_str = payload.get("start_date")
+    return date.fromisoformat(start_date_str) if start_date_str else None
+
+
+def _parse_horizon_label(payload):
+    horizon_label = str(payload.get("horizon_label", "daily")).strip().lower()
+    allowed = {"daily", "weekly", "monthly"}
+    if horizon_label not in allowed:
+        raise ValueError("horizon_label harus salah satu dari: daily, weekly, monthly")
+    return horizon_label
+
+
+def _parse_horizon_count(payload, horizon_label):
+    default_by_label = {"daily": 30, "weekly": 4, "monthly": 3}
+    legacy_key = {"daily": "forecast_days", "weekly": "forecast_weeks", "monthly": "forecast_months"}[horizon_label]
+    raw_value = payload.get("horizon_count", payload.get("periods", payload.get(legacy_key, default_by_label[horizon_label])))
+    try:
+        horizon_count = int(raw_value)
+    except (TypeError, ValueError):
+        raise ValueError("horizon_count harus berupa angka")
+    if horizon_count < 1:
+        raise ValueError("horizon_count minimal 1")
+    return horizon_count
+
+
+async def _run_visitors_forecast_from_payload(payload):
+    store_id = _get_store_id(payload)
+    if not store_id:
+        raise ValueError("store_id wajib diisi")
+
+    horizon_label = _parse_horizon_label(payload)
+    horizon_count = _parse_horizon_count(payload, horizon_label)
+    start_date_val = _parse_start_date(payload)
+
+    if horizon_label == "daily":
+        result = await visitors_forecast_service.forecast(
+            store_id=store_id,
+            forecast_days=horizon_count,
+            start_date=start_date_val or date.today(),
+        )
+    elif horizon_label == "weekly":
+        result = await visitors_forecast_service.forecast_weekly(
+            store_id=store_id,
+            forecast_weeks=horizon_count,
+            start_date=start_date_val,
+        )
+    else:
+        result = await visitors_forecast_service.forecast_monthly(
+            store_id=store_id,
+            forecast_months=horizon_count,
+            start_date=start_date_val,
+        )
+
+    response = result.model_dump() if hasattr(result, "model_dump") else result.dict()
+    response["request_meta"] = {
+        "module": "visitors",
+        "horizon_label": horizon_label,
+        "horizon_count": horizon_count,
+        "mode": "preview",
+        "saved_to_database": False,
+    }
+    return response
+
+
+@app.route('/api/forecast/visitors/preview', methods=['POST'])
+def visitors_preview():
+    payload = _get_request_json()
+    try:
+        result = asyncio.run(_run_visitors_forecast_from_payload(payload))
+        return jsonify(result), 200
+    except FileNotFoundError as e:
+        return jsonify({"detail": str(e)}), 404
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
+
 # ============================================
 # ROUTE MODUL SALES (TRAINING)
 # ============================================

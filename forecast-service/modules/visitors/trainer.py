@@ -31,37 +31,57 @@ class VisitorForecasterTrainer:
         self.model_dir = Config.VISITORS_MODEL_DIR
         os.makedirs(self.model_dir, exist_ok=True)
 
-    def _model_basename(self, store_id: str, granularity: str) -> str:
-        if granularity == "daily":
-            return f"rf_model_{store_id}.joblib"
-        return f"rf_model_{granularity}_{store_id}.joblib"
+    def _artifact_basename(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        """
+        Format baru yang mudah dibaca:
+        visitors_<granularity>_<kind>_store_<store_id>.<ext>
+        Contoh: visitors_daily_model_store_b4e2....joblib
+        """
+        clean_granularity = (granularity or "daily").strip().lower()
+        clean_store_id = str(store_id).strip()
+        return f"visitors_{clean_granularity}_{kind}_store_{clean_store_id}.{ext}"
 
-    def _meta_basename(self, store_id: str, granularity: str) -> str:
+    def _legacy_artifact_basename(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        """
+        Kompatibilitas untuk file lama:
+        rf_model_<store_id>.joblib
+        rf_model_weekly_<store_id>.joblib
+        """
+        legacy_kind = "features" if kind == "features" else kind
+        if kind == "metadata":
+            legacy_kind = "meta"
         if granularity == "daily":
-            return f"rf_meta_{store_id}.json"
-        return f"rf_meta_{granularity}_{store_id}.json"
+            return f"rf_{legacy_kind}_{store_id}.{ext}"
+        return f"rf_{legacy_kind}_{granularity}_{store_id}.{ext}"
 
-    def _scaler_basename(self, store_id: str, granularity: str) -> str:
-        if granularity == "daily":
-            return f"rf_scaler_{store_id}.joblib"
-        return f"rf_scaler_{granularity}_{store_id}.joblib"
+    def _artifact_path(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        return os.path.join(self.model_dir, self._artifact_basename(store_id, granularity, kind, ext))
 
-    def _feature_cols_basename(self, store_id: str, granularity: str) -> str:
-        if granularity == "daily":
-            return f"rf_features_{store_id}.json"
-        return f"rf_features_{granularity}_{store_id}.json"
+    def _legacy_artifact_path(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        return os.path.join(self.model_dir, self._legacy_artifact_basename(store_id, granularity, kind, ext))
+
+    def _resolve_artifact_path(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        current_path = self._artifact_path(store_id, granularity, kind, ext)
+        if os.path.exists(current_path):
+            return current_path
+
+        legacy_path = self._legacy_artifact_path(store_id, granularity, kind, ext)
+        if os.path.exists(legacy_path):
+            return legacy_path
+
+        return current_path
 
     def _model_path(self, store_id: str, granularity: str) -> str:
-        return os.path.join(self.model_dir, self._model_basename(store_id, granularity))
+        return self._artifact_path(store_id, granularity, "model", "joblib")
 
     def _meta_path(self, store_id: str, granularity: str) -> str:
-        return os.path.join(self.model_dir, self._meta_basename(store_id, granularity))
+        return self._artifact_path(store_id, granularity, "metadata", "json")
 
     def _scaler_path(self, store_id: str, granularity: str) -> str:
-        return os.path.join(self.model_dir, self._scaler_basename(store_id, granularity))
+        return self._artifact_path(store_id, granularity, "scaler", "joblib")
 
     def _feature_cols_path(self, store_id: str, granularity: str) -> str:
-        return os.path.join(self.model_dir, self._feature_cols_basename(store_id, granularity))
+        return self._artifact_path(store_id, granularity, "features", "json")
 
     def train(
         self,
@@ -157,7 +177,11 @@ class VisitorForecasterTrainer:
     def load_model(
         self, store_id: str, granularity: str = "daily"
     ) -> Tuple[RandomForestRegressor, StandardScaler, list, dict]:
-        model_path = self._model_path(store_id, granularity)
+        model_path = self._resolve_artifact_path(store_id, granularity, "model", "joblib")
+        scaler_path = self._resolve_artifact_path(store_id, granularity, "scaler", "joblib")
+        feature_path = self._resolve_artifact_path(store_id, granularity, "features", "json")
+        meta_path = self._resolve_artifact_path(store_id, granularity, "metadata", "json")
+
         if not os.path.exists(model_path):
             raise FileNotFoundError(
                 f"Model untuk store {store_id} tidak ditemukan. "
@@ -165,33 +189,40 @@ class VisitorForecasterTrainer:
             )
 
         model = joblib.load(model_path)
-        scaler = joblib.load(self._scaler_path(store_id, granularity))
+        scaler = joblib.load(scaler_path)
 
-        with open(self._feature_cols_path(store_id, granularity)) as f:
+        with open(feature_path) as f:
             feature_cols = json.load(f)
 
-        with open(self._meta_path(store_id, granularity)) as f:
+        with open(meta_path) as f:
             meta = json.load(f)
 
         logger.info(f"Model loaded: store={store_id}, trained_at={meta.get('trained_at')}")
         return model, scaler, feature_cols, meta
 
     def model_exists(self, store_id: str, granularity: str = "daily") -> bool:
-        return os.path.exists(self._model_path(store_id, granularity))
+        model_path = self._resolve_artifact_path(store_id, granularity, "model", "joblib")
+        return os.path.exists(model_path)
 
     def list_trained_stores(self, granularity: str = "daily") -> list:
-        stores = []
+        stores = set()
+        new_prefix = f"visitors_{granularity}_model_store_"
+        old_prefix = "rf_model_" if granularity == "daily" else f"rf_model_{granularity}_"
+
         for fname in os.listdir(self.model_dir):
-            if granularity == "daily":
-                if fname.startswith("rf_model_") and fname.endswith(".joblib"):
-                    store_id = fname.replace("rf_model_", "").replace(".joblib", "")
-                    if "_" not in store_id:
-                        stores.append(store_id)
-            else:
-                prefix = f"rf_model_{granularity}_"
-                if fname.startswith(prefix) and fname.endswith(".joblib"):
-                    store_id = fname.replace(prefix, "").replace(".joblib", "")
-                    stores.append(store_id)
-        return stores
+            if not fname.endswith(".joblib"):
+                continue
+
+            if fname.startswith(new_prefix):
+                store_id = fname.replace(new_prefix, "").replace(".joblib", "")
+                stores.add(store_id)
+                continue
+
+            if fname.startswith(old_prefix):
+                store_id = fname.replace(old_prefix, "").replace(".joblib", "")
+                if granularity != "daily" or "_" not in store_id:
+                    stores.add(store_id)
+
+        return sorted(stores)
 
 trainer = VisitorForecasterTrainer()
