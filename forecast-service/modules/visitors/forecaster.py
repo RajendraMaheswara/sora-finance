@@ -6,7 +6,7 @@ import psycopg2
 import psycopg2.extras
 import pandas as pd
 import numpy as np
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from typing import Dict, List, Tuple, Any, Optional
 from pydantic import BaseModel, Field
 
@@ -197,13 +197,37 @@ class PostgresClient:
         pass
 
     def _connect(self):
+        database_url = os.getenv("DATABASE_URL")
+        if database_url:
+            return psycopg2.connect(
+                database_url,
+                sslmode=os.getenv("DB_SSLMODE", "require"),
+                connect_timeout=10,
+            )
+
+        required = {
+            "DB_HOST": os.getenv("DB_HOST"),
+            "DB_PORT": os.getenv("DB_PORT"),
+            "DB_USER": os.getenv("DB_USER"),
+            "DB_PASSWORD": os.getenv("DB_PASSWORD"),
+            "DB_NAME": os.getenv("DB_NAME"),
+        }
+        missing = [key for key, value in required.items() if not value]
+        if missing:
+            raise RuntimeError(
+                "Konfigurasi database forecast-service belum lengkap: "
+                f"{', '.join(missing)}. Isi DATABASE_URL atau DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME "
+                "di file forecast-service/.env, lalu restart forecast-service."
+            )
+
         return psycopg2.connect(
-            host=os.getenv("DB_HOST", ""),
-            port=os.getenv("DB_PORT", ""),
-            user=os.getenv("DB_USER", ""),
-            password=os.getenv("DB_PASSWORD", ""),
-            dbname=os.getenv("DB_NAME", ""),
+            host=required["DB_HOST"],
+            port=required["DB_PORT"],
+            user=required["DB_USER"],
+            password=required["DB_PASSWORD"],
+            dbname=required["DB_NAME"],
             sslmode=os.getenv("DB_SSLMODE", "disable"),
+            connect_timeout=10,
         )
 
     def fetch_sales_daily_summaries(self, store_id: str) -> List[Dict[str, Any]]:
@@ -245,6 +269,120 @@ class PostgresClient:
             "sales_daily": daily,
             "sales_monthly": [],
             "orders": orders,
+        }
+
+
+    def save_visitors_forecast(
+        self,
+        *,
+        store_id: str,
+        horizon_label: str,
+        horizon_days: int,
+        prediction_rows: List[Dict[str, Any]],
+        result_rows: List[Dict[str, Any]],
+        metrics: Dict[str, Any],
+        summary: Dict[str, Any],
+        data_quality: Dict[str, Any],
+        train_start_date: date,
+        train_end_date: date,
+        predict_start_date: date,
+        predict_end_date: date,
+        model_version: str,
+    ) -> Dict[str, Any]:
+        """
+        Simpan hasil forecast visitors hanya ke tabel public.forecast_runs
+        dan public.forecast_results.
+
+        Tabel forecast_predictions tidak dipakai lagi karena sudah dihapus.
+        Satu kali save membuat satu run baru, lalu seluruh detail tanggal/periode
+        forecast disimpan sebagai child rows di forecast_results.
+        """
+        if not result_rows:
+            raise ValueError("result_rows kosong, tidak ada data forecast untuk disimpan.")
+
+        now = datetime.now(timezone.utc)
+
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                # Hanya satu hasil terbaru per store + tipe forecast + horizon.
+                # Run lama tetap dipertahankan sebagai histori, tetapi tidak lagi latest.
+                cur.execute(
+                    """
+                    UPDATE public.forecast_runs
+                    SET is_latest = false
+                    WHERE store_id = %s
+                      AND forecast_type = 'visitors'
+                      AND horizon_label = %s
+                      AND is_latest = true
+                    """,
+                    (store_id, horizon_label),
+                )
+
+                cur.execute(
+                    """
+                    INSERT INTO public.forecast_runs (
+                        store_id, forecast_type, horizon_label, horizon_days,
+                        granularity, model_name, model_version, feature_version,
+                        train_start_date, train_end_date, predict_start_date, predict_end_date,
+                        metrics, summary, data_quality, status, is_latest,
+                        started_at, finished_at
+                    ) VALUES (
+                        %s, 'visitors', %s, %s,
+                        %s, 'random forest', %s, 'visitors-v1',
+                        %s, %s, %s, %s,
+                        %s, %s, %s, 'success', true,
+                        %s, %s
+                    )
+                    RETURNING id
+                    """,
+                    (
+                        store_id,
+                        horizon_label,
+                        horizon_days,
+                        horizon_label,
+                        model_version,
+                        train_start_date,
+                        train_end_date,
+                        predict_start_date,
+                        predict_end_date,
+                        psycopg2.extras.Json(metrics),
+                        psycopg2.extras.Json(summary),
+                        psycopg2.extras.Json(data_quality),
+                        now,
+                        now,
+                    ),
+                )
+                run_id = cur.fetchone()[0]
+
+                psycopg2.extras.execute_values(
+                    cur,
+                    """
+                    INSERT INTO public.forecast_results (
+                        run_id, target_date, predicted_value, lower_bound,
+                        upper_bound, confidence_level, item_id, item_type
+                    ) VALUES %s
+                    """,
+                    [
+                        (
+                            run_id,
+                            row["target_date"],
+                            row["predicted_value"],
+                            row.get("lower_bound"),
+                            row.get("upper_bound"),
+                            row.get("confidence_level"),
+                            None,
+                            "visitors",
+                        )
+                        for row in result_rows
+                    ],
+                )
+
+        return {
+            "run_id": run_id,
+            "saved_results": len(result_rows),
+            "horizon_label": horizon_label,
+            "horizon_days": horizon_days,
+            "target_table": "forecast_runs + forecast_results",
         }
 
 db_client = PostgresClient()
@@ -443,24 +581,207 @@ class ForecastService:
             },
         }
 
-    async def _fetch_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
-        """
-        Sumber utama data visitors adalah backend Golang.
-        Direct DB hanya fallback agar jalur daily, weekly, monthly tetap konsisten.
-        """
-        raw_data = await golang_client.fetch_all_historical_data(store_id)
-        if raw_data.get("sales_daily") or raw_data.get("orders"):
-            return raw_data
 
-        logger.warning(
-            f"Backend Golang tidak mengembalikan data historis untuk store {store_id}. "
-            "Mencoba fallback direct DB."
+    def _horizon_days(self, horizon_label: str, horizon_count: int) -> int:
+        if horizon_label == "daily":
+            return horizon_count
+        if horizon_label == "weekly":
+            return horizon_count * 7
+        if horizon_label == "monthly":
+            return horizon_count * 30
+        raise ValueError("horizon_label harus daily, weekly, atau monthly")
+
+    async def forecast_by_horizon(
+        self,
+        *,
+        store_id: str,
+        horizon_label: str,
+        horizon_count: int,
+        start_date: date | None = None,
+    ):
+        """Jalankan forecast visitors berdasarkan body standar route baru."""
+        if horizon_count <= 0:
+            raise ValueError("horizon_count harus lebih besar dari 0")
+
+        if horizon_label == "daily":
+            return await self.forecast(
+                store_id=store_id,
+                forecast_days=horizon_count,
+                start_date=start_date or date.today(),
+            )
+        if horizon_label == "weekly":
+            return await self.forecast_weekly(
+                store_id=store_id,
+                forecast_weeks=horizon_count,
+                start_date=start_date,
+            )
+        if horizon_label == "monthly":
+            return await self.forecast_monthly(
+                store_id=store_id,
+                forecast_months=horizon_count,
+                start_date=start_date,
+            )
+        raise ValueError("horizon_label harus daily, weekly, atau monthly")
+
+    def _date_to_iso(self, value: Any) -> str:
+        if isinstance(value, pd.Timestamp):
+            return value.date().isoformat()
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value)
+
+    def _forecast_item_to_row(
+        self,
+        *,
+        item: Any,
+        store_id: str,
+        horizon_label: str,
+        horizon_days: int,
+        mae: float,
+        rmse: float,
+        mape: float | None,
+        model_version: str,
+        confidence_level: int,
+    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        if horizon_label == "daily":
+            target_date = item.date
+        else:
+            target_date = item.period_start
+
+        predicted_value = float(item.predicted_visitors)
+        lower_bound = float(item.lower_bound) if item.lower_bound is not None else None
+        upper_bound = float(item.upper_bound) if item.upper_bound is not None else None
+        target_date_iso = self._date_to_iso(target_date)
+
+        prediction_row = {
+            "store_id": store_id,
+            "module": "visitors",
+            "horizon_label": horizon_label,
+            "horizon_days": horizon_days,
+            "prediction_date": target_date_iso,
+            "predicted_value": predicted_value,
+            "lower_bound": lower_bound,
+            "upper_bound": upper_bound,
+            "mae": mae,
+            "rmse": rmse,
+            "mape": mape,
+            "model_version": model_version,
+        }
+        result_row = {
+            "target_date": target_date_iso,
+            "predicted_value": predicted_value,
+            "lower_bound": lower_bound,
+            "upper_bound": upper_bound,
+            "confidence_level": confidence_level,
+        }
+        return prediction_row, result_row
+
+    def _training_range(self, store_id: str) -> Tuple[date, date, int]:
+        raw_data = db_client.fetch_all_historical_data(store_id)
+        df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+        if df_daily.empty:
+            today = date.today()
+            return today, today, 0
+
+        dates = pd.to_datetime(df_daily["date"])
+        return dates.min().date(), dates.max().date(), int(len(df_daily))
+
+    def save_forecast_result(
+        self,
+        *,
+        forecast_response: ForecastResponse | WeeklyForecastResponse | MonthlyForecastResponse,
+        horizon_label: str,
+        horizon_count: int,
+    ) -> Dict[str, Any]:
+        """Konversi response forecast visitors menjadi row database lalu simpan."""
+        horizon_days = self._horizon_days(horizon_label, horizon_count)
+        forecasts = forecast_response.forecasts
+        if not forecasts:
+            raise ValueError("Forecast kosong, tidak ada data untuk disimpan.")
+
+        metadata = forecast_response.model_metadata
+        mae = float(metadata.cv_mae)
+        rmse = float(metadata.cv_rmse)
+        mape = None
+        model_version = "visitors-rf-v1"
+
+        avg_prediction = max(
+            1.0,
+            float(np.mean([max(0, item.predicted_visitors) for item in forecasts])),
         )
-        return db_client.fetch_all_historical_data(store_id)
+        error_ratio = min(100.0, (mae / avg_prediction) * 100.0)
+        confidence_level = int(max(0, min(100, round(100.0 - error_ratio))))
+
+        prediction_rows: List[Dict[str, Any]] = []
+        result_rows: List[Dict[str, Any]] = []
+        for item in forecasts:
+            prediction_row, result_row = self._forecast_item_to_row(
+                item=item,
+                store_id=forecast_response.store_id,
+                horizon_label=horizon_label,
+                horizon_days=horizon_days,
+                mae=mae,
+                rmse=rmse,
+                mape=mape,
+                model_version=model_version,
+                confidence_level=confidence_level,
+            )
+            prediction_rows.append(prediction_row)
+            result_rows.append(result_row)
+
+        train_start, train_end, raw_train_rows = self._training_range(forecast_response.store_id)
+        predict_start = date.fromisoformat(prediction_rows[0]["prediction_date"])
+        predict_end = date.fromisoformat(prediction_rows[-1]["prediction_date"])
+
+        metrics = {
+            "mae": mae,
+            "rmse": rmse,
+            "mape": mape,
+            "confidence_level": confidence_level,
+        }
+        summary = {
+            "module": "visitors",
+            "horizon_label": horizon_label,
+            "horizon_count": horizon_count,
+            "horizon_days": horizon_days,
+            "prediction_count": len(prediction_rows),
+            "total_predicted_visitors": int(sum(row["predicted_value"] for row in prediction_rows)),
+            "average_predicted_visitors": round(avg_prediction, 2),
+            "generated_at": forecast_response.generated_at.isoformat(),
+        }
+        data_quality = {
+            "training_rows": raw_train_rows,
+            "model_training_data_points": metadata.training_data_points,
+            "date_range": {
+                "start": train_start.isoformat(),
+                "end": train_end.isoformat(),
+            },
+        }
+
+        save_result = db_client.save_visitors_forecast(
+            store_id=forecast_response.store_id,
+            horizon_label=horizon_label,
+            horizon_days=horizon_days,
+            prediction_rows=prediction_rows,
+            result_rows=result_rows,
+            metrics=metrics,
+            summary=summary,
+            data_quality=data_quality,
+            train_start_date=train_start,
+            train_end_date=train_end,
+            predict_start_date=predict_start,
+            predict_end_date=predict_end,
+            model_version=model_version,
+        )
+        save_result["metrics"] = metrics
+        save_result["summary"] = summary
+        return save_result
 
     async def retrain(self, store_id: str, force: bool = False) -> RetrainResponse:
         logger.info(f"[RETRAIN] store={store_id}, force={force}")
-        raw_data = await self._fetch_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
         
         if df_daily.empty:
@@ -493,7 +814,7 @@ class ForecastService:
             await self.retrain(store_id)
 
         model, scaler, feature_cols, meta = trainer.load_model(store_id)
-        raw_data = await self._fetch_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
 
         if df_daily.empty:
@@ -581,7 +902,7 @@ class ForecastService:
         return start
 
     async def _retrain_periodic(self, store_id: str, granularity: str) -> Dict[str, Any]:
-        raw_data = await self._fetch_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         if granularity == "weekly":
             df_period = self.preprocessor.build_weekly_dataframe(raw_data)
         else:
@@ -612,7 +933,7 @@ class ForecastService:
             await self._retrain_periodic(store_id, granularity)
 
         model, scaler, feature_cols, meta = trainer.load_model(store_id, granularity=granularity)
-        raw_data = await self._fetch_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         
         if granularity == "weekly":
             df_period = self.preprocessor.build_weekly_dataframe(raw_data)
