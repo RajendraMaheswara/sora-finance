@@ -1,5 +1,7 @@
 import 'dart:math' as math;
 
+import 'forecast_series_model.dart';
+
 class SalesForecastPoint {
   final String date;
   final double value;
@@ -12,6 +14,13 @@ class SalesForecastPoint {
     this.lowerBound,
     this.upperBound,
   });
+
+  factory SalesForecastPoint.fromPoint(ForecastPoint p) => SalesForecastPoint(
+        date: p.isoDate,
+        value: p.value,
+        lowerBound: p.lower,
+        upperBound: p.upper,
+      );
 }
 
 class SalesForecastModel {
@@ -27,10 +36,15 @@ class SalesForecastModel {
   final double confidenceScore;
   final String confidenceLevel;
   final List<String> insights;
+
+  /// Tiap titik = 1 hari (run harian, ±30 titik).
+  final List<SalesForecastPoint> dailyForecast;
+
+  /// Tiap titik = 1 minggu (run mingguan, ±4 titik = 1 bulan).
   final List<SalesForecastPoint> weeklyForecast;
+
+  /// Tiap titik = 1 bulan (run bulanan, ±3 titik).
   final List<SalesForecastPoint> monthlyForecast;
-  /// Apakah data berasal dari proyeksi historis (bukan model ML).
-  final bool isProjection;
 
   const SalesForecastModel({
     required this.total7Days,
@@ -45,10 +59,17 @@ class SalesForecastModel {
     required this.confidenceScore,
     required this.confidenceLevel,
     required this.insights,
+    required this.dailyForecast,
     required this.weeklyForecast,
     required this.monthlyForecast,
-    this.isProjection = false,
   });
+
+  static const _empty = SalesForecastModel(
+    total7Days: 0, total30Days: 0, avg7Days: 0, avg30Days: 0,
+    highestDay: '', highestValue: 0, lowestDay: '', lowestValue: 0,
+    trendDirection: 'STABLE', confidenceScore: 0, confidenceLevel: '-',
+    insights: [], dailyForecast: [], weeklyForecast: [], monthlyForecast: [],
+  );
 
   static String formatRupiah(double v) {
     if (v >= 1e9) return 'Rp ${(v / 1e9).toStringAsFixed(1)}M';
@@ -66,291 +87,92 @@ class SalesForecastModel {
   }
 
   // ================================================================
-  // FACTORY UTAMA: coba 3 sumber secara berurutan
+  // LOADER: HANYA hasil model nyata dari forecast_results
   // ================================================================
   static Future<SalesForecastModel> loadFromApi(
     Future<List<dynamic>> Function(String) fetchData,
   ) async {
-    final results = await Future.wait([
-      fetchData('forecast-predictions'),
-      fetchData('forecast-results'),
-      fetchData('sales-daily-summaries'),
-    ]);
-    return SalesForecastModel.fromSources(results[0], results[1], results[2]);
+    final results = await fetchData('forecast-results');
+    return SalesForecastModel.fromResults(results);
   }
 
-  factory SalesForecastModel.fromSources(
-    List<dynamic> predictions,
-    List<dynamic> results,
-    List<dynamic> salesSummaries,
-  ) {
-    const salesKeywords = [
-      'revenue', 'sales', 'penjualan', 'omzet', 'pendapatan'
-    ];
-
-    // 1. Cari di forecast_predictions berdasarkan module
-    final predFiltered = predictions
-        .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
-        .where((e) {
-          final m = (e['module'] as String? ?? '').toLowerCase();
-          return salesKeywords.any((k) => m.contains(k));
-        })
-        .toList()
-      ..sort((a, b) => (a['prediction_date'] as String? ?? '')
-          .compareTo(b['prediction_date'] as String? ?? ''));
-
-    if (predFiltered.isNotEmpty) {
-      return _fromPredictions(predFiltered);
-    }
-
-    // 2. Cari di forecast_results berdasarkan item_type
-    var resultFiltered = results
-        .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
-        .where((e) {
-          final t = (e['item_type'] as String? ?? '').toLowerCase();
-          return salesKeywords.any((k) => t.contains(k));
-        })
-        .toList();
-
-    // Tidak ada fallback lebar — hanya gunakan forecast_results jika
-    // item_type secara eksplisit berisi kata kunci penjualan.
-    if (resultFiltered.isNotEmpty) {
-      resultFiltered.sort((a, b) =>
-          (a['target_date'] as String? ?? '')
-              .compareTo(b['target_date'] as String? ?? ''));
-      return _fromResults(resultFiltered);
-    }
-
-    // 3. Fallback: proyeksi dari sales_daily_summaries
-    final summaries = salesSummaries
-        .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
-        .toList()
-      ..sort((a, b) =>
-          (a['date'] as String? ?? '').compareTo(b['date'] as String? ?? ''));
-
-    if (summaries.isNotEmpty) {
-      return _fromSalesSummaries(summaries);
-    }
-
-    return const SalesForecastModel(
-      total7Days: 0, total30Days: 0, avg7Days: 0, avg30Days: 0,
-      highestDay: '', highestValue: 0, lowestDay: '', lowestValue: 0,
-      trendDirection: 'STABLE', confidenceScore: 0, confidenceLevel: '-',
-      insights: [], weeklyForecast: [], monthlyForecast: [],
-    );
+  /// Bangun model hanya dari hasil model nyata di forecast_results
+  /// (item_type 'sales'). TIDAK ada proyeksi buatan dari data historis —
+  /// kalau belum ada forecast penjualan, kembalikan kosong supaya UI
+  /// menampilkan state "belum ada data prediksi".
+  factory SalesForecastModel.fromResults(List<dynamic> results) {
+    final rows = filterResultsByType(results, salesItemTypes);
+    if (rows.isEmpty) return _empty;
+    final fr = ForecastResults.fromRows(rows);
+    if (fr.isEmpty) return _empty;
+    return _fromForecast(fr);
   }
 
   // ----------------------------------------------------------------
-  // Sumber 1: forecast_predictions
+  // Sumber utama: forecast_results (run harian/mingguan/bulanan)
   // ----------------------------------------------------------------
-  static SalesForecastModel _fromPredictions(
-      List<Map<String, dynamic>> rows) {
-    SalesForecastPoint toPoint(Map<String, dynamic> p) => SalesForecastPoint(
-          date: p['prediction_date'] ?? '',
-          value: (p['predicted_value'] as num?)?.toDouble() ?? 0.0,
-          lowerBound: (p['lower_bound'] as num?)?.toDouble(),
-          upperBound: (p['upper_bound'] as num?)?.toDouble(),
-        );
-    final weekly = rows.take(7).map(toPoint).toList();
-    final monthly = rows.take(30).map(toPoint).toList();
-    return _buildModel(weekly, monthly, rows
-        .map((p) => (p['mape'] as num?)?.toDouble())
-        .whereType<double>()
-        .toList());
-  }
+  static SalesForecastModel _fromForecast(ForecastResults fr) {
+    final daily = fr.daily.map(SalesForecastPoint.fromPoint).toList();
+    final weekly = fr.effectiveWeekly.map(SalesForecastPoint.fromPoint).toList();
+    final monthly =
+        fr.effectiveMonthly.map(SalesForecastPoint.fromPoint).toList();
 
-  // ----------------------------------------------------------------
-  // Sumber 2: forecast_results
-  // ----------------------------------------------------------------
-  static SalesForecastModel _fromResults(
-      List<Map<String, dynamic>> rows) {
-    SalesForecastPoint toPoint(Map<String, dynamic> r) {
-      final raw = (r['target_date'] as String? ?? '');
-      final date = raw.length >= 10 ? raw.substring(0, 10) : raw;
-      return SalesForecastPoint(
-        date: date,
-        value: (r['predicted_value'] as num?)?.toDouble() ?? 0.0,
-        lowerBound: (r['lower_bound'] as num?)?.toDouble(),
-        upperBound: (r['upper_bound'] as num?)?.toDouble(),
-      );
+    // Total/average mengacu ke run harian bila ada; jika tidak, turunkan dari
+    // run mingguan/bulanan.
+    double total7, total30;
+    if (fr.daily.isNotEmpty) {
+      total7 = fr.daily.take(7).fold<double>(0, (s, p) => s + p.value);
+      total30 = fr.daily.take(30).fold<double>(0, (s, p) => s + p.value);
+    } else if (fr.effectiveWeekly.isNotEmpty) {
+      total7 = fr.effectiveWeekly.first.value;
+      total30 = fr.effectiveWeekly.fold<double>(0, (s, p) => s + p.value);
+    } else if (fr.effectiveMonthly.isNotEmpty) {
+      total30 = fr.effectiveMonthly.first.value;
+      total7 = total30 / 4.345;
+    } else {
+      total7 = 0;
+      total30 = 0;
     }
-    final weekly = rows.take(7).map(toPoint).toList();
-    final monthly = rows.take(30).map(toPoint).toList();
-    return _buildModel(weekly, monthly, []);
-  }
+    final days7 = fr.daily.isEmpty ? 7 : math.min(7, fr.daily.length);
+    final days30 = fr.daily.isEmpty ? 30 : math.min(30, fr.daily.length);
+    final avg7 = total7 / days7;
+    final avg30 = total30 / days30;
 
-  // ----------------------------------------------------------------
-  // Sumber 3: proyeksi sederhana dari sales_daily_summaries
-  // ----------------------------------------------------------------
-  static SalesForecastModel _fromSalesSummaries(
-      List<Map<String, dynamic>> rows) {
-    // Ambil omzet harian (gunakan total_omzet atau total_omset)
-    double omzetOf(Map<String, dynamic> r) =>
-        (r['total_omzet'] as num?)?.toDouble() ??
-        (r['total_omset'] as num?)?.toDouble() ??
-        0.0;
-
-    // Gunakan 30 entri terbaru untuk menghitung tren
-    final recent = rows.length > 30 ? rows.sublist(rows.length - 30) : rows;
-    if (recent.isEmpty) {
-      return const SalesForecastModel(
-        total7Days: 0, total30Days: 0, avg7Days: 0, avg30Days: 0,
-        highestDay: '', highestValue: 0, lowestDay: '', lowestValue: 0,
-        trendDirection: 'STABLE', confidenceScore: 0, confidenceLevel: '-',
-        insights: [], weeklyForecast: [], monthlyForecast: [],
-      );
-    }
-
-    final last7 = recent.length >= 7
-        ? recent.sublist(recent.length - 7)
-        : recent;
-    final prev7 = recent.length >= 14
-        ? recent.sublist(recent.length - 14, recent.length - 7)
-        : last7;
-
-    final avg7 = last7.fold<double>(0, (s, r) => s + omzetOf(r)) /
-        last7.length;
-    final avgPrev7 = prev7.fold<double>(0, (s, r) => s + omzetOf(r)) /
-        prev7.length;
-    final avg30 =
-        recent.fold<double>(0, (s, r) => s + omzetOf(r)) / recent.length;
-
-    // Laju pertumbuhan harian — dibatasi ±1% agar proyeksi tidak turun/naik
-    // terlalu drastis di horizon panjang (mingguan/bulanan).
-    final rawGrowth =
-        avgPrev7 > 0 ? (avg7 - avgPrev7) / (7.0 * avgPrev7) : 0.0;
-    final dailyGrowth = rawGrowth.clamp(-0.01, 0.01);
-
-    final now = DateTime.now();
-    SalesForecastPoint project(int daysAhead) {
-      final date = now.add(Duration(days: daysAhead));
-      final dateStr =
-          '${date.year}-${date.month.toString().padLeft(2, '0')}-'
-          '${date.day.toString().padLeft(2, '0')}';
-      // Nilai proyeksi tidak boleh lebih dari ±25% dari avg7
-      final v = (avg7 * (1 + dailyGrowth * daysAhead))
-          .clamp(avg7 * 0.75, avg7 * 1.25);
-      // CI tidak diset — data ini proyeksi historis, bukan output model ML.
-      return SalesForecastPoint(date: dateStr, value: v);
-    }
-
-    final weekly = List.generate(7, (i) => project(i + 1));
-    final monthly = List.generate(30, (i) => project(i + 1));
-
-    final total7 = weekly.fold<double>(0, (s, p) => s + p.value);
-    final total30 = monthly.fold<double>(0, (s, p) => s + p.value);
-
-    // std dev dari data historis → confidence
-    final mean = avg30;
-    final variance = recent.fold<double>(
-            0, (s, r) => s + math.pow(omzetOf(r) - mean, 2).toDouble()) /
-        recent.length;
-    final stdDev = math.sqrt(variance);
-    final cv = mean > 0 ? stdDev / mean : 0.5;
-    final confScore = ((1 - cv) * 100).clamp(50.0, 95.0);
-    final confLevel =
-        confScore >= 85 ? 'Tinggi' : confScore >= 70 ? 'Sedang' : 'Rendah';
-
-    final pctChange = avgPrev7 > 0 ? (avg7 - avgPrev7) / avgPrev7 * 100 : 0.0;
-    final trend = pctChange > 1
-        ? 'UPWARD'
-        : pctChange < -1
-            ? 'DOWNWARD'
-            : 'STABLE';
-
-    return SalesForecastModel(
-      total7Days: total7,
-      total30Days: total30,
-      avg7Days: avg7,
-      avg30Days: avg30,
-      highestDay: weekly.reduce((a, b) => a.value > b.value ? a : b).date,
-      highestValue:
-          weekly.reduce((a, b) => a.value > b.value ? a : b).value,
-      lowestDay: weekly.reduce((a, b) => a.value < b.value ? a : b).date,
-      lowestValue:
-          weekly.reduce((a, b) => a.value < b.value ? a : b).value,
-      trendDirection: trend,
-      confidenceScore: confScore,
-      confidenceLevel: confLevel,
-      insights: [
-        'Proyeksi dihitung dari rata-rata penjualan ${recent.length} hari terakhir '
-            '(${formatRupiah(avg7)}/hari).',
-        if (trend == 'UPWARD')
-          'Tren penjualan menunjukkan kenaikan '
-              '${pctChange.abs().toStringAsFixed(1)}% per minggu.',
-        if (trend == 'DOWNWARD')
-          'Tren penjualan menunjukkan penurunan '
-              '${pctChange.abs().toStringAsFixed(1)}% per minggu.',
-        'Data historis tersedia: ${recent.length} hari. '
-            'Akurasi proyeksi: ${confScore.toStringAsFixed(0)}%.',
-      ],
-      weeklyForecast: weekly,
-      monthlyForecast: monthly,
-      isProjection: true,
-    );
-  }
-
-  // ----------------------------------------------------------------
-  // Builder bersama untuk stat summary
-  // ----------------------------------------------------------------
-  static SalesForecastModel _buildModel(
-    List<SalesForecastPoint> weekly,
-    List<SalesForecastPoint> monthly,
-    List<double> mapes,
-  ) {
-    final total7 = weekly.fold<double>(0, (s, p) => s + p.value);
-    final total30 = monthly.fold<double>(0, (s, p) => s + p.value);
-    final avg7 = weekly.isEmpty ? 0.0 : total7 / weekly.length;
-    final avg30 = monthly.isEmpty ? 0.0 : total30 / monthly.length;
-
-    SalesForecastPoint? highest, lowest;
-    for (final p in weekly) {
+    // Puncak & terendah dari run harian (atau mingguan sebagai cadangan).
+    final basis = fr.daily.isNotEmpty ? fr.daily : fr.effectiveWeekly;
+    ForecastPoint? highest, lowest;
+    for (final p in basis) {
       if (highest == null || p.value > highest.value) highest = p;
       if (lowest == null || p.value < lowest.value) lowest = p;
     }
 
-    String trend = 'STABLE';
-    if (weekly.length >= 4) {
-      final mid = weekly.length ~/ 2;
-      final first = weekly
-          .sublist(0, mid)
-          .fold<double>(0, (s, p) => s + p.value);
-      final second =
-          weekly.sublist(mid).fold<double>(0, (s, p) => s + p.value);
-      if (second > first) {
-        trend = 'UPWARD';
-      } else if (second < first) {
-        trend = 'DOWNWARD';
-      }
-    }
+    final trend = _trendOf(basis.map((p) => p.value).toList());
 
-    final avgMape = mapes.isEmpty
-        ? 15.0
-        : mapes.fold<double>(0, (s, v) => s + v) / mapes.length;
-    final confScore = (100.0 - avgMape).clamp(0.0, 100.0);
+    final confs = basis
+        .where((p) => p.confidence != null)
+        .map((p) => p.confidence!.toDouble())
+        .toList();
+    final confScore = confs.isEmpty
+        ? 80.0
+        : (confs.reduce((a, b) => a + b) / confs.length).clamp(0.0, 100.0);
     final confLevel =
         confScore >= 85 ? 'Tinggi' : confScore >= 70 ? 'Sedang' : 'Rendah';
 
     final insights = <String>[];
     if (highest != null && highest.value > 0) {
-      insights.add(
-          'Puncak penjualan diprediksi pada ${highest.date} '
-          '(${formatRupiah(highest.value)}).');
+      insights.add('Puncak penjualan diprediksi pada '
+          '${_human(highest.isoDate)} (${formatRupiah(highest.value)}).');
     }
     if (trend == 'UPWARD') {
-      insights.add(
-          'Tren penjualan menunjukkan peningkatan dalam periode prediksi.');
+      insights.add('Tren penjualan menunjukkan peningkatan dalam periode prediksi.');
     } else if (trend == 'DOWNWARD') {
-      insights.add(
-          'Tren penjualan menunjukkan penurunan dalam periode prediksi.');
+      insights.add('Tren penjualan menunjukkan penurunan dalam periode prediksi.');
     }
-    if (mapes.isNotEmpty) {
-      insights.add(
-          'Akurasi model: MAPE ${avgMape.toStringAsFixed(1)}%, '
-          'kepercayaan ${confScore.toStringAsFixed(1)}%.');
+    insights.add('Estimasi penjualan 30 hari ke depan: '
+        '${formatRupiah(total30)} (rata-rata ${formatRupiah(avg7)}/hari).');
+    if (confs.isNotEmpty) {
+      insights.add('Tingkat kepercayaan model: '
+          '${confScore.toStringAsFixed(0)}% ($confLevel).');
     }
 
     return SalesForecastModel(
@@ -358,20 +180,41 @@ class SalesForecastModel {
       total30Days: total30,
       avg7Days: avg7,
       avg30Days: avg30,
-      highestDay: highest?.date ?? '',
+      highestDay: highest?.isoDate ?? '',
       highestValue: highest?.value ?? 0,
-      lowestDay: lowest?.date ?? '',
+      lowestDay: lowest?.isoDate ?? '',
       lowestValue: lowest?.value ?? 0,
       trendDirection: trend,
       confidenceScore: confScore,
       confidenceLevel: confLevel,
       insights: insights,
+      dailyForecast: daily,
       weeklyForecast: weekly,
       monthlyForecast: monthly,
     );
   }
 
-  /// Kompatibilitas dengan pemanggil lama (dashboard mini card).
-  factory SalesForecastModel.fromPredictionList(List<dynamic> rawList) =>
-      SalesForecastModel.fromSources(rawList, [], []);
+  // ----------------------------------------------------------------
+  // Util
+  // ----------------------------------------------------------------
+  static String _trendOf(List<double> values) {
+    if (values.length < 4) return 'STABLE';
+    final mid = values.length ~/ 2;
+    final first = values.sublist(0, mid).fold<double>(0, (s, v) => s + v);
+    final second = values.sublist(mid).fold<double>(0, (s, v) => s + v);
+    if (second > first) return 'UPWARD';
+    if (second < first) return 'DOWNWARD';
+    return 'STABLE';
+  }
+
+  static const _months = {
+    1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'Mei', 6: 'Jun',
+    7: 'Jul', 8: 'Agu', 9: 'Sep', 10: 'Okt', 11: 'Nov', 12: 'Des',
+  };
+
+  static String _human(String iso) {
+    final d = parseDate(iso);
+    if (d == null) return iso;
+    return '${d.day} ${_months[d.month]} ${d.year}';
+  }
 }

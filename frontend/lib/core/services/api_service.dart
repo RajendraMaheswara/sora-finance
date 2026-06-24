@@ -24,7 +24,15 @@ class ApiService {
     );
 
     if (response.statusCode == 200) {
-      return jsonDecode(response.body);
+      final decoded = jsonDecode(response.body);
+      // Endpoint list yang kosong bisa mengembalikan `null` (nil slice di Go).
+      if (decoded == null) return <dynamic>[];
+      if (decoded is List) return decoded;
+      // Kalau dibungkus {"data": [...]}.
+      if (decoded is Map && decoded['data'] is List) {
+        return decoded['data'] as List<dynamic>;
+      }
+      return <dynamic>[];
     }
 
     throw Exception('Failed to load data');
