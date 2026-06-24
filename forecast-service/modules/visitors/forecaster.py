@@ -8,8 +8,13 @@ import psycopg2.extras
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta, timezone
+from contextlib import contextmanager
 from typing import Dict, List, Tuple, Any, Optional
 from pydantic import BaseModel, Field
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from sklearn.preprocessing import StandardScaler
 
 from config import Config
 from modules.visitors.trainer import trainer
@@ -62,8 +67,18 @@ class ModelMetadata(BaseModel):
     trained_at: Optional[datetime]
     training_data_points: int
     feature_importance: dict
-    cv_mae: float = Field(..., description="Mean Absolute Error dari cross-validation")
-    cv_rmse: float = Field(..., description="Root Mean Squared Error dari cross-validation")
+
+    # Backward-compatible legacy fields. Nilainya mengikuti horizon aktif.
+    cv_mae: Optional[float] = Field(None, description="Legacy MAE; sama dengan MAE horizon aktif")
+    cv_rmse: Optional[float] = Field(None, description="Legacy RMSE; sama dengan RMSE horizon aktif")
+
+    # New horizon-aware metadata. Field metric horizon aktif ditambahkan dinamis,
+    # misalnya monthly_mae hanya muncul pada response monthly.
+    horizon_method: Optional[str] = None
+    metric_horizon: Optional[str] = None
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow", "protected_namespaces": ()}
 
 class ForecastResponse(BaseModel):
     store_id: str
@@ -113,13 +128,37 @@ class RetrainResponse(BaseModel):
 class GolangAPIClient:
     def __init__(self):
         self.base_url = Config.GOLANG_API_BASE_URL.rstrip("/")
-        self.timeout = httpx.Timeout(30.0, connect=10.0)
+        # Orders diambil paginated. Order-items di backend saat ini bisa lambat,
+        # jadi read timeout dibuat lebih panjang agar request tidak putus saat
+        # backend masih memproses.
+        self.timeout = httpx.Timeout(45.0, connect=10.0, read=45.0, write=10.0, pool=10.0)
+        self.long_timeout = httpx.Timeout(120.0, connect=10.0, read=120.0, write=10.0, pool=10.0)
+        self.page_limit = 200
+        self.max_pages = 50
 
-    async def _get(self, endpoint: str, params: Optional[Dict] = None) -> Any:
+    def _extract_items(self, data: Any) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in ("data", "items", "results"):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    async def _get(
+        self,
+        endpoint: str,
+        params: Optional[Dict] = None,
+        *,
+        timeout: Optional[httpx.Timeout] = None,
+        attempts: int = 3,
+    ) -> Any:
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
-        for attempt in range(3):
+        attempts = max(1, attempts)
+        for attempt in range(attempts):
             try:
-                async with httpx.AsyncClient(timeout=self.timeout) as client:
+                async with httpx.AsyncClient(timeout=timeout or self.timeout) as client:
                     response = await client.get(url, params=params, headers=Config.backend_headers())
                     response.raise_for_status()
                     return response.json()
@@ -127,8 +166,8 @@ class GolangAPIClient:
                 logger.error(f"HTTP error {e.response.status_code} on {url}: {e}")
                 raise
             except httpx.RequestError as e:
-                logger.warning(f"Request error attempt {attempt + 1}/3 on {url}: {e}")
-                if attempt < 2:
+                logger.warning(f"Request error attempt {attempt + 1}/{attempts} on {url}: {e}")
+                if attempt < attempts - 1:
                     await asyncio.sleep(2 ** attempt)
                 else:
                     raise
@@ -136,58 +175,287 @@ class GolangAPIClient:
     async def is_reachable(self) -> bool:
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
-                response = await client.get(f"{self.base_url}/stores")
+                response = await client.get(f"{self.base_url}/stores", headers=Config.backend_headers())
                 return response.status_code < 500
         except Exception:
             return False
 
-    async def fetch_sales_daily_summaries(self, store_id: str) -> List[Dict]:
-        logger.info(f"Fetching sales daily summaries for store {store_id}")
+    def _same_store(self, item: Dict[str, Any], store_id: str) -> bool:
+        value = item.get("m_store_id") or item.get("store_id") or item.get("storeId") or item.get("mStoreId")
+        return str(value) == str(store_id)
+
+    async def fetch_orders(self, store_id: str) -> List[Dict[str, Any]]:
+        logger.info(f"Fetching orders for store {store_id} via backend API (paginated)")
+        all_items: List[Dict[str, Any]] = []
+
+        for page in range(1, self.max_pages + 1):
+            params = {"store_id": store_id, "page": page, "limit": self.page_limit}
+            data = await self._get("orders", params=params, timeout=self.long_timeout, attempts=2)
+            items = self._extract_items(data)
+            if not items:
+                break
+
+            filtered = [item for item in items if self._same_store(item, store_id)]
+            # Internal route kadang sudah scoped oleh backend. Jika field store_id tidak
+            # terbaca di response lama, jangan drop semua data; pakai items apa adanya.
+            batch = filtered or items
+            all_items.extend(batch)
+
+            logger.info(
+                "Fetched orders page=%s limit=%s rows=%s total=%s",
+                page, self.page_limit, len(batch), len(all_items),
+            )
+            if len(items) < self.page_limit:
+                break
+
+        # Deduplicate jika backend mengembalikan row yang sama lintas page.
+        deduped: Dict[str, Dict[str, Any]] = {}
+        for item in all_items:
+            order_id = self._order_id(item)
+            if order_id:
+                deduped[order_id] = item
+        result = list(deduped.values()) if deduped else all_items
+        logger.info("Fetched total orders for visitors: %s", len(result))
+        return result
+
+    async def fetch_order_items(self, store_id: str) -> List[Dict[str, Any]]:
+        logger.info(f"Fetching order items for store {store_id} via backend API")
         try:
-            data = await self._get("sales-daily-summaries", params={"store_id": store_id})
-            if isinstance(data, list): return data
-            if isinstance(data, dict): return data.get("data", data.get("items", []))
-            return []
-        except Exception as e:
-            logger.error(f"Failed to fetch sales daily summaries: {e}")
+            # Backend order-items saat ini belum punya pagination/filter khusus dan bisa
+            # lambat. Pakai timeout lebih panjang dan 1 attempt supaya tidak membuat
+            # tiga request berat bertumpuk. Jika gagal, visitors tetap jalan dengan
+            # fallback qty=0 per order.
+            data = await self._get(
+                "order-items",
+                params={"store_id": store_id},
+                timeout=self.long_timeout,
+                attempts=1,
+            )
+            items = self._extract_items(data)
+            filtered = [item for item in items if self._same_store(item, store_id)]
+            result = filtered or items
+            logger.info("Fetched order items for visitors: %s", len(result))
+            return result
+        except Exception as exc:
+            # Jika endpoint order-items belum siap/lambat, visitors tetap bisa jalan dengan
+            # fallback 1 non-online order = 1 visitor.
+            logger.warning(f"Failed to fetch order items via backend API, fallback qty=0: {exc}")
             return []
 
-    async def fetch_sales_monthly_summaries(self, store_id: str) -> List[Dict]:
-        logger.info(f"Fetching sales monthly summaries for store {store_id}")
+    async def fetch_visitors_daily_history(self, store_id: str) -> List[Dict[str, Any]]:
+        logger.info(f"Fetching visitors daily history for store {store_id} via backend API")
         try:
-            data = await self._get("sales-monthly-summaries", params={"store_id": store_id})
-            if isinstance(data, list): return data
-            if isinstance(data, dict): return data.get("data", data.get("items", []))
-            return []
-        except Exception as e:
-            logger.error(f"Failed to fetch sales monthly summaries: {e}")
+            data = await self._get(
+                "visitors-daily-history",
+                params={"store_id": store_id},
+                timeout=self.long_timeout,
+                attempts=1,
+            )
+            items = self._extract_items(data)
+            logger.info("Fetched visitors daily history rows: %s", len(items))
+            return items
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.warning("Backend visitors-daily-history endpoint belum tersedia; fallback ke paginated raw orders")
+                return []
+            raise
+        except Exception as exc:
+            logger.warning(f"Failed to fetch visitors daily history via backend API; fallback ke paginated raw orders: {exc}")
             return []
 
-    async def fetch_orders(self, store_id: str) -> List[Dict]:
-        logger.info(f"Fetching orders for store {store_id}")
+    async def fetch_store_operational_hours(self, store_id: str) -> List[Dict[str, Any]]:
+        logger.info(f"Fetching operational hours for store {store_id} via backend API")
         try:
-            data = await self._get("orders", params={"store_id": store_id})
-            if isinstance(data, list): return data
-            if isinstance(data, dict): return data.get("data", data.get("items", []))
-            return []
-        except Exception as e:
-            logger.error(f"Failed to fetch orders: {e}")
+            data = await self._get("store-operational-hours", params={"store_id": store_id})
+            items = self._extract_items(data)
+            return [item for item in items if self._same_store(item, store_id)]
+        except Exception as exc:
+            # Internal forecast routes di backend lama belum menyediakan
+            # /store-operational-hours. Jangan fallback ke DB direct karena itu yang
+            # memicu EMAXCONNSESSION. Preprocessor otomatis memakai default toko buka 24 jam.
+            logger.warning(f"Failed to fetch operational hours via backend API, fallback open 24h: {exc}")
             return []
 
-    async def fetch_all_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
-        logger.info(f"Fetching all historical data for store {store_id}")
-        daily_task = self.fetch_sales_daily_summaries(store_id)
-        monthly_task = self.fetch_sales_monthly_summaries(store_id)
-        orders_task = self.fetch_orders(store_id)
+    def _is_blank(self, value: Any) -> bool:
+        return value is None or value == "" or str(value).lower() in {"null", "none"}
 
-        daily, monthly, orders = await asyncio.gather(
-            daily_task, monthly_task, orders_task, return_exceptions=True
+    def _float_value(self, value: Any, default: float = 0.0) -> float:
+        try:
+            if value is None:
+                return default
+            return float(value)
+        except Exception:
+            return default
+
+    def _int_value(self, value: Any, default: int = 0) -> int:
+        try:
+            if value is None:
+                return default
+            return int(value)
+        except Exception:
+            return default
+
+    def _date_from_order(self, order: Dict[str, Any]) -> Optional[date]:
+        raw = order.get("created_at") or order.get("createdAt") or order.get("date")
+        if not raw:
+            return None
+        try:
+            return pd.to_datetime(raw).date()
+        except Exception:
+            return None
+
+    def _is_valid_order(self, order: Dict[str, Any]) -> bool:
+        if not self._is_blank(order.get("deleted_at") or order.get("deletedAt")):
+            return False
+        if not self._is_blank(order.get("cancelled_at") or order.get("cancelledAt")):
+            return False
+        status = self._int_value(order.get("m_order_status_id") or order.get("mOrderStatusId"), 0)
+        payment_status = self._int_value(order.get("m_order_payment_status_id") or order.get("mOrderPaymentStatusId"), 0)
+        if status == 3:
+            return False
+        return status == 2 or payment_status == 200
+
+    def _order_id(self, order: Dict[str, Any]) -> str:
+        return str(order.get("id") or order.get("order_id") or order.get("orderId") or "")
+
+    def _order_item_order_id(self, item: Dict[str, Any]) -> str:
+        return str(item.get("t_order_id") or item.get("order_id") or item.get("orderId") or item.get("tOrderId") or "")
+
+    def _aggregate_order_item_qty(self, order_items: List[Dict[str, Any]]) -> Dict[str, float]:
+        totals: Dict[str, float] = {}
+        for item in order_items:
+            if not self._is_blank(item.get("deleted_at") or item.get("deletedAt")):
+                continue
+            order_id = self._order_item_order_id(item)
+            if not order_id:
+                continue
+            qty = max(0.0, self._float_value(item.get("qty"), 0.0))
+            totals[order_id] = totals.get(order_id, 0.0) + qty
+        return totals
+
+    def _estimate_visitors(self, is_online: bool, total_item_qty: float) -> int:
+        if is_online:
+            return 0
+        if total_item_qty <= 0:
+            return 1
+        if total_item_qty <= 3:
+            return 1
+        if total_item_qty <= 5:
+            return 2
+        if total_item_qty <= 8:
+            return 3
+        return 4
+
+    def _build_daily_orders_from_backend(
+        self,
+        *,
+        store_id: str,
+        orders: List[Dict[str, Any]],
+        order_items: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        item_qty_by_order = self._aggregate_order_item_qty(order_items)
+        grouped: Dict[date, Dict[str, Any]] = {}
+
+        for order in orders:
+            if not self._same_store(order, store_id):
+                continue
+            if not self._is_valid_order(order):
+                continue
+            order_date = self._date_from_order(order)
+            if order_date is None:
+                continue
+
+            online_type = order.get("m_menu_online_order_type_id") or order.get("mMenuOnlineOrderTypeId")
+            table_id = order.get("m_table_id") or order.get("mTableId")
+            is_online = not self._is_blank(online_type)
+            is_dine_in = (not is_online) and (not self._is_blank(table_id))
+            is_takeaway = (not is_online) and (not is_dine_in)
+            order_id = self._order_id(order)
+            total_item_qty = max(0.0, item_qty_by_order.get(order_id, 0.0))
+            estimated_visitors = self._estimate_visitors(is_online, total_item_qty)
+
+            row = grouped.setdefault(order_date, {
+                "date": order_date,
+                "visitors": 0,
+                "valid_orders_count": 0,
+                "physical_orders_count": 0,
+                "online_orders_count": 0,
+                "dine_in_orders_count": 0,
+                "takeaway_orders_count": 0,
+                "physical_item_qty": 0.0,
+                "avg_physical_item_qty": 0.0,
+            })
+            row["visitors"] += estimated_visitors
+            row["valid_orders_count"] += 1
+            if is_online:
+                row["online_orders_count"] += 1
+            else:
+                row["physical_orders_count"] += 1
+                row["physical_item_qty"] += total_item_qty
+                if is_dine_in:
+                    row["dine_in_orders_count"] += 1
+                if is_takeaway:
+                    row["takeaway_orders_count"] += 1
+
+        rows = []
+        for _, row in sorted(grouped.items(), key=lambda item: item[0]):
+            physical_orders = max(int(row.get("physical_orders_count", 0)), 0)
+            row["avg_physical_item_qty"] = (
+                float(row.get("physical_item_qty", 0.0)) / physical_orders
+                if physical_orders > 0 else 0.0
+            )
+            rows.append(row)
+        return rows
+
+    async def fetch_all_historical_data(self, store_id: str) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Visitors sengaja memakai backend/internal API, sama seperti sales.
+        Ini menghindari forecast-service membuka koneksi PostgreSQL langsung untuk
+        retrain/preview, sehingga tidak menambah session baru di Supabase pooler.
+        """
+        logger.info(f"Fetching visitors historical data for store {store_id} via backend API")
+        operational_hours = await self.fetch_store_operational_hours(store_id)
+
+        # Fast path untuk forecast: backend mengembalikan data harian yang sudah
+        # diagregasi dari t_orders + t_order_items. Ini menghindari 50+ request
+        # pagination raw orders dan endpoint order-items yang berat.
+        daily_orders = await self.fetch_visitors_daily_history(store_id)
+        if daily_orders:
+            dates = [row.get("date") for row in daily_orders if row.get("date") is not None]
+            logger.info(
+                "Fetched visitors daily history: daily_rows=%s range=%s..%s",
+                len(daily_orders), min(dates) if dates else None, max(dates) if dates else None,
+            )
+            return {
+                "orders": daily_orders,
+                "operational_hours": operational_hours,
+            }
+
+        # Fallback untuk backend lama: tetap bisa jalan dengan pagination raw orders,
+        # tetapi ini lebih lambat dan hanya dipakai kalau endpoint agregasi belum ada.
+        orders = await self.fetch_orders(store_id)
+        order_items = await self.fetch_order_items(store_id)
+
+        daily_orders = self._build_daily_orders_from_backend(
+            store_id=store_id,
+            orders=orders,
+            order_items=order_items,
         )
-
+        if daily_orders:
+            dates = [row.get("date") for row in daily_orders if row.get("date") is not None]
+            logger.info(
+                "Built visitors daily history fallback: raw_orders=%s order_items=%s daily_rows=%s range=%s..%s",
+                len(orders), len(order_items), len(daily_orders),
+                min(dates) if dates else None, max(dates) if dates else None,
+            )
+        else:
+            logger.warning(
+                "Visitors daily history kosong setelah parsing backend API: raw_orders=%s order_items=%s",
+                len(orders), len(order_items),
+            )
         return {
-            "sales_daily": daily if not isinstance(daily, Exception) else [],
-            "sales_monthly": monthly if not isinstance(monthly, Exception) else [],
-            "orders": orders if not isinstance(orders, Exception) else [],
+            "orders": daily_orders,
+            "operational_hours": operational_hours,
         }
 
 golang_client = GolangAPIClient()
@@ -222,51 +490,77 @@ class PostgresClient:
             connect_timeout=10,
         )
 
-    def fetch_sales_daily_summaries(self, store_id: str) -> List[Dict[str, Any]]:
-        sql = """
-            SELECT date, total_transaction, total_omzet
-            FROM t_sales_daily_summaries
-            WHERE m_store_id = %s AND deleted_at IS NULL
-            ORDER BY date ASC
-        """
+    @contextmanager
+    def _connection(self):
+        conn = None
         try:
-            with self._connect() as conn:
-                with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                    cur.execute(sql, (store_id,))
-                    return [dict(row) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.error(f"DB error fetch_sales_daily_summaries: {exc}")
-            return []
+            conn = self._connect()
+            yield conn
+            conn.commit()
+        except Exception:
+            if conn is not None:
+                conn.rollback()
+            raise
+        finally:
+            if conn is not None:
+                conn.close()
 
-    def fetch_orders(self, store_id: str) -> List[Dict[str, Any]]:
+    def fetch_orders(self, store_id: str, conn=None) -> List[Dict[str, Any]]:
         """
-        Ambil dataset harian visitors dari t_orders.
+        Ambil dataset harian visitors dari t_orders + t_order_items.
 
-        Definisi visitors tahap ini dibuat konservatif dan tidak memakai bobot abstrak:
-        - order valid non-online = 1 estimated physical visitor unit
+        Definisi visitors memakai mode items_capped:
         - order online = 0 pengunjung fisik outlet
+        - order fisik dengan 0-3 item = 1 visitor
+        - order fisik dengan 4-5 item = 2 visitors
+        - order fisik dengan 6-8 item = 3 visitors
+        - order fisik dengan >8 item = 4 visitors
 
-        t_order_items sengaja tidak dipakai karena qty item tidak selalu merepresentasikan
-        jumlah orang. t_sales_daily_summaries juga tidak menjadi target visitors lagi.
+        Rule ini tidak bergantung pada kategori menu sehingga tetap cocok untuk cafe
+        yang hanya menjual kopi/minuman, warmindo, resto, atau F&B lain tanpa perlu
+        menambah tabel/kolom konfigurasi baru.
         """
         sql = """
-            WITH valid_orders AS (
+            WITH order_item_totals AS (
                 SELECT
-                    DATE(created_at AT TIME ZONE 'Asia/Jakarta') AS date,
-                    id,
-                    total_price,
-                    m_table_id,
-                    m_menu_online_order_type_id
-                FROM t_orders
+                    t_order_id,
+                    COALESCE(SUM(GREATEST(COALESCE(qty, 0), 0)), 0)::numeric(15,2) AS total_item_qty
+                FROM t_order_items
                 WHERE m_store_id = %s
                   AND deleted_at IS NULL
-                  AND cancelled_at IS NULL
-                  AND COALESCE(m_order_status_id, 0) <> 3
-                  AND (m_order_status_id = 2 OR m_order_payment_status_id = 200)
+                GROUP BY t_order_id
+            ),
+            valid_orders AS (
+                SELECT
+                    DATE(o.created_at AT TIME ZONE 'Asia/Jakarta') AS date,
+                    o.id,
+                    o.m_table_id,
+                    o.m_menu_online_order_type_id,
+                    COALESCE(oit.total_item_qty, 0)::numeric(15,2) AS total_item_qty
+                FROM t_orders o
+                LEFT JOIN order_item_totals oit ON oit.t_order_id = o.id
+                WHERE o.m_store_id = %s
+                  AND o.deleted_at IS NULL
+                  AND o.cancelled_at IS NULL
+                  AND COALESCE(o.m_order_status_id, 0) <> 3
+                  AND (o.m_order_status_id = 2 OR o.m_order_payment_status_id = 200)
+            ),
+            order_estimates AS (
+                SELECT
+                    *,
+                    CASE
+                        WHEN m_menu_online_order_type_id IS NOT NULL THEN 0
+                        WHEN total_item_qty <= 0 THEN 1
+                        WHEN total_item_qty <= 3 THEN 1
+                        WHEN total_item_qty <= 5 THEN 2
+                        WHEN total_item_qty <= 8 THEN 3
+                        ELSE 4
+                    END::integer AS estimated_visitors
+                FROM valid_orders
             )
             SELECT
                 date,
-                COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NULL)::integer AS visitors,
+                COALESCE(SUM(estimated_visitors), 0)::integer AS visitors,
                 COUNT(*)::integer AS valid_orders_count,
                 COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NULL)::integer AS physical_orders_count,
                 COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NOT NULL)::integer AS online_orders_count,
@@ -278,21 +572,26 @@ class PostgresClient:
                     WHERE m_menu_online_order_type_id IS NULL
                       AND m_table_id IS NULL
                 )::integer AS takeaway_orders_count,
-                COALESCE(SUM(total_price), 0)::numeric(15,2) AS omzet
-            FROM valid_orders
+                COALESCE(SUM(total_item_qty) FILTER (WHERE m_menu_online_order_type_id IS NULL), 0)::numeric(15,2) AS physical_item_qty,
+                COALESCE(AVG(total_item_qty) FILTER (WHERE m_menu_online_order_type_id IS NULL), 0)::numeric(15,2) AS avg_physical_item_qty
+            FROM order_estimates
             GROUP BY date
             ORDER BY date ASC
         """
         try:
-            with self._connect() as conn:
+            if conn is not None:
                 with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                    cur.execute(sql, (store_id,))
+                    cur.execute(sql, (store_id, store_id))
+                    return [dict(row) for row in cur.fetchall()]
+            with self._connection() as owned_conn:
+                with owned_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                    cur.execute(sql, (store_id, store_id))
                     return [dict(row) for row in cur.fetchall()]
         except Exception as exc:
             logger.error(f"DB error fetch_orders: {exc}")
-            return []
+            raise RuntimeError(f"Gagal mengambil t_orders/t_order_items dari database: {exc}") from exc
 
-    def fetch_store_operational_hours(self, store_id: str) -> List[Dict[str, Any]]:
+    def fetch_store_operational_hours(self, store_id: str, conn=None) -> List[Dict[str, Any]]:
         sql = """
             SELECT day_of_week, is_active, open_time, close_time
             FROM m_store_operational_hours
@@ -301,20 +600,28 @@ class PostgresClient:
             ORDER BY day_of_week ASC
         """
         try:
-            with self._connect() as conn:
+            if conn is not None:
                 with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
+                    cur.execute(sql, (store_id,))
+                    return [dict(row) for row in cur.fetchall()]
+            with self._connection() as owned_conn:
+                with owned_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
                     cur.execute(sql, (store_id,))
                     return [dict(row) for row in cur.fetchall()]
         except Exception as exc:
             logger.error(f"DB error fetch_store_operational_hours: {exc}")
-            return []
+            raise RuntimeError(f"Gagal mengambil m_store_operational_hours dari database: {exc}") from exc
 
     def fetch_all_historical_data(self, store_id: str) -> Dict[str, List[Dict[str, Any]]]:
-        orders = self.fetch_orders(store_id)
-        operational_hours = self.fetch_store_operational_hours(store_id)
+        try:
+            with self._connection() as conn:
+                orders = self.fetch_orders(store_id, conn=conn)
+                operational_hours = self.fetch_store_operational_hours(store_id, conn=conn)
+        except Exception as exc:
+            logger.exception(f"DB error fetch_all_historical_data: {exc}")
+            raise
+
         return {
-            "sales_daily": [],
-            "sales_monthly": [],
             "orders": orders,
             "operational_hours": operational_hours,
         }
@@ -346,7 +653,7 @@ class PostgresClient:
 
         now = datetime.now(timezone.utc)
 
-        with self._connect() as conn:
+        with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
@@ -370,7 +677,7 @@ class PostgresClient:
                         started_at, finished_at
                     ) VALUES (
                         %s, 'visitors', %s, %s,
-                        %s, 'random forest', %s, 'visitors-orders-operational-v2',
+                        %s, 'random forest', %s, 'visitors-backend-daily-history-v5',
                         %s, %s, %s, %s,
                         %s, %s, %s, 'success', true,
                         %s, %s
@@ -440,13 +747,12 @@ HARI_INDONESIA = {
 
 class VisitorPreprocessor:
     """
-    Preprocessor visitors versi orders-based.
+    Preprocessor visitors versi orders + items_capped.
 
-    Target visitors tidak lagi dari t_sales_daily_summaries.total_transaction.
-    Target dibuat dari t_orders dengan definisi konservatif:
-    visitors = jumlah order valid non-online per hari.
-
-    t_order_items tidak dipakai karena qty item terlalu abstrak untuk jumlah orang.
+    Target dibuat dari t_orders valid non-online, lalu t_order_items.qty dipakai
+    secara konservatif dengan cap per order:
+    0-3 item = 1 visitor, 4-5 item = 2 visitors, 6-8 item = 3 visitors,
+    >8 item = 4 visitors. Order online tetap 0 visitors fisik.
     """
 
     UNKNOWN_NUMERIC_COLUMNS = {
@@ -455,6 +761,9 @@ class VisitorPreprocessor:
         "online_orders_count",
         "dine_in_orders_count",
         "takeaway_orders_count",
+        "physical_item_qty",
+        "avg_physical_item_qty",
+        "avg_items_per_physical_order",
         "online_ratio",
         "dine_in_ratio",
         "takeaway_ratio",
@@ -483,7 +792,7 @@ class VisitorPreprocessor:
         weekly = df_daily.resample("W-SUN").sum(numeric_only=True)
         weekly = weekly.reset_index().rename(columns={"date": "period_end"})
         weekly["date"] = weekly["period_end"] - pd.Timedelta(days=6)
-        return weekly[["date", "visitors", "omzet"]].copy()
+        return weekly[["date", "visitors"]].copy()
 
     def build_monthly_dataframe(self, raw_data: Dict[str, List[Dict]]) -> pd.DataFrame:
         df_daily = self.build_daily_dataframe(raw_data)
@@ -496,27 +805,7 @@ class VisitorPreprocessor:
 
         monthly = df_daily.resample("MS").sum(numeric_only=True)
         monthly = monthly.reset_index()
-        return monthly[["date", "visitors", "omzet"]].copy()
-
-    def _build_from_sales_daily(self, records: List[Dict]) -> pd.DataFrame:
-        """Legacy parser. Tidak dipakai sebagai target utama visitors."""
-        if not records:
-            return pd.DataFrame()
-        try:
-            df = pd.DataFrame(records)
-            df["date"] = pd.to_datetime(df["date"]).dt.date
-            df["total_transaction"] = pd.to_numeric(
-                df.get("total_transaction", df.get("totalTransaction", 0)), errors="coerce"
-            ).fillna(0).astype(int)
-            df["total_omzet"] = pd.to_numeric(
-                df.get("total_omzet", df.get("totalOmzet", 0)), errors="coerce"
-            ).fillna(0)
-            return df[["date", "total_transaction", "total_omzet"]].rename(
-                columns={"total_transaction": "visitors", "total_omzet": "omzet"}
-            )
-        except Exception as e:
-            logger.error(f"Error parsing sales_daily: {e}")
-            return pd.DataFrame()
+        return monthly[["date", "visitors"]].copy()
 
     def _build_from_orders(self, records: List[Dict]) -> pd.DataFrame:
         if not records:
@@ -532,12 +821,13 @@ class VisitorPreprocessor:
                 df["date"] = pd.to_datetime(df["date"]).dt.date
                 numeric_defaults = {
                     "visitors": 0,
-                    "omzet": 0.0,
                     "valid_orders_count": 0,
                     "physical_orders_count": 0,
                     "online_orders_count": 0,
                     "dine_in_orders_count": 0,
                     "takeaway_orders_count": 0,
+                    "physical_item_qty": 0.0,
+                    "avg_physical_item_qty": 0.0,
                 }
                 for col, default in numeric_defaults.items():
                     if col not in df.columns:
@@ -550,17 +840,20 @@ class VisitorPreprocessor:
                 df["online_orders_count"] = df["online_orders_count"].clip(lower=0).round().astype(int)
                 df["dine_in_orders_count"] = df["dine_in_orders_count"].clip(lower=0).round().astype(int)
                 df["takeaway_orders_count"] = df["takeaway_orders_count"].clip(lower=0).round().astype(int)
-                df["omzet"] = pd.to_numeric(df["omzet"], errors="coerce").fillna(0.0)
+                df["physical_item_qty"] = pd.to_numeric(df["physical_item_qty"], errors="coerce").fillna(0.0).clip(lower=0)
+                df["avg_physical_item_qty"] = pd.to_numeric(df["avg_physical_item_qty"], errors="coerce").fillna(0.0).clip(lower=0)
                 df = self._add_order_ratios(df)
                 return df[[
                     "date",
                     "visitors",
-                    "omzet",
                     "valid_orders_count",
                     "physical_orders_count",
                     "online_orders_count",
                     "dine_in_orders_count",
                     "takeaway_orders_count",
+                    "physical_item_qty",
+                    "avg_physical_item_qty",
+                    "avg_items_per_physical_order",
                     "online_ratio",
                     "dine_in_ratio",
                     "takeaway_ratio",
@@ -574,7 +867,7 @@ class VisitorPreprocessor:
             df["date"] = pd.to_datetime(df[date_col]).dt.date
             online_col = next((c for c in ["m_menu_online_order_type_id", "mMenuOnlineOrderTypeId"] if c in df.columns), None)
             table_col = next((c for c in ["m_table_id", "mTableId"] if c in df.columns), None)
-            price_col = next((c for c in ["total_price", "totalPrice"] if c in df.columns), None)
+            item_qty_col = next((c for c in ["total_item_qty", "totalItemQty", "item_qty", "itemQty", "qty"] if c in df.columns), None)
 
             if online_col:
                 df["is_online"] = df[online_col].notna()
@@ -587,17 +880,41 @@ class VisitorPreprocessor:
                 df["is_dine_in"] = False
 
             df["is_takeaway"] = (~df["is_online"]) & (~df["is_dine_in"])
-            df["estimated_visitors"] = (~df["is_online"]).astype(int)
-            df["order_price"] = pd.to_numeric(df[price_col], errors="coerce").fillna(0.0) if price_col else 0.0
+            if item_qty_col:
+                df["total_item_qty"] = pd.to_numeric(df[item_qty_col], errors="coerce").fillna(0.0).clip(lower=0)
+            else:
+                df["total_item_qty"] = 0.0
 
+            def _estimate_visitors_from_item_qty(row: pd.Series) -> int:
+                if bool(row.get("is_online", False)):
+                    return 0
+                qty = float(row.get("total_item_qty", 0.0) or 0.0)
+                if qty <= 0:
+                    return 1
+                if qty <= 3:
+                    return 1
+                if qty <= 5:
+                    return 2
+                if qty <= 8:
+                    return 3
+                return 4
+
+            df["estimated_visitors"] = df.apply(_estimate_visitors_from_item_qty, axis=1)
+            df["physical_order_unit"] = (~df["is_online"]).astype(int)
+            df["physical_item_qty_for_order"] = np.where(
+                df["is_online"],
+                0.0,
+                pd.to_numeric(df["total_item_qty"], errors="coerce").fillna(0.0).clip(lower=0),
+            )
             daily = df.groupby("date").agg(
                 visitors=("estimated_visitors", "sum"),
-                omzet=("order_price", "sum"),
                 valid_orders_count=("estimated_visitors", "count"),
-                physical_orders_count=("estimated_visitors", "sum"),
+                physical_orders_count=("physical_order_unit", "sum"),
                 online_orders_count=("is_online", "sum"),
                 dine_in_orders_count=("is_dine_in", "sum"),
                 takeaway_orders_count=("is_takeaway", "sum"),
+                physical_item_qty=("physical_item_qty_for_order", "sum"),
+                avg_physical_item_qty=("physical_item_qty_for_order", lambda x: float(pd.to_numeric(x, errors="coerce").fillna(0.0).sum() / max((x > 0).sum(), 1))),
             ).reset_index()
             daily = self._add_order_ratios(daily)
             return daily
@@ -611,6 +928,11 @@ class VisitorPreprocessor:
         df["online_ratio"] = (df["online_orders_count"] / denominator).fillna(0.0)
         df["dine_in_ratio"] = (df["dine_in_orders_count"] / denominator).fillna(0.0)
         df["takeaway_ratio"] = (df["takeaway_orders_count"] / denominator).fillna(0.0)
+        physical_denominator = df["physical_orders_count"].replace(0, np.nan)
+        if "physical_item_qty" in df.columns:
+            df["avg_items_per_physical_order"] = (df["physical_item_qty"] / physical_denominator).fillna(0.0)
+        else:
+            df["avg_items_per_physical_order"] = 0.0
         return df
 
     def _complete_daily_range(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -752,10 +1074,12 @@ class VisitorPreprocessor:
 
         df["expanding_mean"] = df["visitors"].shift(1).expanding(min_periods=expanding_min_periods).mean()
 
-        if "omzet" in df.columns:
-            df["omzet_per_visitor"] = (df["omzet"] / df["visitors"].replace(0, np.nan)).fillna(0)
-            df["lag_omzet_7"] = df["omzet"].shift(7)
-            df["rolling_omzet_7"] = df["omzet"].shift(1).rolling(7, min_periods=1).mean()
+
+        # Lag/rolling untuk item/order-derived metrics aman karena hanya memakai histori masa lalu.
+        for item_col in ["physical_item_qty", "avg_physical_item_qty", "avg_items_per_physical_order"]:
+            if item_col in df.columns:
+                df[f"lag_{item_col}_7"] = df[item_col].shift(7)
+                df[f"rolling_{item_col}_7"] = df[item_col].shift(1).rolling(7, min_periods=1).mean()
 
         # Lag/rolling untuk rasio channel aman karena hanya memakai histori masa lalu.
         for channel_col in ["online_ratio", "dine_in_ratio", "takeaway_ratio"]:
@@ -772,12 +1096,14 @@ class VisitorPreprocessor:
         exclude = {
             "date",
             "visitors",
-            "omzet",
             "valid_orders_count",
             "physical_orders_count",
             "online_orders_count",
             "dine_in_orders_count",
             "takeaway_orders_count",
+            "physical_item_qty",
+            "avg_physical_item_qty",
+            "avg_items_per_physical_order",
             "online_ratio",
             "dine_in_ratio",
             "takeaway_ratio",
@@ -826,16 +1152,16 @@ class VisitorPreprocessor:
 
         row["expanding_mean"] = float(np.mean(hist_visitors)) if len(hist_visitors) > 0 else 0.0
 
-        if "omzet" in history.columns:
-            hist_omzet = pd.to_numeric(history["omzet"], errors="coerce").fillna(0).values
-            row["lag_omzet_7"] = float(hist_omzet[-7]) if len(hist_omzet) >= 7 else 0.0
-            recent_omzet = hist_omzet[-7:] if len(hist_omzet) >= 7 else hist_omzet
-            row["rolling_omzet_7"] = float(np.mean(recent_omzet)) if len(recent_omzet) > 0 else 0.0
-            row["omzet_per_visitor"] = 0.0
-        else:
-            row["omzet_per_visitor"] = 0.0
-            row["lag_omzet_7"] = 0.0
-            row["rolling_omzet_7"] = 0.0
+
+        for item_col in ["physical_item_qty", "avg_physical_item_qty", "avg_items_per_physical_order"]:
+            if item_col in history.columns:
+                hist_item = pd.to_numeric(history[item_col], errors="coerce").fillna(0).values
+                row[f"lag_{item_col}_7"] = float(hist_item[-7]) if len(hist_item) >= 7 else 0.0
+                recent_item = hist_item[-7:] if len(hist_item) >= 7 else hist_item
+                row[f"rolling_{item_col}_7"] = float(np.mean(recent_item)) if len(recent_item) > 0 else 0.0
+            else:
+                row[f"lag_{item_col}_7"] = 0.0
+                row[f"rolling_{item_col}_7"] = 0.0
 
         for channel_col in ["online_ratio", "dine_in_ratio", "takeaway_ratio"]:
             if channel_col in history.columns:
@@ -870,14 +1196,14 @@ class ForecastService:
                 "expanding_min_periods": 3,
             },
         }
-        self.feature_version = "visitors-orders-operational-v2"
-        self.data_source = "t_orders_non_online_plus_operational_hours"
+        self.feature_version = "visitors-backend-daily-history-v5"
+        self.data_source = "backend_visitors_daily_history_aggregated_from_t_orders_t_order_items_operational_hours"
 
     def _tag_model_metadata(self, store_id: str, meta: Dict[str, Any], granularity: str = "daily") -> Dict[str, Any]:
         meta = dict(meta or {})
         meta["feature_version"] = self.feature_version
         meta["data_source"] = self.data_source
-        meta["target_definition"] = "COUNT(valid t_orders where m_menu_online_order_type_id IS NULL)"
+        meta["target_definition"] = "SUM(items_capped visitors for valid non-online t_orders; online orders = 0)"
         try:
             meta_path = trainer._meta_path(store_id, granularity)
             with open(meta_path, "w") as f:
@@ -896,6 +1222,277 @@ class ForecastService:
             logger.warning(f"Model visitors lama/tidak valid, akan retrain: {exc}")
             return True
 
+
+    def _round_metric(self, value: Any, digits: int = 4) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            val = float(value)
+            if not np.isfinite(val):
+                return None
+            return round(val, digits)
+        except Exception:
+            return None
+
+    def _classify_reliability(self, error_ratio: Optional[float]) -> Optional[str]:
+        """
+        error_ratio disimpan sebagai rasio 0..1.
+        Batas ini sengaja sederhana agar mudah ditampilkan di frontend.
+        """
+        if error_ratio is None:
+            return None
+        if error_ratio <= 0.10:
+            return "high"
+        if error_ratio <= 0.20:
+            return "medium"
+        if error_ratio <= 0.30:
+            return "low_medium"
+        return "low"
+
+    def _metric_block(self, prefix: str, actual: np.ndarray, predicted: np.ndarray) -> Dict[str, Any]:
+        actual = np.asarray(actual, dtype=float)
+        predicted = np.asarray(predicted, dtype=float)
+        if len(actual) == 0 or len(predicted) == 0:
+            return {
+                f"{prefix}_metric_available": False,
+                f"{prefix}_mae": None,
+                f"{prefix}_rmse": None,
+                f"{prefix}_mae_percentage": None,
+                f"{prefix}_error_ratio": None,
+                f"{prefix}_reliability": None,
+            }
+
+        mae = float(mean_absolute_error(actual, predicted))
+        rmse = float(np.sqrt(mean_squared_error(actual, predicted)))
+        baseline = float(np.mean(np.abs(actual)))
+        if baseline <= 0:
+            error_ratio = None
+            mae_percentage = None
+        else:
+            error_ratio = mae / baseline
+            mae_percentage = error_ratio * 100.0
+
+        return {
+            f"{prefix}_metric_available": True,
+            f"{prefix}_mae": self._round_metric(mae),
+            f"{prefix}_rmse": self._round_metric(rmse),
+            f"{prefix}_mae_percentage": self._round_metric(mae_percentage, 2),
+            f"{prefix}_error_ratio": self._round_metric(error_ratio, 4),
+            f"{prefix}_reliability": self._classify_reliability(error_ratio),
+        }
+
+    def _aggregate_oos_metric(self, oos_df: pd.DataFrame, horizon: str) -> Dict[str, Any]:
+        if oos_df.empty:
+            return self._metric_block(horizon, np.array([]), np.array([]))
+
+        df = oos_df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+
+        if horizon == "weekly":
+            df["period_start"] = df["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time.date())
+            grouped = df.groupby("period_start").agg(
+                actual=("actual", "sum"),
+                predicted=("predicted", "sum"),
+                days=("date", "count"),
+            ).reset_index()
+            # Hanya nilai minggu penuh agar metric weekly tidak tercampur minggu parsial.
+            grouped = grouped[grouped["days"] >= 7]
+            return self._metric_block("weekly", grouped["actual"].values, grouped["predicted"].values)
+
+        if horizon == "monthly":
+            df["period"] = df["date"].dt.to_period("M")
+            grouped = df.groupby("period").agg(
+                actual=("actual", "sum"),
+                predicted=("predicted", "sum"),
+                days=("date", "count"),
+            ).reset_index()
+            grouped["expected_days"] = grouped["period"].apply(lambda p: int(p.days_in_month))
+            # Hanya bulan penuh agar monthly MAE/RMSE benar-benar metric bulanan.
+            grouped = grouped[grouped["days"] >= grouped["expected_days"]]
+            return self._metric_block("monthly", grouped["actual"].values, grouped["predicted"].values)
+
+        return self._metric_block(horizon, np.array([]), np.array([]))
+
+    def _build_oos_daily_predictions(
+        self,
+        df_features: pd.DataFrame,
+        feature_cols: List[str],
+    ) -> pd.DataFrame:
+        """
+        Membuat out-of-sample prediction dari TimeSeriesSplit.
+        Ini dipakai supaya weekly/monthly metrics dihitung dari prediksi daily historis
+        yang diagregasi, bukan sekadar menyalin metric daily model.
+        """
+        if df_features.empty or len(df_features) < 40:
+            return pd.DataFrame(columns=["date", "actual", "predicted"])
+
+        X = df_features[feature_cols].values
+        y = df_features["visitors"].values.astype(float)
+        dates = pd.to_datetime(df_features["date"])
+
+        n_splits = min(5, max(2, len(df_features) // 30))
+        try:
+            tscv = TimeSeriesSplit(n_splits=n_splits)
+        except Exception:
+            return pd.DataFrame(columns=["date", "actual", "predicted"])
+
+        rows: List[Dict[str, Any]] = []
+        for train_idx, val_idx in tscv.split(X):
+            if len(train_idx) < 20 or len(val_idx) == 0:
+                continue
+
+            scaler = StandardScaler()
+            X_train = scaler.fit_transform(X[train_idx])
+            X_val = scaler.transform(X[val_idx])
+            y_train = y[train_idx]
+            y_val = y[val_idx]
+
+            fold_model = RandomForestRegressor(
+                n_estimators=200,
+                max_depth=12,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features="sqrt",
+                bootstrap=True,
+                random_state=42,
+                n_jobs=-1,
+            )
+            fold_model.fit(X_train, y_train)
+            y_pred = np.maximum(fold_model.predict(X_val), 0)
+
+            for dt, actual, predicted in zip(dates.iloc[val_idx], y_val, y_pred):
+                rows.append({
+                    "date": dt,
+                    "actual": float(actual),
+                    "predicted": float(predicted),
+                })
+
+        if not rows:
+            return pd.DataFrame(columns=["date", "actual", "predicted"])
+        return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+    def _calculate_horizon_metrics(
+        self,
+        *,
+        store_id: str,
+        meta: Dict[str, Any],
+        raw_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> Dict[str, Any]:
+        """Hitung metric daily, weekly, monthly berbasis out-of-sample backtest."""
+        if raw_data is None:
+            # Jangan buka koneksi PostgreSQL langsung dari path metadata.
+            # Weekly/monthly biasanya sudah memakai horizon_metrics yang tersimpan
+            # dari daily forecast sebelumnya. Jika belum ada, kembalikan kosong.
+            return dict(meta.get("horizon_metrics") or {})
+        df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+        if df_daily.empty:
+            return {}
+
+        df_features = self.preprocessor.engineer_features(df_daily)
+        feature_cols = self.preprocessor.get_feature_columns(df_features)
+        oos_df = self._build_oos_daily_predictions(df_features, feature_cols)
+
+        metrics: Dict[str, Any] = {
+            "metrics_version": "horizon-aware-oos-v1",
+            "metric_source": "time_series_split_oos_daily_predictions",
+            "metric_note": (
+                "weekly/monthly metrics are calculated by aggregating out-of-sample daily "
+                "predictions into complete weekly/monthly periods."
+            ),
+            "daily_training_rows_before_features": int(len(df_daily)),
+            "daily_training_data_points": int(len(df_features)),
+            "oos_daily_prediction_points": int(len(oos_df)),
+        }
+
+        if not oos_df.empty:
+            metrics.update(self._metric_block("daily", oos_df["actual"].values, oos_df["predicted"].values))
+            metrics.update(self._aggregate_oos_metric(oos_df, "weekly"))
+            metrics.update(self._aggregate_oos_metric(oos_df, "monthly"))
+        else:
+            metrics.update(self._metric_block("daily", np.array([]), np.array([])))
+            metrics.update(self._metric_block("weekly", np.array([]), np.array([])))
+            metrics.update(self._metric_block("monthly", np.array([]), np.array([])))
+
+        # Fallback: kalau OOS daily tidak tersedia, tetap isi daily dari meta lama.
+        if not metrics.get("daily_metric_available") and meta.get("cv_mae") is not None:
+            avg_actual = float(df_features["visitors"].mean()) if not df_features.empty else 0.0
+            mae = float(meta.get("cv_mae", 0.0))
+            rmse = float(meta.get("cv_rmse", 0.0))
+            ratio = mae / avg_actual if avg_actual > 0 else None
+            metrics.update({
+                "daily_metric_available": True,
+                "daily_mae": self._round_metric(mae),
+                "daily_rmse": self._round_metric(rmse),
+                "daily_mae_percentage": self._round_metric(ratio * 100 if ratio is not None else None, 2),
+                "daily_error_ratio": self._round_metric(ratio, 4),
+                "daily_reliability": self._classify_reliability(ratio),
+                "metric_source": "trainer_cv_fallback",
+            })
+
+        return metrics
+
+    def _horizon_method(self, horizon_label: str) -> str:
+        if horizon_label == "daily":
+            return "direct_daily_model"
+        if horizon_label == "weekly":
+            return "aggregated_from_daily_forecast_weekly_backtest_metric"
+        if horizon_label == "monthly":
+            return "aggregated_from_daily_forecast_monthly_backtest_metric"
+        return "unknown"
+
+    def _metadata_for_response(
+        self,
+        *,
+        store_id: str,
+        meta: Dict[str, Any],
+        horizon_label: str,
+        raw_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> ModelMetadata:
+        metrics = dict(meta.get("horizon_metrics") or {})
+        if metrics.get("metrics_version") != "horizon-aware-oos-v1":
+            metrics = self._calculate_horizon_metrics(store_id=store_id, meta=meta, raw_data=raw_data)
+            meta["horizon_metrics"] = metrics
+            try:
+                meta_path = trainer._meta_path(store_id, "daily")
+                with open(meta_path, "w") as f:
+                    json.dump(meta, f, indent=2)
+            except Exception as exc:
+                logger.warning(f"Gagal menyimpan horizon-aware metrics visitors: {exc}")
+
+        selected_mae = metrics.get(f"{horizon_label}_mae")
+        selected_rmse = metrics.get(f"{horizon_label}_rmse")
+        if selected_mae is None:
+            selected_mae = metrics.get("daily_mae", meta.get("cv_mae"))
+        if selected_rmse is None:
+            selected_rmse = metrics.get("daily_rmse", meta.get("cv_rmse"))
+
+        selected_metrics: Dict[str, Any] = {
+            "metrics_version": metrics.get("metrics_version"),
+            "metric_source": metrics.get("metric_source"),
+            "training_rows_before_features": metrics.get("daily_training_rows_before_features"),
+            "training_data_points": metrics.get("daily_training_data_points"),
+            "oos_prediction_points": metrics.get("oos_daily_prediction_points"),
+            f"{horizon_label}_metric_available": bool(metrics.get(f"{horizon_label}_metric_available", False)),
+            f"{horizon_label}_mae": metrics.get(f"{horizon_label}_mae"),
+            f"{horizon_label}_rmse": metrics.get(f"{horizon_label}_rmse"),
+            f"{horizon_label}_mae_percentage": metrics.get(f"{horizon_label}_mae_percentage"),
+            f"{horizon_label}_error_ratio": metrics.get(f"{horizon_label}_error_ratio"),
+            f"{horizon_label}_reliability": metrics.get(f"{horizon_label}_reliability"),
+        }
+        selected_metrics = {k: v for k, v in selected_metrics.items() if v is not None}
+
+        # Metric horizon aktif hanya ditaruh di model_metadata.metrics.
+        # Jangan duplikasi ke top-level model_metadata agar response lebih bersih.
+        return ModelMetadata(
+            trained_at=datetime.fromisoformat(meta["trained_at"]) if meta.get("trained_at") else None,
+            training_data_points=int(meta.get("training_data_points", 0)),
+            feature_importance=meta.get("top_features", meta.get("feature_importance", {})),
+            cv_mae=self._round_metric(selected_mae),
+            cv_rmse=self._round_metric(selected_rmse),
+            horizon_method=self._horizon_method(horizon_label),
+            metric_horizon=horizon_label,
+            metrics=selected_metrics,
+        )
 
     def _horizon_days(self, horizon_label: str, horizon_count: int) -> int:
         if horizon_label == "daily":
@@ -999,7 +1596,7 @@ class ForecastService:
         return prediction_row, result_row
 
     def _training_range(self, store_id: str) -> Tuple[date, date, int]:
-        raw_data = db_client.fetch_all_historical_data(store_id)
+        raw_data = asyncio.run(golang_client.fetch_all_historical_data(store_id))
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
         if df_daily.empty:
             today = date.today()
@@ -1029,17 +1626,23 @@ class ForecastService:
         horizon_days = (predict_end - predict_start).days + 1
 
         metadata = forecast_response.model_metadata
-        mae = float(metadata.cv_mae)
-        rmse = float(metadata.cv_rmse)
+        metadata_metrics = dict(getattr(metadata, "metrics", {}) or {})
+        mae_value = metadata_metrics.get(f"{horizon_label}_mae", getattr(metadata, "cv_mae", None))
+        rmse_value = metadata_metrics.get(f"{horizon_label}_rmse", getattr(metadata, "cv_rmse", None))
+        mae = float(mae_value or 0.0)
+        rmse = float(rmse_value or 0.0)
         mape = None
-        model_version = "visitors-rf-v2"
+        model_version = "visitors-rf-v3-items-capped"
 
         avg_prediction = max(
             1.0,
             float(np.mean([max(0, item.predicted_visitors) for item in forecasts])),
         )
-        error_ratio = min(100.0, (mae / avg_prediction) * 100.0)
-        confidence_level = int(max(0, min(100, round(100.0 - error_ratio))))
+        # Untuk confidence hasil forecast saat ini, error ratio dihitung terhadap
+        # rata-rata predicted value horizon aktif. Metadata model tetap memakai
+        # mae_percentage/error_ratio terhadap actual backtest.
+        forecast_error_ratio = min(1.0, mae / avg_prediction) if mae > 0 else 0.0
+        confidence_level = int(max(0, min(100, round(100.0 - forecast_error_ratio * 100.0))))
 
         prediction_rows: List[Dict[str, Any]] = []
         result_rows: List[Dict[str, Any]] = []
@@ -1060,11 +1663,23 @@ class ForecastService:
 
         train_start, train_end, raw_train_rows = self._training_range(forecast_response.store_id)
 
+        selected_error_ratio = metadata_metrics.get(f"{horizon_label}_error_ratio")
+        selected_mae_percentage = metadata_metrics.get(f"{horizon_label}_mae_percentage")
+        selected_reliability = metadata_metrics.get(f"{horizon_label}_reliability")
+
         metrics = {
-            "mae": mae,
-            "rmse": rmse,
+            "horizon_method": getattr(metadata, "horizon_method", None),
+            "metric_horizon": horizon_label,
+            "mae": mae,  # legacy selected horizon MAE
+            "rmse": rmse,  # legacy selected horizon RMSE
             "mape": mape,
             "confidence_level": confidence_level,
+            "forecast_error_ratio": round(forecast_error_ratio, 4),
+            f"{horizon_label}_mae": mae,
+            f"{horizon_label}_rmse": rmse,
+            f"{horizon_label}_mae_percentage": selected_mae_percentage,
+            f"{horizon_label}_error_ratio": selected_error_ratio,
+            f"{horizon_label}_reliability": selected_reliability,
         }
         summary = {
             "module": "visitors",
@@ -1106,7 +1721,7 @@ class ForecastService:
 
     async def retrain(self, store_id: str, force: bool = False) -> RetrainResponse:
         logger.info(f"[RETRAIN] store={store_id}, force={force}")
-        raw_data = db_client.fetch_all_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
         
         if df_daily.empty:
@@ -1143,7 +1758,7 @@ class ForecastService:
             await self.retrain(store_id)
 
         model, scaler, feature_cols, meta = trainer.load_model(store_id)
-        raw_data = db_client.fetch_all_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
 
         if df_daily.empty:
@@ -1157,8 +1772,7 @@ class ForecastService:
             col for col in [
                 "date",
                 "visitors",
-                "omzet",
-                "online_ratio",
+                    "online_ratio",
                 "dine_in_ratio",
                 "takeaway_ratio",
             ]
@@ -1208,8 +1822,6 @@ class ForecastService:
                 "date": target_date,
                 "visitors": float(predicted_visitors),
             }
-            if "omzet" in running_history.columns:
-                new_history["omzet"] = float(row.get("rolling_omzet_7", 0.0))
             for channel_col in ["online_ratio", "dine_in_ratio", "takeaway_ratio"]:
                 if channel_col in running_history.columns:
                     new_history[channel_col] = float(row.get(f"rolling_{channel_col}_7", 0.0))
@@ -1220,12 +1832,11 @@ class ForecastService:
             generated_at=datetime.utcnow(),
             forecast_horizon_days=forecast_days,
             forecasts=forecasts,
-            model_metadata=ModelMetadata(
-                trained_at=datetime.fromisoformat(meta["trained_at"]),
-                training_data_points=meta["training_data_points"],
-                feature_importance=meta.get("top_features", {}),
-                cv_mae=meta["cv_mae"],
-                cv_rmse=meta["cv_rmse"],
+            model_metadata=self._metadata_for_response(
+                store_id=store_id,
+                meta=meta,
+                horizon_label="daily",
+                raw_data=raw_data,
             ),
             status="success",
             message=f"Berhasil memprediksi {forecast_days} hari ke depan",
@@ -1260,7 +1871,7 @@ class ForecastService:
         return start
 
     async def _retrain_periodic(self, store_id: str, granularity: str) -> Dict[str, Any]:
-        raw_data = db_client.fetch_all_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         if granularity == "weekly":
             df_period = self.preprocessor.build_weekly_dataframe(raw_data)
         else:
@@ -1291,7 +1902,7 @@ class ForecastService:
             await self._retrain_periodic(store_id, granularity)
 
         model, scaler, feature_cols, meta = trainer.load_model(store_id, granularity=granularity)
-        raw_data = db_client.fetch_all_historical_data(store_id)
+        raw_data = await golang_client.fetch_all_historical_data(store_id)
         
         if granularity == "weekly":
             df_period = self.preprocessor.build_weekly_dataframe(raw_data)
@@ -1481,7 +2092,11 @@ class ForecastService:
             generated_at=datetime.utcnow(),
             forecast_horizon_weeks=forecast_weeks,
             forecasts=forecasts,
-            model_metadata=daily_response.model_metadata,
+            model_metadata=self._metadata_for_response(
+                store_id=store_id,
+                meta=trainer.load_model(store_id)[3],
+                horizon_label="weekly",
+            ),
             status="success",
             message=(
                 f"Berhasil memprediksi {forecast_weeks} minggu ke depan "
@@ -1523,7 +2138,11 @@ class ForecastService:
             generated_at=datetime.utcnow(),
             forecast_horizon_months=forecast_months,
             forecasts=forecasts,
-            model_metadata=daily_response.model_metadata,
+            model_metadata=self._metadata_for_response(
+                store_id=store_id,
+                meta=trainer.load_model(store_id)[3],
+                horizon_label="monthly",
+            ),
             status="success",
             message=(
                 f"Berhasil memprediksi {forecast_months} bulan ke depan "

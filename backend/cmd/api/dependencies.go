@@ -14,6 +14,7 @@ import (
 )
 
 type AppDependencies struct {
+	DB                                   *pgxpool.Pool
 	StoreHandler                         *handler.StoreHandler
 	UserHandler                          *handler.UserHandler
 	AuthHandler                          *handler.AuthHandler
@@ -206,6 +207,7 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 	salesMonthlySummaryHandler := handler.NewSalesMonthlySummaryHandler(salesMonthlySummaryService)
 
 	return &AppDependencies{
+		DB:                                   pool,
 		StoreHandler:                         storeHandler,
 		UserHandler:                          userHandler,
 		AuthHandler:                          authHandler,
