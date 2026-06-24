@@ -1,8 +1,11 @@
-"""Parallel trainer for all inventory forecasting models."""
+"""Parallel trainer for inventory forecasting – store-level joblib."""
 
+import json
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import joblib
 import pandas as pd
 import requests
 
@@ -10,70 +13,90 @@ from config import Config
 from modules.inventory.forecaster import InventoryForecaster
 
 # =========================================================================
-# GLOBAL STATE — progress training disimpan di sini selama service hidup.
-# Akan hilang jika service restart (diketahui, lihat README).
+# GLOBAL STATE
 # =========================================================================
 training_tasks: dict = {}
 lock = threading.Lock()
 
-
 def _update_task(task_id: str, **kwargs):
-    """Update field tertentu di training_tasks secara thread-safe."""
     with lock:
         if task_id in training_tasks:
             training_tasks[task_id].update(kwargs)
 
 
 # =========================================================================
-# TRAINING SATU PASANGAN
+# TRAINING SATU TOKO UNTUK SATU HORIZON
 # =========================================================================
-
-def _train_single(store_id, ingr_id, task_id: str | None) -> tuple[bool, str]:
+def _train_store_for_horizon(store_id: str, freq: str, task_id: str | None = None) -> tuple[bool, str]:
     """
-    Latih satu pasangan (store_id, ingredient_id).
-
-    Dijalankan di worker thread oleh ThreadPoolExecutor.
-    Return (success: bool, pair_label: str) — dipakai untuk update counter di caller.
+    Latih semua ingredient satu toko untuk satu horizon (D/W/M).
+    Simpan hasil dalam 4 file joblib/json.
     """
-    pair_label = f"{store_id} / {ingr_id}"
+    label = {'D': 'daily', 'W': 'weekly', 'M': 'monthly'}[freq]
+
+    # 1. Ambil daftar ingredient untuk toko ini
+    url = f"{Config.BACKEND_API_URL}/ingredient-stock-histories"
     try:
-        fc = InventoryForecaster(store_id, ingr_id)
-        fc.tune_and_train()
+        resp = requests.get(url, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        print(f"[trainer] Gagal ambil data untuk {store_id}: {e}")
+        return False, f"{store_id} ({label})"
 
-        # Simpan hasil forecast mingguan (4 minggu ke depan)
-        fc.save_all_forecasts(periods=4, freq='W')
-        # Simpan juga bulanan jika diperlukan (opsional)
-        # fc.save_all_forecasts(periods=3, freq='M')
+    data = resp.json()
+    records = data['data'] if isinstance(data, dict) and 'data' in data else data
+    if not records:
+        return False, f"{store_id} ({label})"
 
-        return True, pair_label
-    except Exception as e:
-        # Log error tapi tidak stop training pasangan lain
-        print(f"[GAGAL] {pair_label}: {e}")
-        return False, pair_label
-    
+    df = pd.DataFrame(records)
+    df_store = df[df['m_store_id'] == store_id]
+    ingredient_ids = df_store['m_food_ingredient_id'].unique()
+
+    if len(ingredient_ids) == 0:
+        return False, f"{store_id} ({label})"
+
+    # 2. Latih setiap ingredient, kumpulkan model & metrik
+    models = {}
+    metadata = {}
+    for ing_id in ingredient_ids:
+        try:
+            fc = InventoryForecaster(store_id, ing_id, freq)
+            fc.tune_and_train()                   # latih, simpan model internal
+            models[ing_id] = fc.model
+            metadata[ing_id] = {
+                "metrics": fc._load_metrics(),
+                "train_start": fc.model.history['ds'].min().strftime('%Y-%m-%d'),
+                "train_end":   fc.model.history['ds'].max().strftime('%Y-%m-%d'),
+                "data_days":   len(fc.model.history)
+            }
+        except Exception as e:
+            print(f"[trainer] Gagal latih {ing_id}: {e}")
+            models[ing_id] = None
+            metadata[ing_id] = {"error": str(e)}
+
+    # 3. Simpan ke file joblib
+    model_dir = os.path.join(Config.MODEL_DIR, 'inventory')
+    os.makedirs(model_dir, exist_ok=True)
+
+    base = f"inventory_{label}_"
+    joblib.dump(models,    os.path.join(model_dir, f"{base}model_store_{store_id}.joblib"))
+    joblib.dump(None,      os.path.join(model_dir, f"{base}scaler_store_{store_id}.joblib"))   # tidak terpakai
+    with open(os.path.join(model_dir, f"{base}features_store_{store_id}.json"), 'w') as f:
+        json.dump(["is_weekend", "is_national_holiday", "is_store_closed"], f)
+    with open(os.path.join(model_dir, f"{base}metadata_store_{store_id}.json"), 'w') as f:
+        json.dump(metadata, f, indent=2, default=str)
+
+    return True, f"{store_id} ({label})"
+
 
 # =========================================================================
-# TRAINING SEMUA PASANGAN
+# TRAINING SEMUA TOKO DAN SEMUA HORIZON
 # =========================================================================
-
 def train_all_inventory_models(task_id: str | None = None):
     """
-    Latih semua pasangan (store_id, ingredient_id) dari data API.
-
-    Training berjalan paralel — beberapa pasangan diproses sekaligus.
-    Jumlah worker dikontrol oleh Config.TRAINING_MAX_WORKERS (default 4).
-
-    Kenapa tidak lebih dari 4 worker?
-      Prophet sendiri sudah multi-thread per model (Stan MCMC).
-      Terlalu banyak worker justru berebut CPU dan memperlambat semuanya.
-      4 worker adalah sweet spot untuk mesin dengan 4–8 core.
-      Sesuaikan di .env jika server punya core lebih banyak.
-
-    Args:
-        task_id: jika diberikan, progress dicatat ke training_tasks[task_id].
-                 Jika None (scheduled job), tidak ada tracking.
+    Melatih model untuk semua toko, untuk semua horizon (daily, weekly, monthly).
     """
-    # Ambil semua pasangan dari API
+    # 1. Ambil semua store_id yang memiliki data
     url = f"{Config.BACKEND_API_URL}/ingredient-stock-histories"
     try:
         resp = requests.get(url, headers=Config.backend_headers(), timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
@@ -84,52 +107,44 @@ def train_all_inventory_models(task_id: str | None = None):
         print(f"[trainer] Gagal mengambil data dari API: {e}")
         return
 
-    data    = resp.json()
+    data = resp.json()
     records = data['data'] if isinstance(data, dict) and 'data' in data else data
-
     if not records:
         if task_id:
             _update_task(task_id, status="ERROR", message="Tidak ada data dari API.")
         return
 
-    df    = pd.DataFrame(records)
-    pairs = df[['m_store_id', 'm_food_ingredient_id']].drop_duplicates()
-    total = len(pairs)
+    df = pd.DataFrame(records)
+    store_ids = df['m_store_id'].unique()
+    horizons = ['D', 'W', 'M']
+    total_jobs = len(store_ids) * len(horizons)
 
-    # [EDIT_POINT] Ubah jumlah worker default di Config.TRAINING_MAX_WORKERS (.env/config.py).
-    print(f"[trainer] Mulai training {total} pasangan dengan max {Config.TRAINING_MAX_WORKERS} worker paralel")
+    print(f"[trainer] Mulai training {len(store_ids)} toko x 3 horizon ({total_jobs} job) "
+          f"dengan max {Config.TRAINING_MAX_WORKERS} worker paralel")
 
     if task_id:
-        _update_task(task_id, status="RUNNING", total=total, processed=0, current_pair=None, message="")
+        _update_task(task_id, status="RUNNING", total=total_jobs, processed=0,
+                     current_pair=None, message="")
 
-    processed_count = 0   # counter shared antar thread — update pakai lock
+    processed_count = 0
 
     with ThreadPoolExecutor(max_workers=Config.TRAINING_MAX_WORKERS) as executor:
-        # Submit semua pekerjaan sekaligus; executor yang atur antrean
-        futures = {
-            executor.submit(_train_single, row['m_store_id'], row['m_food_ingredient_id'], task_id): row
-            for _, row in pairs.iterrows()
-        }
+        futures = {}
+        for store_id in store_ids:
+            for freq in horizons:
+                f = executor.submit(_train_store_for_horizon, store_id, freq, task_id)
+                futures[f] = (store_id, freq)
 
         for future in as_completed(futures):
-            success, pair_label = future.result()
-
-            # Update counter secara thread-safe
+            success, label = future.result()
             with lock:
                 processed_count += 1
-                current = processed_count  # snapshot lokal untuk log
-
+                current = processed_count
             if task_id:
-                _update_task(
-                    task_id,
-                    processed=current,
-                    current_pair=pair_label,
-                )
-
+                _update_task(task_id, processed=current, current_pair=label)
             status_str = "OK" if success else "GAGAL"
-            print(f"[trainer] [{current}/{total}] {status_str} — {pair_label}")
+            print(f"[trainer] [{current}/{total_jobs}] {status_str} — {label}")
 
     if task_id:
-        _update_task(task_id, status="DONE", processed=total, current_pair=None, message="")
-
-    print(f"[trainer] Selesai. {total} pasangan diproses.")
+        _update_task(task_id, status="DONE", processed=total_jobs, current_pair=None, message="")
+    print(f"[trainer] Selesai. {total_jobs} job diproses.")

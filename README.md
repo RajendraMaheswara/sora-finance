@@ -274,7 +274,7 @@ Response mengikuti format yang seragam dengan modul visitor/sales:
 - `metrics`: metrik evaluasi model dari cross-validation dan data latih
 - `forecast_summary`: total dan rata-rata pemakaian selama periode yang diminta
 - `prediction_analysis`: hari dengan prediksi tertinggi/terendah
-- `model_confidence`: `confidence_score` adalah skor gabungan (*blended metric*) dari sMAPE, R², dan Explained Variance; dengan level: `HIGH` (>= 60), `MEDIUM` (>= 40), `LOW` (< 40). Ambang batas ini disesuaikan khusus untuk akomodasi *noise* tinggi pada data *intermittent demand*.
+- `model_confidence`: Skor kepercayaan (confidence_score) dihitung berdasarkan stabilitas prediksi dan error metrics; mencakup klasifikasi 'HIGH', 'MEDIUM', atau 'LOW' untuk memandu pengambilan keputusan stok berdasarkan keandalan model.
 - `daily_forecast` / `weekly_forecast` / `monthly_forecast`: array prediksi sesuai `freq`
 
 ### 6. Menyimpan Hasil Forecast ke Database

@@ -34,6 +34,13 @@ def background_sales_training(task_id):
         sales_training_tasks[task_id]["status"] = "ERROR"
         sales_training_tasks[task_id]["message"] = str(e)
 
+def _map_horizon_to_freq(horizon_label):
+    mapping = {'daily': 'D', 'weekly': 'W', 'monthly': 'M'}
+    freq = mapping.get(horizon_label.lower())
+    if not freq:
+        raise ValueError("horizon_label harus daily/weekly/monthly")
+    return freq
+
 # Scheduler untuk retrain otomatis
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
@@ -414,51 +421,8 @@ def sales_retrain():
         return jsonify({"detail": f"Retrain gagal: {str(e)}"}), 500
 
 # ============================================
-# ROUTE INVENTORY (STOK BARANG)
+# ROUTE INVENTORY
 # ============================================
-
-@app.route('/api/inventory/forecast', methods=['POST'])
-def forecast_inventory():
-    """
-    Mendapatkan forecast stok bahan baku.
-    Request JSON:
-    {
-        "store_id": "...",
-        "ingredient_id": "...",
-        "periods": 4,
-        "freq": "W"   // "D", "W", atau "M"
-    }
-    """
-    try:
-        data = request.get_json()
-        store_id = data.get('store_id')
-        ingredient_id = data.get('ingredient_id')
-        periods = int(data.get('periods', 1))
-        freq = data.get('freq', 'W').upper()
-
-        if not store_id or not ingredient_id:
-            return jsonify({"error": "store_id dan ingredient_id wajib diisi"}), 400
-        if freq not in ['D', 'W', 'M']:
-            return jsonify({"error": "freq harus 'D', 'W', atau 'M'"}), 400
-
-        forecaster = InventoryForecaster(store_id, ingredient_id)
-        result = forecaster.predict(periods=periods, freq=freq)
-
-        return jsonify({
-            "success": True,
-            "message": f"Forecast {freq} untuk {periods} periode ke depan",
-            "data": result
-        })
-
-    except FileNotFoundError:
-        return jsonify({
-            "error": "Model belum di-training. Silakan panggil endpoint /api/inventory/train/start terlebih dahulu."
-        }), 404
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route('/api/inventory/train/start', methods=['POST'])
 def start_training():
     """Memulai training async dan mengembalikan task_id."""
@@ -487,71 +451,125 @@ def get_training_status(task_id):
         return jsonify({"error": "Task tidak ditemukan"}), 404
     return jsonify(task)
 
-
-# Backward compatibility – langsung jalankan async tanpa perlu task_id
-@app.route('/api/inventory/train', methods=['POST'])
-def train_inventory():
-    """(Deprecated) Langsung mulai training async."""
-    task_id = str(uuid.uuid4())
-    with threading.Lock():
-        training_tasks[task_id] = {
-            "status": "STARTING",
-            "total": 0,
-            "processed": 0,
-            "current_pair": None,
-            "message": ""
-        }
-    thread = threading.Thread(target=train_all_inventory_models, args=(task_id,))
-    thread.start()
-    return jsonify({
-        "task_id": task_id,
-        "message": "Training dimulai. Gunakan /api/inventory/train/status/<task_id> untuk memantau."
-    })
-
-@app.route('/api/inventory/save-all-forecasts', methods=['POST'])
-def save_all_forecasts():
+@app.route('/api/forecast/inventory/preview', methods=['POST'])
+def inventory_preview():
+    """Preview forecast tanpa menyimpan ke database."""
     try:
         data = request.get_json()
         store_id = data.get('store_id')
         ingredient_id = data.get('ingredient_id')
-        periods = int(data.get('periods', 4))
-        freq = data.get('freq', 'W').upper()
+        horizon_label = data.get('horizon_label', 'weekly').lower()
+        horizon_count = int(data.get('horizon_count', 4))
+
         if not store_id or not ingredient_id:
             return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
-        fc = InventoryForecaster(store_id, ingredient_id)
-        success = fc.save_all_forecasts(periods=periods, freq=freq)
-        if success:
-            return jsonify({"status": "sukses", "pesan": "Semua forecast tersimpan"})
-        else:
-            return jsonify({"error": "Gagal menyimpan"}), 500
+
+        freq = _map_horizon_to_freq(horizon_label)
+        periods = horizon_count
+
+        forecaster = InventoryForecaster(store_id, ingredient_id, freq)
+        result = forecaster.predict(periods=periods, freq=freq)
+
+        result["request_meta"] = {
+            "module": "inventory",
+            "horizon_label": horizon_label,
+            "horizon_count": horizon_count,
+            "mode": "preview",
+            "saved_to_database": False
+        }
+
+        return jsonify({
+            "success": True,
+            "message": f"Preview forecast {horizon_label} berhasil",
+            "data": result
+        })
+    except FileNotFoundError:
+        return jsonify({"error": "Model belum di-training"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/forecast/inventory/save', methods=['POST'])
+def inventory_save():
+    """Simpan hasil forecast ke database."""
+    try:
+        data = request.get_json()
+        store_id = data.get('store_id')
+        ingredient_id = data.get('ingredient_id')
+        horizon_label = data.get('horizon_label', 'weekly').lower()
+        horizon_count = int(data.get('horizon_count', 4))
+
+        if not store_id or not ingredient_id:
+            return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
+
+        freq = _map_horizon_to_freq(horizon_label)
+        periods = horizon_count
+
+        forecaster = InventoryForecaster(store_id, ingredient_id, freq)
+        success = forecaster.save_all_forecasts(periods=periods, freq=freq)
+
+        if success:
+            return jsonify({
+                "success": True,
+                "message": f"Forecast {horizon_label} berhasil disimpan ke database"
+            })
+        else:
+            return jsonify({"error": "Gagal menyimpan forecast"}), 500
+    except FileNotFoundError:
+        return jsonify({"error": "Model belum di-training"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/forecast/inventory/run', methods=['POST'])
+def inventory_run():
+    """Preview + simpan ke database."""
+    try:
+        data = request.get_json()
+        store_id = data.get('store_id')
+        ingredient_id = data.get('ingredient_id')
+        horizon_label = data.get('horizon_label', 'weekly').lower()
+        horizon_count = int(data.get('horizon_count', 4))
+
+        if not store_id or not ingredient_id:
+            return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
+
+        freq = _map_horizon_to_freq(horizon_label)
+        periods = horizon_count
+
+        forecaster = InventoryForecaster(store_id, ingredient_id, freq)
+        # Dapatkan prediksi dulu
+        result = forecaster.predict(periods=periods, freq=freq)
+        # Simpan ke database
+        success = forecaster.save_all_forecasts(periods=periods, freq=freq)
+
+        result["request_meta"] = {
+            "module": "inventory",
+            "horizon_label": horizon_label,
+            "horizon_count": horizon_count,
+            "mode": "run",
+            "saved_to_database": success
+        }
+
+        return jsonify({
+            "success": success,
+            "message": f"Forecast {horizon_label} {'berhasil' if success else 'gagal'} disimpan",
+            "data": result
+        })
+    except FileNotFoundError:
+        return jsonify({"error": "Model belum di-training"}), 404
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
     
-@app.route('/api/inventory/save-all-existing', methods=['POST'])
-def save_all_existing_forecasts():
-    """Menyimpan ulang forecast untuk semua pasangan yang sudah punya model."""
-    model_dir = os.path.join(Config.MODEL_DIR, 'inventory')
-    if not os.path.isdir(model_dir):
-        return jsonify({"error": "Folder model tidak ditemukan"}), 500
 
-    pkl_files = [f for f in os.listdir(model_dir) if f.endswith('.pkl')]
-    if not pkl_files:
-        return jsonify({"error": "Tidak ada model tersimpan"}), 404
-
-    results = []
-    for filename in pkl_files:
-        # Nama file: model_store{store_id}_ingr{ingredient_id}.pkl
-        name_part = filename[len("model_store"):].replace('.pkl', '')
-        store_id, ingredient_id = name_part.split('_ingr')
-        
-        try:
-            fc = InventoryForecaster(store_id, ingredient_id)
-            fc.load_model()
-            fc.save_all_forecasts(periods=4, freq='W')
-            results.append({"pair": f"{store_id}/{ingredient_id}", "status": "saved"})
-        except Exception as e:
-            results.append({"pair": f"{store_id}/{ingredient_id}", "status": "error", "error": str(e)})
-
-    return jsonify({"status": "selesai", "details": results})
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
