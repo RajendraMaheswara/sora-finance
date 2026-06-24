@@ -58,11 +58,15 @@
 ### 24 Juni 2026
 - **Fix 400 Error Backend** – Tipe data `confidence_level` dipastikan bertipe integer (`int`) saat dikirim ke Golang, menyelesaikan masalah gagal simpan (`HTTP 400`) di tabel `forecast_results`.
 - **Evaluasi Cross-Validation** – Metrik R² dan Explained Variance sekarang dihitung murni menggunakan data *out-of-sample* (Cross-Validation), bukan *in-sample*, sehingga lebih akurat.
-- **Blended Confidence Score** – Perhitungan *confidence* kini menggabungkan sMAPE, R², dan Explained Variance secara jujur (tanpa manipulasi/pengali). 
+- **Blended Confidence Score** – Perhitungan *confidence* kini menggabungkan sMAPE dan *bias penalty* sebagai komponen utama. R² dan Explained Variance hanya diikutsertakan jika nilainya bermakna (≥ 0.10), mengikuti *Cohen's guideline* untuk *effect size* minimal — sehingga data intermittent demand yang secara natural memiliki R² rendah tidak menghukum skor secara tidak adil.
 - **Domain-Specific Thresholding** – Ambang batas (threshold) untuk *confidence level* disesuaikan dengan karakteristik riil (banyak *noise*) dari *intermittent demand*: `HIGH` (>= 60), `MEDIUM` (>= 40), `LOW` (< 40), sesuai dengan *best practice* dan jurnal logistik/supply chain.
 - **Pembersihan Artifact** – File `.pkl` yang sudah kedaluwarsa telah dihapus dari repositori. Sistem sepenuhnya efisien dengan `.joblib`.
 - **Autentikasi Internal** – Pemanggilan API dari Python ke backend Go kini mengikutsertakan *headers* `Config.backend_headers()` secara konsisten.
 - **Dukungan Custom Start Date** – Menambahkan parameter opsional `start_date` pada *request body* untuk memungkinkan kalkulasi prediksi stok terhitung dari hari di masa depan, bukan hanya dari akhir histori (sangat membantu simulasi skenario).
+- **Audit & Debiasing Data (Fase 0)** – Implementasi deteksi *stockout* tersembunyi (zero streak > 3 hari → NaN) dan deteksi outlier ekstrem (z-score > 3.5 → NaN) secara otomatis sebelum training. Prophet mengabaikan NaN secara native, sehingga model tidak lagi belajar dari nol palsu atau spike anomali.
+- **Bias Detection (Fase 2)** – Menghitung `bias_ratio` (rasio total forecast / total actual) dari data *cross-validation*. Disimpan di metrik JSON sebagai `bias_ratio` agar bisa diaudit. Ideal: 0.95–1.05.
+- **Honest Confidence Score** – Metrik R² dan EV kini murni menggunakan nilai CV (bukan `max(cv, train)` yang bisa menyembunyikan performa buruk). Confidence score juga memperhitungkan *bias penalty* — model yang bias sistematis akan mendapat skor lebih rendah.
+- **Data Quality Tracking** – Metrik JSON diperkaya dengan `zero_ratio`, `outliers_nullified`, dan `stockout_days_nullified` untuk transparansi kualitas data yang digunakan training.
 
 ## KENDALA / KEKURANGAN YANG TERSISA (UPDATE 24 JUNI 2026)
 
@@ -272,7 +276,7 @@ Response mengikuti format yang seragam dengan modul visitor/sales:
       "lowest_prediction_value": 9.4
     },
     "model_confidence": {
-      "confidence_score": 99.75,
+      "confidence_score": 77.05,
       "confidence_level": "HIGH"
     },
     "weekly_forecast": [
@@ -293,7 +297,7 @@ Response mengikuti format yang seragam dengan modul visitor/sales:
 - `metrics`: metrik evaluasi model dari cross-validation dan data latih
 - `forecast_summary`: total dan rata-rata pemakaian selama periode yang diminta
 - `prediction_analysis`: hari dengan prediksi tertinggi/terendah
-- `model_confidence`: Skor kepercayaan (confidence_score) dihitung berdasarkan stabilitas prediksi dan error metrics; mencakup klasifikasi 'HIGH', 'MEDIUM', atau 'LOW' untuk memandu pengambilan keputusan stok berdasarkan keandalan model.
+- `model_confidence`: `confidence_score` dihitung dari komponen sMAPE (100 − sMAPE%) dan *bias penalty*; R² dan EV hanya masuk perhitungan jika ≥ 0.10 (bermakna). Level: `HIGH` (≥ 60), `MEDIUM` (≥ 40), `LOW` (< 40).
 - `daily_forecast` / `weekly_forecast` / `monthly_forecast`: array prediksi sesuai `freq`
 
 ### 6. Menyimpan Hasil Forecast ke Database
@@ -363,4 +367,5 @@ Hapus model lama (`models/inventory/*`), lalu training ulang. Pastikan menggunak
 - Semua data diambil dari API backend Go. Pastikan endpoint `GET /api/ingredient-stock-histories` dapat diakses.
 - Untuk production, gunakan WSGI server seperti gunicorn atau waitress, jangan mengandalkan server development Flask.
 - Progress training disimpan di memori: jika service restart, task lama tidak bisa dilacak dari endpoint status.
-- Confidence dihitung menggunakan metode komposit, dan evaluasi menggunakan data *out-of-sample Cross-Validation* agar skor terhindar dari bias *over-optimism*. Metrik sMAPE hanya dihitung pada hari ber-transaksi untuk mencegah distorsi pembagian dengan nilai aktual nol.
+- Data otomatis dibersihkan sebelum training: *stockout* tersembunyi (zero streak > 3 hari) dan outlier ekstrem (z-score > 3.5) diganti NaN agar model tidak belajar dari data palsu.
+- Confidence dihitung menggunakan metode komposit berbasis sMAPE dan *bias penalty* dari data *out-of-sample Cross-Validation*. R²/EV hanya diikutsertakan jika informatif (≥ 0.10), mengikuti *Cohen's guideline* untuk *effect size* minimal (Cohen, 1988; Hyndman & Koehler, 2006).

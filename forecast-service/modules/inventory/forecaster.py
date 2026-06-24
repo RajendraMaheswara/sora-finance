@@ -7,6 +7,7 @@ import os
 import holidays
 import joblib
 import numpy as np
+from scipy import stats as sp_stats
 import pandas as pd
 import requests
 from prophet import Prophet
@@ -91,6 +92,39 @@ class InventoryForecaster:
         full_range = pd.date_range(start=daily['ds'].min(), end=max_actual_date, freq='D')
         df_final   = pd.DataFrame({'ds': full_range}).merge(daily, on='ds', how='left')
         df_final['y'] = df_final['y'].fillna(0)
+
+        # Hitung zero_ratio sebelum cleaning (untuk metrik kualitas data)
+        zero_ratio = float((df_final['y'] == 0).mean())
+
+        # --- Fase 0.3: Deteksi stockout tersembunyi ---
+        # Zero berturut > 3 hari = kemungkinan stockout, bukan demand nol sesungguhnya
+        is_zero = df_final['y'] == 0
+        zero_groups = (is_zero != is_zero.shift()).cumsum()
+        zero_streak = is_zero.groupby(zero_groups).transform('sum') * is_zero
+        stockout_mask = zero_streak > 3
+        stockout_days = int(stockout_mask.sum())
+        if stockout_days > 0:
+            df_final.loc[stockout_mask, 'y'] = np.nan
+            print(f"  [clean] {stockout_days} hari stockout terdeteksi \u2192 NaN")
+
+        # --- Fase 0.5: Deteksi outlier ekstrem ---
+        outliers_nullified = 0
+        valid_y = df_final['y'].dropna()
+        if len(valid_y) > 10:
+            z_scores = np.abs(sp_stats.zscore(valid_y.values))
+            outlier_idx = valid_y.index[z_scores > 3.5]
+            outliers_nullified = len(outlier_idx)
+            if outliers_nullified > 0:
+                df_final.loc[outlier_idx, 'y'] = np.nan
+                print(f"  [clean] {outliers_nullified} outlier (z>3.5) \u2192 NaN")
+
+        # Simpan info kualitas data sebagai atribut untuk diakses saat training
+        self._data_quality_info = {
+            'zero_ratio': round(zero_ratio, 4),
+            'outliers_nullified': outliers_nullified,
+            'stockout_days_nullified': stockout_days,
+        }
+
         return df_final[['ds', 'y']]
 
     # =========================================================================
@@ -184,7 +218,7 @@ class InventoryForecaster:
                                              period=config['cv_period'], horizon=config['cv_horizon'],
                                              disable_tqdm=True)
                     cv_metrics = performance_metrics(df_cv)
-                    rmse = cv_metrics['rmse'].iloc[-1]
+                    rmse = cv_metrics['rmse'].mean()
                     if rmse < best_rmse:
                         best_rmse = rmse
                         best_model = m
@@ -202,13 +236,18 @@ class InventoryForecaster:
 
         # ---- metrics ----
         forecast_train = best_model.predict(df)
-        y_true = df['y'].values
-        y_pred = np.clip(forecast_train['yhat'].values, 0, None)
+        # Exclude NaN rows (stockout/outlier yang di-null-kan) dari kalkulasi R² train
+        valid_mask = df['y'].notna().values
+        y_true = df['y'].values[valid_mask]
+        y_pred = np.clip(forecast_train['yhat'].values[valid_mask], 0, None)
         ss_res = np.sum((y_true - y_pred) ** 2)
         ss_tot = np.sum((y_true - y_true.mean()) ** 2)
         r2_train = float(1 - ss_res / ss_tot) if ss_tot > 0 else None
         residuals = y_true - y_pred
         ev_train = float(1 - np.var(residuals) / np.var(y_true)) if np.var(y_true) > 0 else None
+
+        # Data quality info dari fase cleaning
+        dq = getattr(self, '_data_quality_info', {})
 
         if best_cv_metrics is not None:
             # Hitung R² dan EV dari cross-validation (out-of-sample, lebih jujur)
@@ -230,15 +269,23 @@ class InventoryForecaster:
             else:
                 custom_mape = None
 
+            # Bias ratio: rasio total forecast vs total actual (Fase 2.1)
+            total_actual = float(cv_y_true.sum())
+            bias_ratio = round(float(cv_y_pred.sum() / total_actual), 4) if total_actual > 0 else None
+
             best_metrics = {
-                'mae': float(best_cv_metrics['mae'].iloc[-1]),
-                'rmse': float(best_cv_metrics['rmse'].iloc[-1]),
+                'mae': float(best_cv_metrics['mae'].mean()),
+                'rmse': float(best_cv_metrics['rmse'].mean()),
                 'mape': custom_mape,
-                'smape': float(best_cv_metrics['smape'].iloc[-1]) if 'smape' in best_cv_metrics else None,
-                'r2_score': round(max(r2_cv, r2_train) if r2_cv is not None else r2_train, 4),
-                'explained_variance': round(max(ev_cv, ev_train) if ev_cv is not None else ev_train, 4),
+                'smape': float(best_cv_metrics['smape'].mean()) if 'smape' in best_cv_metrics else None,
+                'r2_score': round(r2_cv, 4) if r2_cv is not None else (round(r2_train, 4) if r2_train is not None else None),
+                'explained_variance': round(ev_cv, 4) if ev_cv is not None else (round(ev_train, 4) if ev_train is not None else None),
                 'data_days': data_days,
                 'cv_initial': config['cv_initial'],
+                'bias_ratio': bias_ratio,
+                'zero_ratio': dq.get('zero_ratio'),
+                'outliers_nullified': dq.get('outliers_nullified', 0),
+                'stockout_days_nullified': dq.get('stockout_days_nullified', 0),
             }
         else:
             best_metrics = {
@@ -247,6 +294,10 @@ class InventoryForecaster:
                 'explained_variance': round(ev_train, 4) if ev_train is not None else None,
                 'data_days': data_days,
                 'cv_initial': None,
+                'bias_ratio': None,
+                'zero_ratio': dq.get('zero_ratio'),
+                'outliers_nullified': dq.get('outliers_nullified', 0),
+                'stockout_days_nullified': dq.get('stockout_days_nullified', 0),
             }
 
         # Simpan metrik per ingredient (file kecil, opsional)
@@ -383,8 +434,7 @@ class InventoryForecaster:
 
         metrics = self._load_metrics()
         if metrics:
-            # Blended confidence: gabungan sMAPE, R², dan explained_variance
-            # sMAPE lebih stabil dari MAPE untuk data intermittent demand
+            # Blended confidence: gabungan sMAPE, R², EV, dan bias penalty
             scores = []
             smape = metrics.get('smape')
             if smape is not None:
@@ -396,18 +446,24 @@ class InventoryForecaster:
                     mape_pct = mape * 100 if mape < 1.0 else mape
                     scores.append(max(0.0, 100 - mape_pct))
             r2 = metrics.get('r2_score')
-            if r2 is not None and r2 > 0:
+            if r2 is not None and r2 >= 0.10:
                 scores.append(r2 * 100.0)
             ev = metrics.get('explained_variance')
-            if ev is not None and ev > 0:
+            if ev is not None and ev >= 0.10:
                 scores.append(ev * 100.0)
-            
+
+            # Penalti bias: skor turun proporsional jika bias_ratio jauh dari 1.0
+            bias_ratio = metrics.get('bias_ratio')
+            if bias_ratio is not None:
+                bias_penalty = max(0.0, (1 - abs(1 - bias_ratio) * 2)) * 100
+                scores.append(bias_penalty)
+
             if scores:
                 confidence_score = max(0.0, min(100.0, sum(scores) / len(scores)))
             else:
                 confidence_score = 0.0
             
-            # Threshold disesuaikan dengan realitas data inventory, tanpa memanipulasi skor murni
+            # Threshold disesuaikan dengan realitas data inventory
             confidence_level = "HIGH" if confidence_score >= 60 else ("MEDIUM" if confidence_score >= 40 else "LOW")
         else:
             confidence_score = 0
