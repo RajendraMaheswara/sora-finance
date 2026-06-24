@@ -286,7 +286,7 @@ class InventoryForecaster:
     # =========================================================================
     # PREDICTION
     # =========================================================================
-    def predict(self, periods=1, freq='W'):
+    def predict(self, periods=1, freq='W', start_date=None):
         if not self.model:
             self.load_model()
 
@@ -299,12 +299,25 @@ class InventoryForecaster:
         else:
             raise ValueError("freq harus 'D', 'W', atau 'M'")
 
-        future = self.model.make_future_dataframe(periods=future_periods)
+        import pandas as pd
+        last_hist_date = self.model.history['ds'].max()
+        
+        if start_date:
+            target_start = pd.to_datetime(start_date)
+            days_diff = (target_start - last_hist_date).days
+            if days_diff > 0:
+                total_periods = days_diff + future_periods
+            else:
+                total_periods = future_periods
+        else:
+            target_start = last_hist_date + pd.Timedelta(days=1)
+            total_periods = future_periods
+
+        future = self.model.make_future_dataframe(periods=total_periods)
         future = self._add_regressors(future)
         forecast = self.model.predict(future)
 
-        last_hist_date = self.model.history['ds'].max()
-        daily_rows = forecast[forecast['ds'] > last_hist_date].head(future_periods).copy()
+        daily_rows = forecast[forecast['ds'] >= target_start].head(future_periods).copy()
 
         daily_rows['yhat']       = daily_rows['yhat'].clip(lower=0)
         daily_rows['yhat_lower'] = daily_rows['yhat_lower'].clip(lower=0)
@@ -418,9 +431,9 @@ class InventoryForecaster:
     # =========================================================================
     # SAVE TO DATABASE
     # =========================================================================
-    def save_all_forecasts(self, periods=4, freq='W'):
+    def save_all_forecasts(self, periods=4, freq='W', start_date=None):
         try:
-            result = self.predict(periods=periods, freq=freq)
+            result = self.predict(periods=periods, freq=freq, start_date=start_date)
         except Exception as e:
             print(f"[ERROR] Gagal prediksi: {e}")
             return False

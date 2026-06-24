@@ -460,6 +460,7 @@ def inventory_preview():
         ingredient_id = data.get('ingredient_id')
         horizon_label = data.get('horizon_label', 'weekly').lower()
         horizon_count = int(data.get('horizon_count', 4))
+        start_date = data.get('start_date')
 
         if not store_id or not ingredient_id:
             return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
@@ -468,7 +469,7 @@ def inventory_preview():
         periods = horizon_count
 
         forecaster = InventoryForecaster(store_id, ingredient_id, freq)
-        result = forecaster.predict(periods=periods, freq=freq)
+        result = forecaster.predict(periods=periods, freq=freq, start_date=start_date)
 
         result["request_meta"] = {
             "module": "inventory",
@@ -501,6 +502,7 @@ def inventory_save():
         ingredient_id = data.get('ingredient_id')
         horizon_label = data.get('horizon_label', 'weekly').lower()
         horizon_count = int(data.get('horizon_count', 4))
+        start_date = data.get('start_date')
 
         if not store_id or not ingredient_id:
             return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
@@ -509,7 +511,7 @@ def inventory_save():
         periods = horizon_count
 
         forecaster = InventoryForecaster(store_id, ingredient_id, freq)
-        success = forecaster.save_all_forecasts(periods=periods, freq=freq)
+        success = forecaster.save_all_forecasts(periods=periods, freq=freq, start_date=start_date)
 
         if success:
             return jsonify({
@@ -536,6 +538,7 @@ def inventory_run():
         ingredient_id = data.get('ingredient_id')
         horizon_label = data.get('horizon_label', 'weekly').lower()
         horizon_count = int(data.get('horizon_count', 4))
+        start_date = data.get('start_date')
 
         if not store_id or not ingredient_id:
             return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
@@ -545,9 +548,9 @@ def inventory_run():
 
         forecaster = InventoryForecaster(store_id, ingredient_id, freq)
         # Dapatkan prediksi dulu
-        result = forecaster.predict(periods=periods, freq=freq)
+        result = forecaster.predict(periods=periods, freq=freq, start_date=start_date)
         # Simpan ke database
-        success = forecaster.save_all_forecasts(periods=periods, freq=freq)
+        success = forecaster.save_all_forecasts(periods=periods, freq=freq, start_date=start_date)
 
         result["request_meta"] = {
             "module": "inventory",

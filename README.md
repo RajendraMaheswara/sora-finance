@@ -62,6 +62,7 @@
 - **Domain-Specific Thresholding** – Ambang batas (threshold) untuk *confidence level* disesuaikan dengan karakteristik riil (banyak *noise*) dari *intermittent demand*: `HIGH` (>= 60), `MEDIUM` (>= 40), `LOW` (< 40), sesuai dengan *best practice* dan jurnal logistik/supply chain.
 - **Pembersihan Artifact** – File `.pkl` yang sudah kedaluwarsa telah dihapus dari repositori. Sistem sepenuhnya efisien dengan `.joblib`.
 - **Autentikasi Internal** – Pemanggilan API dari Python ke backend Go kini mengikutsertakan *headers* `Config.backend_headers()` secara konsisten.
+- **Dukungan Custom Start Date** – Menambahkan parameter opsional `start_date` pada *request body* untuk memungkinkan kalkulasi prediksi stok terhitung dari hari di masa depan, bukan hanya dari akhir histori (sangat membantu simulasi skenario).
 
 ## KENDALA / KEKURANGAN YANG TERSISA (UPDATE 24 JUNI 2026)
 
@@ -195,31 +196,49 @@ curl http://localhost:5000/api/inventory/train/status/<task_id>
 Status: STARTING -> RUNNING -> DONE (atau ERROR).
 
 ### 4. Forecasting
-Gunakan endpoint `POST /api/inventory/forecast` dengan body JSON.
+Gunakan endpoint `POST /api/forecast/inventory/preview` (atau `/run` untuk sekaligus menyimpan ke DB) dengan body JSON.
+
+Parameter opsional `start_date` (format "YYYY-MM-DD") dapat ditambahkan jika Anda ingin memulai prediksi dari tanggal tertentu alih-alih dari tanggal terakhir di data historis.
 
 Contoh harian (7 hari ke depan):
 
 ### Flutter
 ```bash
-curl -X POST http://localhost:5000/api/inventory/forecast \
+curl -X POST http://localhost:5000/api/forecast/inventory/preview \
   -H "Content-Type: application/json" \
-  -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":7,"freq":"D"}'
+  -d '{
+    "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+    "ingredient_id": "b98b5042-30b5-4dc7-80ce-7dbb4797c4c7",
+    "horizon_label": "daily",
+    "horizon_count": 7,
+    "start_date": "2026-07-01"
+  }'
 ```
 
 Contoh mingguan (4 minggu ke depan):
 
 ```bash
-curl -X POST http://localhost:5000/api/inventory/forecast \
+curl -X POST http://localhost:5000/api/forecast/inventory/preview \
   -H "Content-Type: application/json" \
-  -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":4,"freq":"W"}'
+  -d '{
+    "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+    "ingredient_id": "b98b5042-30b5-4dc7-80ce-7dbb4797c4c7",
+    "horizon_label": "weekly",
+    "horizon_count": 4
+  }'
 ```
 
 Contoh bulanan (3 bulan ke depan):
 
 ```bash
-curl -X POST http://localhost:5000/api/inventory/forecast \
+curl -X POST http://localhost:5000/api/forecast/inventory/preview \
   -H "Content-Type: application/json" \
-  -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","ingredient_id":"b98b5042-30b5-4dc7-80ce-7dbb4797c4c7","periods":3,"freq":"M"}'
+  -d '{
+    "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+    "ingredient_id": "b98b5042-30b5-4dc7-80ce-7dbb4797c4c7",
+    "horizon_label": "monthly",
+    "horizon_count": 3
+  }'
 ```
 
 ### 5. Memahami Output
