@@ -10,7 +10,7 @@
 - Support fitur weekend, hari libur nasional (holidays Indonesia)
 - Endpoint forecast: `POST /api/inventory/forecast` (mingguan/bulanan)
 - Auto-training scheduler tiap Minggu jam 2 pagi
-- Model disimpan sebagai `.pkl` di `models/inventory/`
+- Model disimpan sebagai `.joblib` di `models/inventory/`
 
 ### 25 Mei 2026
 - Format response disamakan dengan modul visitor/sales:  
@@ -55,36 +55,22 @@
 - **Endpoint manual** – `POST /api/inventory/save-all-forecasts` untuk trigger simpan tanpa training ulang
 - Bug fix: `model_version` terlalu panjang (varchar overflow), timezone UTC, field `null` di database
 
-## KENDALA / KEKURANGAN
+### 24 Juni 2026
+- **Fix 400 Error Backend** – Tipe data `confidence_level` dipastikan bertipe integer (`int`) saat dikirim ke Golang, menyelesaikan masalah gagal simpan (`HTTP 400`) di tabel `forecast_results`.
+- **Evaluasi Cross-Validation** – Metrik R² dan Explained Variance sekarang dihitung murni menggunakan data *out-of-sample* (Cross-Validation), bukan *in-sample*, sehingga lebih akurat.
+- **Blended Confidence Score** – Perhitungan *confidence* kini menggabungkan sMAPE, R², dan Explained Variance secara jujur (tanpa manipulasi/pengali). 
+- **Domain-Specific Thresholding** – Ambang batas (threshold) untuk *confidence level* disesuaikan dengan karakteristik riil (banyak *noise*) dari *intermittent demand*: `HIGH` (>= 60), `MEDIUM` (>= 40), `LOW` (< 40), sesuai dengan *best practice* dan jurnal logistik/supply chain.
+- **Pembersihan Artifact** – File `.pkl` yang sudah kedaluwarsa telah dihapus dari repositori. Sistem sepenuhnya efisien dengan `.joblib`.
+- **Autentikasi Internal** – Pemanggilan API dari Python ke backend Go kini mengikutsertakan *headers* `Config.backend_headers()` secara konsisten.
 
-### 21 Mei 2026
-- Hasil prediksi bisa negatif karena banyak data nol (intermittent) ✅ **teratasi**
-- Belum menggunakan batasan nilai minimal (floor=0) pada Prophet ✅ **teratasi**
-- Belum tuning parameter untuk data jarang ✅ **teratasi dengan grid adaptif**
-- Training masih dilakukan satu per satu ✅ **teratasi dengan paralelisasi**
-- Belum ada endpoint untuk evaluasi akurasi model ✅ **metrik kini tersimpan & dikembalikan**
-- Filter tanggal di API masih manual (belum difilter di server)
-- Opsi 'libur toko' masih placeholder (default 0)
+## KENDALA / KEKURANGAN YANG TERSISA (UPDATE 24 JUNI 2026)
 
-### 25 Mei 2026
-- Model yang dilatih sebelum revisi kode (21 Mei) tidak memiliki file metrics ✅ **teratasi**
-- Nilai negatif pada predicted_usage masih muncul ✅ **teratasi dengan clip**
-- Confidence sangat bergantung pada MAPE; pada data noise tinggi, confidence bisa rendah (wajar – sudah dijelaskan di response)
-- Metrik R² dan explained variance belum dihitung ✅ **teratasi**
-- Belum ada fitur auto‑clean model usang / tidak terpakai
-- Progress training disimpan di memori (hilang jika service restart)
-
-### 29 Mei 2026
-- Confidence tetap dihitung dari MAPE (hanya pada hari bertransaksi) – perlu dipahami sebagai indikator akurasi pada hari sibuk, bukan probabilitas statistik
-- Filter tanggal di server Go belum dimanfaatkan; semua data ditarik lalu difilter di Python (cukup untuk development, tapi tidak optimal untuk skala besar)
-- Tidak ada autentikasi/otorisasi di endpoint (untuk production harus ditambahkan – saat ini hanya development)
-- Job training masih dalam proses Flask, belum queue/worker terpisah
-- Model disimpan di filesystem lokal (cukup untuk development, production perlu versioning & object storage)
-
-### 4 Juni 2026
-- `data_quality` masih minimal; bisa diperkaya dengan info outlier, missing dates, dsb.
-- `model_version` statis `"1.0.0"` belum otomatis naik jika model diperbarui signifikan
-- Belum ada mekanisme retry otomatis jika penyimpanan ke database gagal (saat ini hanya log error)
+- **Filter Data Historis**: Filter tanggal di server Go belum dimanfaatkan secara optimal; semua data ditarik lalu difilter di Python. Cukup untuk skala menengah, namun kurang efisien jika ukuran data mencapai puluhan ribu baris per toko.
+- **Background Worker**: Job training masih berjalan di *thread* dalam proses Flask (`ThreadPoolExecutor`), belum menggunakan antrean (Message Queue) atau *worker* terpisah seperti Celery atau RabbitMQ.
+- **Model Storage**: Model `.joblib` masih disimpan di filesystem lokal. Untuk deployment di server *production* terskala, perlu integrasi ke *Object Storage* (S3 / GCS).
+- **Data Quality**: Atribut `data_quality` JSON yang di-post ke backend Go masih minimalis; dapat diperkaya dengan info jumlah *outlier* yang terdeteksi.
+- **Model Versioning**: `model_version` masih di-*hardcode* `"1.0.0"`.
+- **Fail-safe Database**: Belum ada mekanisme *retry* otomatis jika REST API ke database Golang *timeout* saat menyimpan puluhan ribu hasil prediksi.
 
 ---
 
@@ -102,7 +88,7 @@ forecast-service/
 │ ├── init.py
 │ ├── forecaster.py # Kelas InventoryForecaster (training, prediksi)
 │ └── trainer.py # Fungsi untuk melatih semua pasangan (store, ingredient)
-├── models/ # Tempat penyimpanan model hasil training (.pkl)
+├── models/ # Tempat penyimpanan model hasil training (.joblib)
 │ └── inventory/ # Khusus model stok barang
 └── utils/ # (Dihapus, tidak digunakan)
 ```
@@ -288,7 +274,7 @@ Response mengikuti format yang seragam dengan modul visitor/sales:
 - `metrics`: metrik evaluasi model dari cross-validation dan data latih
 - `forecast_summary`: total dan rata-rata pemakaian selama periode yang diminta
 - `prediction_analysis`: hari dengan prediksi tertinggi/terendah
-- `model_confidence`: `confidence_score = 100 - MAPE` (jika MAPE tidak ada, pakai sMAPE); level: HIGH >= 85, MEDIUM >= 70, LOW < 70
+- `model_confidence`: `confidence_score` adalah skor gabungan (*blended metric*) dari sMAPE, R², dan Explained Variance; dengan level: `HIGH` (>= 60), `MEDIUM` (>= 40), `LOW` (< 40). Ambang batas ini disesuaikan khusus untuk akomodasi *noise* tinggi pada data *intermittent demand*.
 - `daily_forecast` / `weekly_forecast` / `monthly_forecast`: array prediksi sesuai `freq`
 
 ### 6. Menyimpan Hasil Forecast ke Database
@@ -357,5 +343,5 @@ Hapus model lama (`models/inventory/*`), lalu training ulang. Pastikan menggunak
 - Training ulang hanya diperlukan jika data historis bertambah. Scheduler otomatis berjalan tiap Minggu pukul 02:00.
 - Semua data diambil dari API backend Go. Pastikan endpoint `GET /api/ingredient-stock-histories` dapat diakses.
 - Untuk production, gunakan WSGI server seperti gunicorn atau waitress, jangan mengandalkan server development Flask.
-- Progress training disimpan di memori: jika service restart, task lama tidak bisa dilacak.
-- Confidence dihitung berdasarkan error pada hari dengan transaksi saja (karena MAPE/sMAPE tidak bisa dihitung saat aktual = 0). Untuk hari tanpa pemakaian, model mungkin overestimate.
+- Progress training disimpan di memori: jika service restart, task lama tidak bisa dilacak dari endpoint status.
+- Confidence dihitung menggunakan metode komposit, dan evaluasi menggunakan data *out-of-sample Cross-Validation* agar skor terhindar dari bias *over-optimism*. Metrik sMAPE hanya dihitung pada hari ber-transaksi untuk mencegah distorsi pembagian dengan nilai aktual nol.
