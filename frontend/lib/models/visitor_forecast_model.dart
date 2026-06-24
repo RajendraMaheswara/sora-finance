@@ -1,3 +1,5 @@
+import 'forecast_series_model.dart';
+
 // ==========================================
 // VISITOR FORECAST MODEL
 // Mengikuti struktur response endpoint forecast pengunjung:
@@ -20,8 +22,17 @@
 class VisitorForecastPoint {
   final String date;
   final int predictedVisitors;
+  final double? lower;
+  final double? upper;
+  final int? confidence;
 
-  VisitorForecastPoint({required this.date, required this.predictedVisitors});
+  VisitorForecastPoint({
+    required this.date,
+    required this.predictedVisitors,
+    this.lower,
+    this.upper,
+    this.confidence,
+  });
 
   factory VisitorForecastPoint.fromJson(Map<String, dynamic> json) {
     return VisitorForecastPoint(
@@ -29,6 +40,15 @@ class VisitorForecastPoint {
       predictedVisitors: (json['predicted_visitors'] as num?)?.toInt() ?? 0,
     );
   }
+
+  factory VisitorForecastPoint.fromPoint(ForecastPoint p) =>
+      VisitorForecastPoint(
+        date: p.isoDate,
+        predictedVisitors: p.value.round(),
+        lower: p.lower,
+        upper: p.upper,
+        confidence: p.confidence,
+      );
 }
 
 class VisitorForecastModel {
@@ -52,7 +72,14 @@ class VisitorForecastModel {
   final String confidenceLevel;
 
   final List<String> insights;
+
+  /// Tiap titik = 1 hari (run harian).
+  final List<VisitorForecastPoint> dailyForecast;
+
+  /// Tiap titik = 1 minggu (run mingguan native, ±4 minggu = 1 bulan).
   final List<VisitorForecastPoint> weeklyForecast;
+
+  /// Tiap titik = 1 bulan (run bulanan native).
   final List<VisitorForecastPoint> monthlyForecast;
 
   VisitorForecastModel({
@@ -71,53 +98,52 @@ class VisitorForecastModel {
     required this.insights,
     required this.weeklyForecast,
     required this.monthlyForecast,
+    this.dailyForecast = const [],
   });
 
-  /// Membangun model dari response array GET /api/forecast-predictions.
-  factory VisitorForecastModel.fromPredictionList(List<dynamic> rawList) {
-    const visitorKeywords = ['visitor', 'pengunjung', 'kunjungan'];
+  /// Membangun model dari array GET /api/forecast-results (skema run/result).
+  factory VisitorForecastModel.fromResults(List<dynamic> rawList) {
+    final rows = filterResultsByType(
+      rawList,
+      visitorItemTypes,
+      includeNullType: true,
+    );
+    final fr = ForecastResults.fromRows(rows);
 
-    var all = rawList
-        .whereType<Map>()
-        .map((e) => Map<String, dynamic>.from(e))
-        .toList();
+    final daily = fr.daily.map(VisitorForecastPoint.fromPoint).toList();
+    final weekly =
+        fr.effectiveWeekly.map(VisitorForecastPoint.fromPoint).toList();
+    final monthly =
+        fr.effectiveMonthly.map(VisitorForecastPoint.fromPoint).toList();
 
-    // Coba filter berdasarkan modul visitor; fallback ke semua data
-    final visitorFiltered = all.where((e) {
-      final m = (e['module'] as String? ?? '').toLowerCase();
-      return visitorKeywords.any((k) => m.contains(k));
-    }).toList();
-    if (visitorFiltered.isNotEmpty) all = visitorFiltered;
+    // Total & rata-rata mengacu run harian; turunkan dari mingguan/bulanan
+    // bila run harian tidak tersedia.
+    int total7, total30;
+    if (fr.daily.isNotEmpty) {
+      total7 = fr.daily.take(7).fold<double>(0, (s, p) => s + p.value).round();
+      total30 =
+          fr.daily.take(30).fold<double>(0, (s, p) => s + p.value).round();
+    } else if (fr.effectiveWeekly.isNotEmpty) {
+      total7 = fr.effectiveWeekly.first.value.round();
+      total30 =
+          fr.effectiveWeekly.fold<double>(0, (s, p) => s + p.value).round();
+    } else if (fr.effectiveMonthly.isNotEmpty) {
+      total30 = fr.effectiveMonthly.first.value.round();
+      total7 = (total30 / 4.345).round();
+    } else {
+      total7 = 0;
+      total30 = 0;
+    }
+    final days7 =
+        fr.daily.isEmpty ? 7 : (fr.daily.length < 7 ? fr.daily.length : 7);
+    final days30 =
+        fr.daily.isEmpty ? 30 : (fr.daily.length < 30 ? fr.daily.length : 30);
+    final avg7 = total7 / days7;
+    final avg30 = total30 / days30;
 
-    all.sort((a, b) => (a['prediction_date'] as String? ?? '')
-        .compareTo(b['prediction_date'] as String? ?? ''));
-
-    List<VisitorForecastPoint> toPoints(List<Map<String, dynamic>> preds) =>
-        preds
-            .map((p) => VisitorForecastPoint(
-                  date: p['prediction_date'] ?? '',
-                  predictedVisitors:
-                      (p['predicted_value'] as num?)?.toInt() ?? 0,
-                ))
-            .toList();
-
-    final weeklyData = all.take(7).toList();
-    final monthlyData = all.take(30).toList();
-
-    final weeklyPoints = toPoints(weeklyData);
-    final monthlyPoints = toPoints(monthlyData);
-
-    final total7 =
-        weeklyPoints.fold<int>(0, (s, p) => s + p.predictedVisitors);
-    final total30 =
-        monthlyPoints.fold<int>(0, (s, p) => s + p.predictedVisitors);
-
-    final avg7 = weeklyPoints.isEmpty ? 0.0 : total7 / weeklyPoints.length;
-    final avg30 =
-        monthlyPoints.isEmpty ? 0.0 : total30 / monthlyPoints.length;
-
+    final basis = daily.isNotEmpty ? daily : weekly;
     VisitorForecastPoint? highest, lowest;
-    for (final p in weeklyPoints) {
+    for (final p in basis) {
       if (highest == null || p.predictedVisitors > highest.predictedVisitors) {
         highest = p;
       }
@@ -126,58 +152,52 @@ class VisitorForecastModel {
       }
     }
 
-    String trendDirection = 'STABLE';
-    if (weeklyPoints.length >= 4) {
-      final mid = weeklyPoints.length ~/ 2;
-      final firstHalf = weeklyPoints
+    String trend = 'STABLE';
+    if (basis.length >= 4) {
+      final mid = basis.length ~/ 2;
+      final first = basis
           .sublist(0, mid)
           .fold<int>(0, (s, p) => s + p.predictedVisitors);
-      final secondHalf = weeklyPoints
-          .sublist(mid)
-          .fold<int>(0, (s, p) => s + p.predictedVisitors);
-      if (secondHalf > firstHalf) {
-        trendDirection = 'UPWARD';
-      } else if (secondHalf < firstHalf) {
-        trendDirection = 'DOWNWARD';
+      final second =
+          basis.sublist(mid).fold<int>(0, (s, p) => s + p.predictedVisitors);
+      if (second > first) {
+        trend = 'UPWARD';
+      } else if (second < first) {
+        trend = 'DOWNWARD';
       }
     }
 
-    final mapes = all
-        .map((p) => (p['mape'] as num?)?.toDouble())
-        .whereType<double>()
+    final confs = (fr.daily.isNotEmpty ? fr.daily : fr.effectiveWeekly)
+        .where((p) => p.confidence != null)
+        .map((p) => p.confidence!.toDouble())
         .toList();
-    final avgMape = mapes.isEmpty
-        ? 15.0
-        : mapes.fold<double>(0, (s, v) => s + v) / mapes.length;
-    final confidenceScore = (100.0 - avgMape).clamp(0.0, 100.0);
-    final confidenceLevel = confidenceScore >= 85
-        ? 'Tinggi'
-        : confidenceScore >= 70
-            ? 'Sedang'
-            : 'Rendah';
+    final confScore = confs.isEmpty
+        ? 80.0
+        : (confs.reduce((a, b) => a + b) / confs.length).clamp(0.0, 100.0);
+    final confLevel =
+        confScore >= 85 ? 'Tinggi' : confScore >= 70 ? 'Sedang' : 'Rendah';
 
     final insights = <String>[];
     if (highest != null && highest.predictedVisitors > 0) {
-      insights.add(
-          'Puncak kunjungan diprediksi pada ${highest.date} dengan ${highest.predictedVisitors} orang.');
+      insights.add('Puncak kunjungan diprediksi pada '
+          '${highest.date} dengan ${highest.predictedVisitors} orang.');
     }
-    if (trendDirection == 'UPWARD') {
+    if (trend == 'UPWARD') {
       insights.add(
           'Tren pengunjung menunjukkan peningkatan dalam periode prediksi.');
-    } else if (trendDirection == 'DOWNWARD') {
+    } else if (trend == 'DOWNWARD') {
       insights.add(
           'Tren pengunjung menunjukkan penurunan dalam periode prediksi.');
     }
-    if (mapes.isNotEmpty) {
-      insights.add(
-          'Akurasi model: MAPE rata-rata ${avgMape.toStringAsFixed(1)}%, tingkat kepercayaan ${confidenceScore.toStringAsFixed(1)}%.');
+    insights.add('Estimasi $total30 pengunjung dalam 30 hari ke depan '
+        '(rata-rata ${avg7.toStringAsFixed(0)} orang/hari).');
+    if (confs.isNotEmpty) {
+      insights.add('Tingkat kepercayaan model: '
+          '${confScore.toStringAsFixed(0)}% ($confLevel).');
     }
 
-    final storeId =
-        all.isNotEmpty ? (all.first['store_id'] as String? ?? '') : '';
-
     return VisitorForecastModel(
-      storeId: storeId,
+      storeId: '',
       totalNext7Days: total7,
       totalNext30Days: total30,
       avgDailyNext7Days: avg7,
@@ -186,12 +206,13 @@ class VisitorForecastModel {
       highestPredictionValue: highest?.predictedVisitors ?? 0,
       lowestPredictionDay: lowest?.date ?? '',
       lowestPredictionValue: lowest?.predictedVisitors ?? 0,
-      trendDirection: trendDirection,
-      confidenceScore: confidenceScore,
-      confidenceLevel: confidenceLevel,
+      trendDirection: trend,
+      confidenceScore: confScore,
+      confidenceLevel: confLevel,
       insights: insights,
-      weeklyForecast: weeklyPoints,
-      monthlyForecast: monthlyPoints,
+      dailyForecast: daily,
+      weeklyForecast: weekly,
+      monthlyForecast: monthly,
     );
   }
 

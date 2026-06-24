@@ -4,6 +4,7 @@ import 'package:sora2/widgets/sidebar.dart';
 
 import '../../core/services/api_service.dart';
 import '../../core/services/auth_service.dart';
+import '../../models/forecast_series_model.dart';
 
 // ==========================================
 // COLORS
@@ -153,29 +154,30 @@ class _ViewModel {
       });
     }
 
-    // Group forecast_results by item_id
-    final resultsByItem = <String, List<Map<String, dynamic>>>{};
+    // Group forecast_results by item_id (ingredient). Sales/visitors rows
+    // punya item_id null sehingga otomatis terabaikan di sini.
+    final rowsByItem = <String, List<Map<String, dynamic>>>{};
     for (final raw in rawResults) {
       final m = Map<String, dynamic>.from(raw as Map);
       final itemId = m['item_id'] as String? ?? '';
       if (itemId.isEmpty) continue;
-      resultsByItem.putIfAbsent(itemId, () => []).add(m);
-    }
-
-    // Sort forecast results by target_date ascending
-    for (final list in resultsByItem.values) {
-      list.sort((a, b) {
-        final da = (a['target_date'] as String? ?? '');
-        final db = (b['target_date'] as String? ?? '');
-        return da.compareTo(db);
-      });
+      rowsByItem.putIfAbsent(itemId, () => []).add(m);
     }
 
     // Build item data
     final items = <_ItemData>[];
-    for (final entry in resultsByItem.entries) {
+    for (final entry in rowsByItem.entries) {
       final itemId = entry.key;
-      final forecastRows = entry.value;
+
+      // Tiap ingredient bisa punya run harian/mingguan/bulanan terpisah yang
+      // semuanya masuk ke forecast_results. Untuk penipisan stok kita pakai
+      // HANYA run harian (fallback ke mingguan/bulanan bila tidak ada) supaya
+      // perhitungan sisa stok tidak tercampur antar granularitas.
+      final fr = ForecastResults.fromRows(entry.value);
+      final series = fr.daily.isNotEmpty
+          ? fr.daily
+          : (fr.weekly.isNotEmpty ? fr.weekly : fr.monthly);
+      if (series.isEmpty) continue;
 
       final name = ingredientNames[itemId] ?? itemId;
       final stockLimit = ingredientLimits[itemId] ?? 0.0;
@@ -200,12 +202,8 @@ class _ViewModel {
       // Compute depletion forecast
       double remaining = currentStock;
       final forecasts = <_DayForecast>[];
-      for (final row in forecastRows) {
-        final rawDate = row['target_date'] as String? ?? '';
-        final date = rawDate.length >= 10 ? rawDate.substring(0, 10) : rawDate;
-        final usage = (row['predicted_value'] as num?)?.toDouble() ?? 0.0;
-        final lo = (row['lower_bound'] as num?)?.toDouble();
-        final hi = (row['upper_bound'] as num?)?.toDouble();
+      for (final p in series) {
+        final usage = p.value;
         remaining -= usage;
 
         _StockStatus status;
@@ -220,12 +218,12 @@ class _ViewModel {
         }
 
         forecasts.add(_DayForecast(
-          date: date,
+          date: p.isoDate,
           predictedUsage: usage,
           estimatedRemaining: remaining,
           status: status,
-          lower: lo,
-          upper: hi,
+          lower: p.lower,
+          upper: p.upper,
         ));
       }
 
@@ -544,9 +542,11 @@ class _StockBodyState extends State<_StockBody> {
   List<_DayForecast> get _periodForecasts {
     switch (_period) {
       case _Period.weekly:
-        return _item.forecasts.take(28).toList();
+        // 7 hari ke depan (dalam 1 minggu, tidak melebihi 1 bulan).
+        return _item.forecasts.take(7).toList();
       case _Period.monthly:
-        return _item.forecasts;
+        // Hingga 30 hari ke depan.
+        return _item.forecasts.take(30).toList();
     }
   }
 
@@ -867,6 +867,26 @@ class _DepletionChart extends StatelessWidget {
           predForecasts[i].estimatedRemaining));
     }
 
+    // Pita confidence interval untuk sisa stok: akumulasi batas bawah/atas
+    // pemakaian harian → batas atas/bawah sisa stok (pemakaian kecil = sisa
+    // lebih banyak, dan sebaliknya).
+    final upperRemain = <FlSpot>[];
+    final lowerRemain = <FlSpot>[];
+    if (histCount > 0) {
+      upperRemain.add(histSpots.last);
+      lowerRemain.add(histSpots.last);
+    }
+    double cumLo = 0, cumHi = 0;
+    for (var i = 0; i < predForecasts.length; i++) {
+      final f = predForecasts[i];
+      cumLo += f.lower ?? f.predictedUsage;
+      cumHi += f.upper ?? f.predictedUsage;
+      final x = (histCount + i).toDouble();
+      upperRemain.add(FlSpot(x, (item.currentStock - cumLo).clamp(0.0, maxY)));
+      lowerRemain.add(FlSpot(x, (item.currentStock - cumHi).clamp(0.0, maxY)));
+    }
+    final hasBand =
+        predForecasts.any((f) => f.lower != null && f.upper != null);
 
     // Find depletion point (stock hits 0)
     int? depletionIdx;
@@ -920,6 +940,12 @@ class _DepletionChart extends StatelessWidget {
                   _LegendLine(color: _kLineGreen, dashed: false, label: 'Historis'),
                   const SizedBox(width: 12),
                   _LegendLine(color: _kLineRed, dashed: true, label: 'Prediksi'),
+                  if (hasBand) ...[
+                    const SizedBox(width: 12),
+                    _LegendBand(
+                        color: _kLineRed.withValues(alpha: 0.12),
+                        label: 'Interval'),
+                  ],
                 ],
               ),
             ],
@@ -999,9 +1025,33 @@ class _DepletionChart extends StatelessWidget {
                 ),
               ),
               borderData: FlBorderData(show: false),
-              betweenBarsData: [],
+              // Indeks lineBarsData: 0=batas atas (transparan), 1=batas bawah
+              // (transparan), 2=prediksi, 3=historis. Pita di antara 0 & 1.
+              betweenBarsData: hasBand
+                  ? [
+                      BetweenBarsData(
+                        fromIndex: 0,
+                        toIndex: 1,
+                        color: _kLineRed.withValues(alpha: 0.12),
+                      ),
+                    ]
+                  : const [],
               lineBarsData: [
-                // 0: prediction (red dashed)
+                // 0: batas atas sisa (transparan)
+                LineChartBarData(
+                  spots: upperRemain,
+                  color: Colors.transparent,
+                  barWidth: 0,
+                  dotData: const FlDotData(show: false),
+                ),
+                // 1: batas bawah sisa (transparan)
+                LineChartBarData(
+                  spots: lowerRemain,
+                  color: Colors.transparent,
+                  barWidth: 0,
+                  dotData: const FlDotData(show: false),
+                ),
+                // 2: prediction (red dashed)
                 LineChartBarData(
                   spots: predSpots,
                   color: _kLineRed,
@@ -1023,7 +1073,7 @@ class _DepletionChart extends StatelessWidget {
                   ),
                   belowBarData: BarAreaData(show: false),
                 ),
-                // 1: historical (green solid)
+                // 3: historical (green solid)
                 LineChartBarData(
                   spots: histSpots,
                   color: _kLineGreen,
@@ -1035,11 +1085,27 @@ class _DepletionChart extends StatelessWidget {
               ],
               lineTouchData: LineTouchData(
                 touchTooltipData: LineTouchTooltipData(
+                  getTooltipColor: (_) => Colors.black.withValues(alpha: 0.82),
+                  fitInsideHorizontally: true,
+                  fitInsideVertically: true,
                   getTooltipItems: (spots) => spots.map((s) {
+                    // Lewati garis batas transparan (0 & 1).
+                    if (s.barIndex == 0 || s.barIndex == 1) return null;
                     final label = xLabels[s.x.toInt()] ?? '';
-                    if (s.barIndex == 0) {
+                    if (s.barIndex == 2) {
+                      double? bandHi, bandLo;
+                      for (final sp in upperRemain) {
+                        if (sp.x == s.x) bandHi = sp.y;
+                      }
+                      for (final sp in lowerRemain) {
+                        if (sp.x == s.x) bandLo = sp.y;
+                      }
+                      final ci = (hasBand && bandLo != null && bandHi != null)
+                          ? '\nInterval: ${bandLo.toStringAsFixed(1)}–'
+                              '${bandHi.toStringAsFixed(1)} kg'
+                          : '';
                       return LineTooltipItem(
-                        'Sisa Prediksi\n$label\n${s.y.toStringAsFixed(1)} kg',
+                        'Sisa Prediksi\n$label\n${s.y.toStringAsFixed(1)} kg$ci',
                         const TextStyle(color: Colors.white, fontSize: 11));
                     }
                     return LineTooltipItem(
@@ -1087,6 +1153,28 @@ class _LegendLine extends StatelessWidget {
           width: 24,
           height: 14,
           child: CustomPaint(painter: _LinePainter(color: color, dashed: dashed)),
+        ),
+        const SizedBox(width: 4),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+      ],
+    );
+  }
+}
+
+class _LegendBand extends StatelessWidget {
+  final Color color;
+  final String label;
+  const _LegendBand({required this.color, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 18,
+          height: 11,
+          decoration: BoxDecoration(
+              color: color, borderRadius: BorderRadius.circular(2)),
         ),
         const SizedBox(width: 4),
         Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
