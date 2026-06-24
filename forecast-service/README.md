@@ -1,4 +1,4 @@
-# Forecast Service Full Guide — Sora Finance
+# Forecast Service Full Guide - Sora Finance
 
 ## Hal yang perlu diluruskan lebih dulu
 
