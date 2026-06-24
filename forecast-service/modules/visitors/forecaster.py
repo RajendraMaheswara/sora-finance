@@ -8,6 +8,7 @@ import psycopg2.extras
 import pandas as pd
 import numpy as np
 from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 from typing import Dict, List, Tuple, Any, Optional
 from pydantic import BaseModel, Field
@@ -84,6 +85,11 @@ class ForecastResponse(BaseModel):
     store_id: str
     generated_at: datetime
     forecast_horizon_days: int
+    forecast_start_date: Optional[date] = None
+    forecast_end_date: Optional[date] = None
+    start_date_source: Optional[str] = None
+    last_actual_date: Optional[date] = None
+    business_cutoff_rule: Optional[str] = None
     forecasts: List[DailyForecast]
     model_metadata: ModelMetadata
     status: str = "success"
@@ -94,6 +100,11 @@ class WeeklyForecastResponse(BaseModel):
     store_id: str
     generated_at: datetime
     forecast_horizon_weeks: int
+    forecast_start_date: Optional[date] = None
+    forecast_end_date: Optional[date] = None
+    start_date_source: Optional[str] = None
+    last_actual_date: Optional[date] = None
+    business_cutoff_rule: Optional[str] = None
     forecasts: List[WeeklyForecast]
     model_metadata: ModelMetadata
     status: str = "success"
@@ -104,6 +115,11 @@ class MonthlyForecastResponse(BaseModel):
     store_id: str
     generated_at: datetime
     forecast_horizon_months: int
+    forecast_start_date: Optional[date] = None
+    forecast_end_date: Optional[date] = None
+    start_date_source: Optional[str] = None
+    last_actual_date: Optional[date] = None
+    business_cutoff_rule: Optional[str] = None
     forecasts: List[MonthlyForecast]
     model_metadata: ModelMetadata
     status: str = "success"
@@ -731,6 +747,8 @@ class PostgresClient:
             "saved_results": len(result_rows),
             "horizon_label": horizon_label,
             "horizon_days": horizon_days,
+            "predict_start_date": predict_start_date.isoformat(),
+            "predict_end_date": predict_end_date.isoformat(),
         }
 
 db_client = PostgresClient()
@@ -1199,6 +1217,79 @@ class ForecastService:
         self.feature_version = "visitors-backend-daily-history-v5"
         self.data_source = "backend_visitors_daily_history_aggregated_from_t_orders_t_order_items_operational_hours"
 
+    def _now_jakarta(self) -> datetime:
+        return datetime.now(ZoneInfo("Asia/Jakarta"))
+
+    def _last_actual_date_from_df(self, df_daily: pd.DataFrame) -> Optional[date]:
+        if df_daily is None or df_daily.empty or "date" not in df_daily.columns:
+            return None
+        dates = pd.to_datetime(df_daily["date"], errors="coerce").dropna()
+        if dates.empty:
+            return None
+        return dates.max().date()
+
+    def _is_known_24h_store_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
+        # Jangan anggap 24 jam jika data jam operasional kosong.
+        # Untuk default start_date, prediksi besok lebih aman daripada memprediksi hari berjalan
+        # dengan data aktual yang mungkin masih parsial.
+        if not operational_hours:
+            return False
+        op_map = self.preprocessor._parse_operational_hours(operational_hours)
+        features = self.preprocessor._operational_features_for_date(pd.Timestamp(target_date), op_map)
+        return float(features.get("is_store_open", 0.0)) > 0 and float(features.get("is_24_hours", 0.0)) >= 1.0
+
+    def _resolve_forecast_start_meta(
+        self,
+        *,
+        df_daily: pd.DataFrame,
+        operational_hours: List[Dict[str, Any]],
+        requested_start_date: Optional[date],
+    ) -> Dict[str, Any]:
+        last_actual_date = self._last_actual_date_from_df(df_daily)
+
+        if requested_start_date is not None:
+            return {
+                "forecast_start_date": requested_start_date,
+                "start_date_source": "manual_body",
+                "last_actual_date": last_actual_date,
+                "business_cutoff_rule": "manual_start_date",
+            }
+
+        today_jakarta = self._now_jakarta().date()
+        is_24h = self._is_known_24h_store_on_date(today_jakarta, operational_hours)
+
+        if is_24h:
+            candidate_start = today_jakarta
+            start_date_source = "auto_24h_cutoff_02:00"
+            business_cutoff_rule = "24h_store_02:00"
+        else:
+            candidate_start = today_jakarta + timedelta(days=1)
+            if operational_hours:
+                start_date_source = "auto_after_close_plus_1_hour"
+                business_cutoff_rule = "after_close_plus_1_hour"
+            else:
+                start_date_source = "auto_unknown_operational_hours_default_next_day"
+                business_cutoff_rule = "unknown_operational_hours_default_next_day"
+
+        if last_actual_date is not None:
+            next_after_actual = last_actual_date + timedelta(days=1)
+            if next_after_actual > candidate_start:
+                candidate_start = next_after_actual
+                start_date_source = "auto_last_actual_date"
+
+        return {
+            "forecast_start_date": candidate_start,
+            "start_date_source": start_date_source,
+            "last_actual_date": last_actual_date,
+            "business_cutoff_rule": business_cutoff_rule,
+        }
+
+    def _response_date_bounds(self, forecasts: List[Any], horizon_label: str) -> Tuple[Optional[date], Optional[date]]:
+        if not forecasts:
+            return None, None
+        period_dates = [self._forecast_item_period_dates(item, horizon_label) for item in forecasts]
+        return min(start for start, _ in period_dates), max(end for _, end in period_dates)
+
     def _tag_model_metadata(self, store_id: str, meta: Dict[str, Any], granularity: str = "daily") -> Dict[str, Any]:
         meta = dict(meta or {})
         meta["feature_version"] = self.feature_version
@@ -1519,7 +1610,7 @@ class ForecastService:
             return await self.forecast(
                 store_id=store_id,
                 forecast_days=horizon_count,
-                start_date=start_date or date.today(),
+                start_date=start_date,
             )
         if horizon_label == "weekly":
             return await self.forecast_weekly(
@@ -1686,6 +1777,14 @@ class ForecastService:
             "horizon_label": horizon_label,
             "horizon_count": horizon_count,
             "horizon_days": horizon_days,
+            "forecast_start_date": predict_start.isoformat(),
+            "forecast_end_date": predict_end.isoformat(),
+            "start_date_source": getattr(forecast_response, "start_date_source", None),
+            "last_actual_date": (
+                forecast_response.last_actual_date.isoformat()
+                if getattr(forecast_response, "last_actual_date", None) else None
+            ),
+            "business_cutoff_rule": getattr(forecast_response, "business_cutoff_rule", None),
             "prediction_count": len(prediction_rows),
             "total_predicted_visitors": int(sum(row["predicted_value"] for row in prediction_rows)),
             "average_predicted_visitors": round(avg_prediction, 2),
@@ -1694,6 +1793,10 @@ class ForecastService:
         data_quality = {
             "training_rows": raw_train_rows,
             "model_training_data_points": metadata.training_data_points,
+            "last_actual_date": (
+                forecast_response.last_actual_date.isoformat()
+                if getattr(forecast_response, "last_actual_date", None) else train_end.isoformat()
+            ),
             "date_range": {
                 "start": train_start.isoformat(),
                 "end": train_end.isoformat(),
@@ -1747,8 +1850,11 @@ class ForecastService:
             feature_importance=meta["top_features"],
         )
 
-    async def forecast(self, store_id: str, forecast_days: int, start_date: date) -> ForecastResponse:
-        logger.info(f"[FORECAST] store={store_id}, days={forecast_days}, start={start_date}")
+    async def forecast(self, store_id: str, forecast_days: int, start_date: date | None = None) -> ForecastResponse:
+        logger.info(f"[FORECAST] store={store_id}, days={forecast_days}, requested_start={start_date}")
+
+        if forecast_days <= 0:
+            raise ValueError("forecast_days harus lebih besar dari 0")
 
         if self._daily_model_needs_retrain(store_id):
             logger.info(
@@ -1763,6 +1869,13 @@ class ForecastService:
 
         if df_daily.empty:
             raise ValueError(f"Tidak ada data historis untuk store {store_id}")
+
+        start_meta = self._resolve_forecast_start_meta(
+            df_daily=df_daily,
+            operational_hours=raw_data.get("operational_hours", []),
+            requested_start_date=start_date,
+        )
+        resolved_start_date = start_meta["forecast_start_date"]
 
         hist_std = float(df_daily["visitors"].std()) if len(df_daily) > 1 else 5.0
         ci_multiplier = 1.28
@@ -1783,7 +1896,7 @@ class ForecastService:
         operational_map = self.preprocessor._parse_operational_hours(raw_data.get("operational_hours", []))
 
         for day_offset in range(forecast_days):
-            target_date = pd.Timestamp(start_date) + timedelta(days=day_offset)
+            target_date = pd.Timestamp(resolved_start_date) + timedelta(days=day_offset)
             row = self.preprocessor._build_future_row(
                 target_date,
                 running_history,
@@ -1827,10 +1940,17 @@ class ForecastService:
                     new_history[channel_col] = float(row.get(f"rolling_{channel_col}_7", 0.0))
             running_history = pd.concat([running_history, pd.DataFrame([new_history])], ignore_index=True)
 
+        forecast_start, forecast_end = self._response_date_bounds(forecasts, "daily")
+
         return ForecastResponse(
             store_id=store_id,
             generated_at=datetime.utcnow(),
             forecast_horizon_days=forecast_days,
+            forecast_start_date=forecast_start,
+            forecast_end_date=forecast_end,
+            start_date_source=start_meta["start_date_source"],
+            last_actual_date=start_meta["last_actual_date"],
+            business_cutoff_rule=start_meta["business_cutoff_rule"],
             forecasts=forecasts,
             model_metadata=self._metadata_for_response(
                 store_id=store_id,
@@ -1839,7 +1959,10 @@ class ForecastService:
                 raw_data=raw_data,
             ),
             status="success",
-            message=f"Berhasil memprediksi {forecast_days} hari ke depan",
+            message=(
+                f"Berhasil memprediksi {forecast_days} hari ke depan "
+                f"mulai {forecast_start.isoformat() if forecast_start else resolved_start_date.isoformat()}"
+            ),
         )
 
     def _get_period_config(self, granularity: str) -> Dict[str, Any]:
@@ -2010,23 +2133,24 @@ class ForecastService:
         start_date: date | None,
     ) -> List[Tuple[date, date]]:
         """
-        Bentuk periode bulanan berbasis kalender asli.
+        Bentuk periode bulanan berbasis kalender.
 
-        - Jika start_date dikirim, bulan pertama mengikuti bulan start_date.
-        - Jika start_date kosong, forecast dimulai dari bulan penuh berikutnya,
-          agar monthly tidak menjadi bulan parsial dari hari ini.
+        Jika start_date ada di tengah bulan, periode pertama dimulai dari start_date
+        sampai akhir bulan tersebut. Periode berikutnya memakai bulan kalender penuh.
+        Ini mencegah monthly forecast mundur ke tanggal sebelum forecast_start_date.
         """
         if forecast_months <= 0:
             return []
 
-        if start_date:
-            first_month = pd.Timestamp(start_date).replace(day=1).normalize()
-        else:
-            first_month = (pd.Timestamp(date.today()) + pd.offsets.MonthBegin(1)).normalize()
+        first_start = pd.Timestamp(start_date or self._now_jakarta().date()).normalize()
+        first_month = first_start.replace(day=1).normalize()
 
         periods: List[Tuple[date, date]] = []
         for offset in range(forecast_months):
-            period_start = (first_month + pd.DateOffset(months=offset)).normalize()
+            if offset == 0:
+                period_start = first_start
+            else:
+                period_start = (first_month + pd.DateOffset(months=offset)).normalize()
             period_end = (period_start + pd.offsets.MonthEnd(0)).normalize()
             periods.append((period_start.date(), period_end.date()))
 
@@ -2076,21 +2200,26 @@ class ForecastService:
         if forecast_weeks <= 0:
             raise ValueError("forecast_weeks harus lebih besar dari 0")
 
-        daily_start = start_date or date.today()
         daily_response = await self.forecast(
             store_id=store_id,
             forecast_days=forecast_weeks * 7,
-            start_date=daily_start,
+            start_date=start_date,
         )
         forecasts = self._build_weekly_from_daily_response(
             daily_response=daily_response,
             forecast_weeks=forecast_weeks,
         )
+        forecast_start, forecast_end = self._response_date_bounds(forecasts, "weekly")
 
         return WeeklyForecastResponse(
             store_id=store_id,
             generated_at=datetime.utcnow(),
             forecast_horizon_weeks=forecast_weeks,
+            forecast_start_date=forecast_start,
+            forecast_end_date=forecast_end,
+            start_date_source=daily_response.start_date_source,
+            last_actual_date=daily_response.last_actual_date,
+            business_cutoff_rule=daily_response.business_cutoff_rule,
             forecasts=forecasts,
             model_metadata=self._metadata_for_response(
                 store_id=store_id,
@@ -2112,9 +2241,24 @@ class ForecastService:
         if forecast_months <= 0:
             raise ValueError("forecast_months harus lebih besar dari 0")
 
+        resolved_start_date = start_date
+        monthly_start_meta = None
+        if resolved_start_date is None:
+            raw_data = await golang_client.fetch_all_historical_data(store_id)
+            df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+            if df_daily.empty:
+                raise ValueError(f"Tidak ada data historis untuk store {store_id}")
+            start_meta = self._resolve_forecast_start_meta(
+                df_daily=df_daily,
+                operational_hours=raw_data.get("operational_hours", []),
+                requested_start_date=None,
+            )
+            monthly_start_meta = start_meta
+            resolved_start_date = start_meta["forecast_start_date"]
+
         periods = self._monthly_periods(
             forecast_months=forecast_months,
-            start_date=start_date,
+            start_date=resolved_start_date,
         )
         if not periods:
             raise ValueError("Periode monthly forecast kosong")
@@ -2133,10 +2277,17 @@ class ForecastService:
             periods=periods,
         )
 
+        forecast_start, forecast_end = self._response_date_bounds(forecasts, "monthly")
+
         return MonthlyForecastResponse(
             store_id=store_id,
             generated_at=datetime.utcnow(),
             forecast_horizon_months=forecast_months,
+            forecast_start_date=forecast_start,
+            forecast_end_date=forecast_end,
+            start_date_source=(monthly_start_meta["start_date_source"] if monthly_start_meta else daily_response.start_date_source),
+            last_actual_date=(monthly_start_meta["last_actual_date"] if monthly_start_meta else daily_response.last_actual_date),
+            business_cutoff_rule=(monthly_start_meta["business_cutoff_rule"] if monthly_start_meta else daily_response.business_cutoff_rule),
             forecasts=forecasts,
             model_metadata=self._metadata_for_response(
                 store_id=store_id,

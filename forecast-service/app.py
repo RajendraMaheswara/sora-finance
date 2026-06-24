@@ -123,7 +123,7 @@ def visitors_retrain():
             store_id=store_id,
             force=force
         ))
-        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
+        return jsonify(_json_model(result)), 200
     except ValueError as e:
         return jsonify({"detail": str(e)}), 400
     except Exception as e:
@@ -176,6 +176,20 @@ def _json_model(result):
     return result
 
 
+def _date_or_none(value):
+    return value.isoformat() if isinstance(value, date) else None
+
+
+def _visitors_request_meta(payload):
+    return {
+        "store_id": payload["store_id"],
+        "horizon_label": payload["horizon_label"],
+        "horizon_count": payload["horizon_count"],
+        "start_date": _date_or_none(payload.get("start_date")),
+        "start_date_mode": "manual" if payload.get("start_date") else "auto",
+    }
+
+
 def _run_visitors_preview(payload):
     return asyncio.run(visitors_forecast_service.forecast_by_horizon(
         store_id=payload["store_id"],
@@ -206,11 +220,7 @@ def visitors_preview_standard():
         return jsonify({
             "status": "success",
             "message": "Forecast visitors berhasil dibuat tanpa disimpan.",
-            "request": {
-                "store_id": payload["store_id"],
-                "horizon_label": payload["horizon_label"],
-                "horizon_count": payload["horizon_count"],
-            },
+            "request": _visitors_request_meta(payload),
             "data": _json_model(result),
         }), 200
     except Exception as exc:
@@ -234,11 +244,7 @@ def visitors_save_standard():
         return jsonify({
             "status": "success",
             "message": "Forecast visitors berhasil disimpan ke database.",
-            "request": {
-                "store_id": payload["store_id"],
-                "horizon_label": payload["horizon_label"],
-                "horizon_count": payload["horizon_count"],
-            },
+            "request": _visitors_request_meta(payload),
             "save_result": save_result,
             "data": _json_model(forecast_result),
         }), 201
@@ -263,11 +269,7 @@ def visitors_run_standard():
         return jsonify({
             "status": "success",
             "message": "Forecast visitors berhasil dijalankan dan disimpan.",
-            "request": {
-                "store_id": payload["store_id"],
-                "horizon_label": payload["horizon_label"],
-                "horizon_count": payload["horizon_count"],
-            },
+            "request": _visitors_request_meta(payload),
             "save_result": save_result,
             "data": _json_model(forecast_result),
         }), 201
@@ -283,7 +285,7 @@ def visitors_predict():
     store_id = req['store_id']
     forecast_days = int(req.get('forecast_days', Config.VISITORS_FORECAST_HORIZON_DAYS))
     start_date_str = req.get('start_date')
-    start_date_val = date.fromisoformat(start_date_str) if start_date_str else date.today()
+    start_date_val = date.fromisoformat(start_date_str) if start_date_str else None
 
     try:
         result = asyncio.run(visitors_forecast_service.forecast(
@@ -291,7 +293,7 @@ def visitors_predict():
             forecast_days=forecast_days,
             start_date=start_date_val
         ))
-        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
+        return jsonify(_json_model(result)), 200
     except FileNotFoundError as e:
         return jsonify({"detail": str(e)}), 404
     except ValueError as e:
@@ -317,7 +319,7 @@ def visitors_predict_weekly():
             forecast_weeks=forecast_weeks,
             start_date=start_date_val
         ))
-        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
+        return jsonify(_json_model(result)), 200
     except FileNotFoundError as e:
         return jsonify({"detail": str(e)}), 404
     except ValueError as e:
@@ -343,7 +345,7 @@ def visitors_predict_monthly():
             forecast_months=forecast_months,
             start_date=start_date_val
         ))
-        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
+        return jsonify(_json_model(result)), 200
     except FileNotFoundError as e:
         return jsonify({"detail": str(e)}), 404
     except ValueError as e:
@@ -504,7 +506,7 @@ def sales_retrain():
 
     try:
         result = asyncio.run(sales_forecast_service.retrain(store_id=store_id, force=force))
-        return jsonify(result.model_dump() if hasattr(result, "model_dump") else result.dict()), 200
+        return jsonify(_json_model(result)), 200
     except ValueError as e:
         return jsonify({"detail": str(e)}), 400
     except Exception as e:
