@@ -60,8 +60,18 @@ class ModelMetadata(BaseModel):
     trained_at: Optional[datetime]
     training_data_points: int
     feature_importance: dict
-    cv_mae: float = Field(..., description="Mean Absolute Error dari cross-validation")
-    cv_rmse: float = Field(..., description="Root Mean Squared Error dari cross-validation")
+
+    # Backward-compatible legacy fields. Nilainya mengikuti horizon aktif.
+    cv_mae: Optional[float] = Field(None, description="Legacy MAE; sama dengan MAE horizon aktif")
+    cv_rmse: Optional[float] = Field(None, description="Legacy RMSE; sama dengan RMSE horizon aktif")
+
+    # New horizon-aware metadata. Field metric horizon aktif ditambahkan dinamis,
+    # misalnya monthly_mae hanya muncul pada response monthly.
+    horizon_method: Optional[str] = None
+    metric_horizon: Optional[str] = None
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = {"extra": "allow", "protected_namespaces": ()}
 
 class ForecastResponse(BaseModel):
     store_id: str
@@ -118,7 +128,7 @@ class GolangAPIClient:
         for attempt in range(3):
             try:
                 async with httpx.AsyncClient(timeout=self.timeout) as client:
-                    response = await client.get(url, params=params, headers=Config.backend_headers())
+                    response = await client.get(url, params=params)
                     response.raise_for_status()
                     return response.json()
             except httpx.HTTPStatusError as e:
@@ -418,6 +428,51 @@ class SalesForecastService:
             },
         }
 
+    def _round_metric(self, val: Any, decimals: int = 4) -> Optional[float]:
+        if val is None or pd.isna(val):
+            return None
+        return round(float(val), decimals)
+
+    def _horizon_method(self, horizon_label: str) -> str:
+        if horizon_label == "daily":
+            return "direct_daily"
+        return "aggregated_from_daily"
+
+    def _metadata_for_response(
+        self,
+        *,
+        store_id: str,
+        meta: dict,
+        horizon_label: str,
+        raw_data: Optional[Dict[str, List[Dict]]] = None,
+    ) -> ModelMetadata:
+        """
+        Bentuk ModelMetadata yang metric utamanya (cv_mae/cv_rmse) diisi oleh
+        metric dari horizon yang diminta (bila ada). Semua metric cross-horizon
+        tetap disimpan di dalam dict `metrics`.
+        """
+        selected_mae = meta.get(f"{horizon_label}_mae", meta.get("cv_mae"))
+        selected_rmse = meta.get(f"{horizon_label}_rmse", meta.get("cv_rmse"))
+
+        selected_metrics = {}
+        for k, v in meta.items():
+            if k.endswith("_mae") or k.endswith("_rmse") or k.endswith("_error_ratio") or k.endswith("_reliability") or k.endswith("_mae_percentage"):
+                selected_metrics[k] = self._round_metric(v)
+
+        trained_at_str = meta.get("trained_at")
+        trained_at = datetime.fromisoformat(trained_at_str) if trained_at_str else None
+
+        return ModelMetadata(
+            trained_at=trained_at,
+            training_data_points=meta.get("training_data_points", 0),
+            feature_importance=meta.get("top_features", {}),
+            cv_mae=self._round_metric(selected_mae),
+            cv_rmse=self._round_metric(selected_rmse),
+            horizon_method=self._horizon_method(horizon_label),
+            metric_horizon=horizon_label,
+            metrics=selected_metrics,
+        )
+
     async def _fetch_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
         raw_data = await golang_client.fetch_all_historical_data(store_id)
         if raw_data.get("sales_daily") or raw_data.get("orders"):
@@ -511,12 +566,11 @@ class SalesForecastService:
             generated_at=datetime.utcnow(),
             forecast_horizon_days=forecast_days,
             forecasts=forecasts,
-            model_metadata=ModelMetadata(
-                trained_at=datetime.fromisoformat(meta["trained_at"]),
-                training_data_points=meta["training_data_points"],
-                feature_importance=meta.get("top_features", {}),
-                cv_mae=meta["cv_mae"],
-                cv_rmse=meta["cv_rmse"],
+            model_metadata=self._metadata_for_response(
+                store_id=store_id,
+                meta=meta,
+                horizon_label="daily",
+                raw_data=raw_data,
             ),
             status="success",
             message=f"Berhasil memprediksi {forecast_days} hari ke depan",
@@ -646,40 +700,165 @@ class SalesForecastService:
 
         return forecasts, meta
 
+    def _build_weekly_from_daily_response(
+        self,
+        *,
+        daily_response: ForecastResponse,
+        forecast_weeks: int,
+    ) -> List[WeeklyForecast]:
+        daily_items = sorted(daily_response.forecasts, key=lambda item: item.date)
+        weekly_forecasts: List[WeeklyForecast] = []
+
+        for week_index in range(forecast_weeks):
+            chunk = daily_items[week_index * 7:(week_index + 1) * 7]
+            if not chunk:
+                break
+
+            period_start = chunk[0].date
+            period_end = chunk[-1].date
+            predicted_omzet = int(sum(item.predicted_omzet for item in chunk))
+            lower_bound = int(sum(item.lower_bound for item in chunk))
+            upper_bound = int(sum(item.upper_bound for item in chunk))
+
+            weekly_forecasts.append(WeeklyForecast(
+                period_start=period_start,
+                period_end=period_end,
+                predicted_omzet=predicted_omzet,
+                lower_bound=lower_bound,
+                upper_bound=max(predicted_omzet, upper_bound),
+                week_of_year=int(pd.Timestamp(period_start).isocalendar()[1]),
+                year=int(period_start.year),
+            ))
+
+        return weekly_forecasts
+
+    def _monthly_periods(
+        self,
+        *,
+        forecast_months: int,
+        start_date: date | None,
+    ) -> List[Tuple[date, date]]:
+        if forecast_months <= 0:
+            return []
+
+        if start_date:
+            first_month = pd.Timestamp(start_date).replace(day=1).normalize()
+        else:
+            first_month = (pd.Timestamp(date.today()) + pd.offsets.MonthBegin(1)).normalize()
+
+        periods: List[Tuple[date, date]] = []
+        for offset in range(forecast_months):
+            period_start = (first_month + pd.DateOffset(months=offset)).normalize()
+            period_end = (period_start + pd.offsets.MonthEnd(0)).normalize()
+            periods.append((period_start.date(), period_end.date()))
+
+        return periods
+
+    def _build_monthly_from_daily_response(
+        self,
+        *,
+        daily_response: ForecastResponse,
+        periods: List[Tuple[date, date]],
+    ) -> List[MonthlyForecast]:
+        daily_items = sorted(daily_response.forecasts, key=lambda item: item.date)
+        monthly_forecasts: List[MonthlyForecast] = []
+
+        for period_start, period_end in periods:
+            chunk = [
+                item for item in daily_items
+                if period_start <= item.date <= period_end
+            ]
+            if not chunk:
+                continue
+
+            predicted_omzet = int(sum(item.predicted_omzet for item in chunk))
+            lower_bound = int(sum(item.lower_bound for item in chunk))
+            upper_bound = int(sum(item.upper_bound for item in chunk))
+
+            monthly_forecasts.append(MonthlyForecast(
+                period_start=period_start,
+                period_end=period_end,
+                predicted_omzet=predicted_omzet,
+                lower_bound=lower_bound,
+                upper_bound=max(predicted_omzet, upper_bound),
+                month=int(period_start.month),
+                year=int(period_start.year),
+            ))
+
+        return monthly_forecasts
+
     async def forecast_weekly(self, store_id: str, forecast_weeks: int, start_date: date | None) -> WeeklyForecastResponse:
-        forecasts, meta = await self._forecast_periodic(store_id, forecast_weeks, start_date, "weekly")
+        if forecast_weeks <= 0:
+            raise ValueError("forecast_weeks harus lebih besar dari 0")
+
+        daily_start = start_date or date.today()
+        daily_response = await self.forecast(
+            store_id=store_id,
+            forecast_days=forecast_weeks * 7,
+            start_date=daily_start,
+        )
+        forecasts = self._build_weekly_from_daily_response(
+            daily_response=daily_response,
+            forecast_weeks=forecast_weeks,
+        )
+
         return WeeklyForecastResponse(
             store_id=store_id,
             generated_at=datetime.utcnow(),
             forecast_horizon_weeks=forecast_weeks,
             forecasts=forecasts,
-            model_metadata=ModelMetadata(
-                trained_at=datetime.fromisoformat(meta["trained_at"]),
-                training_data_points=meta["training_data_points"],
-                feature_importance=meta.get("top_features", {}),
-                cv_mae=meta["cv_mae"],
-                cv_rmse=meta["cv_rmse"],
+            model_metadata=self._metadata_for_response(
+                store_id=store_id,
+                meta=trainer.load_model(store_id)[3],
+                horizon_label="weekly",
             ),
             status="success",
-            message=f"Berhasil memprediksi {forecast_weeks} minggu ke depan",
+            message=(
+                f"Berhasil memprediksi {forecast_weeks} minggu ke depan "
+                "dari agregasi daily forecast"
+            ),
         )
 
     async def forecast_monthly(self, store_id: str, forecast_months: int, start_date: date | None) -> MonthlyForecastResponse:
-        forecasts, meta = await self._forecast_periodic(store_id, forecast_months, start_date, "monthly")
+        if forecast_months <= 0:
+            raise ValueError("forecast_months harus lebih besar dari 0")
+
+        periods = self._monthly_periods(
+            forecast_months=forecast_months,
+            start_date=start_date,
+        )
+        if not periods:
+            raise ValueError("Periode monthly forecast kosong")
+
+        daily_start = periods[0][0]
+        daily_end = periods[-1][1]
+        forecast_days = (daily_end - daily_start).days + 1
+
+        daily_response = await self.forecast(
+            store_id=store_id,
+            forecast_days=forecast_days,
+            start_date=daily_start,
+        )
+        forecasts = self._build_monthly_from_daily_response(
+            daily_response=daily_response,
+            periods=periods,
+        )
+
         return MonthlyForecastResponse(
             store_id=store_id,
             generated_at=datetime.utcnow(),
             forecast_horizon_months=forecast_months,
             forecasts=forecasts,
-            model_metadata=ModelMetadata(
-                trained_at=datetime.fromisoformat(meta["trained_at"]),
-                training_data_points=meta["training_data_points"],
-                feature_importance=meta.get("top_features", {}),
-                cv_mae=meta["cv_mae"],
-                cv_rmse=meta["cv_rmse"],
+            model_metadata=self._metadata_for_response(
+                store_id=store_id,
+                meta=trainer.load_model(store_id)[3],
+                horizon_label="monthly",
             ),
             status="success",
-            message=f"Berhasil memprediksi {forecast_months} bulan ke depan",
+            message=(
+                f"Berhasil memprediksi {forecast_months} bulan ke depan "
+                "dari agregasi daily forecast"
+            ),
         )
 
     async def save_forecast_to_db(self, store_id: str, forecast_response: dict, backend_token: str = None) -> Tuple[bool, str]:
@@ -700,8 +879,38 @@ class SalesForecastService:
         elif horizon_label == "monthly":
             horizon_days = len(results_list) * 30
 
-        model_version = "1.0.0"
-        metrics = forecast_response.get("model_metadata", {})
+        model_version = "sales-rf-v2-aggregated"
+        metadata = forecast_response.get("model_metadata", {})
+        
+        # Ekstrak metrics
+        metadata_metrics = metadata.get("metrics", {})
+        mae_value = metadata_metrics.get(f"{horizon_label}_mae", metadata.get("cv_mae"))
+        rmse_value = metadata_metrics.get(f"{horizon_label}_rmse", metadata.get("cv_rmse"))
+        mae = float(mae_value or 0.0)
+        rmse = float(rmse_value or 0.0)
+        
+        # Kalkulasi confidence_level dari prediction avg
+        avg_prediction = max(
+            1.0,
+            float(np.mean([max(0, item.get("predicted_omzet", 0)) for item in results_list]))
+        )
+        forecast_error_ratio = min(1.0, mae / avg_prediction) if mae > 0 else 0.0
+        confidence_level = int(max(0, min(100, round(100.0 - forecast_error_ratio * 100.0))))
+
+        metrics = {
+            "horizon_method": metadata.get("horizon_method"),
+            "metric_horizon": horizon_label,
+            "mae": mae,
+            "rmse": rmse,
+            "mape": None,
+            "confidence_level": confidence_level,
+            "forecast_error_ratio": round(forecast_error_ratio, 4),
+            f"{horizon_label}_mae": mae,
+            f"{horizon_label}_rmse": rmse,
+            f"{horizon_label}_mae_percentage": metadata_metrics.get(f"{horizon_label}_mae_percentage"),
+            f"{horizon_label}_error_ratio": metadata_metrics.get(f"{horizon_label}_error_ratio"),
+            f"{horizon_label}_reliability": metadata_metrics.get(f"{horizon_label}_reliability"),
+        }
         
         # Prepare headers
         headers = Config.backend_headers()
@@ -724,9 +933,9 @@ class SalesForecastService:
                 "predicted_value": float(item.get("predicted_omzet", 0)),
                 "lower_bound": float(item.get("lower_bound", 0)),
                 "upper_bound": float(item.get("upper_bound", 0)),
-                "mae": metrics.get("cv_mae", 0.0),
-                "rmse": metrics.get("cv_rmse", 0.0),
-                "mape": 0.0, # Not calculated in current metrics
+                "mae": mae,
+                "rmse": rmse,
+                "mape": 0.0,
                 "model_version": model_version,
             })
 
@@ -783,7 +992,7 @@ class SalesForecastService:
                 "predicted_value": float(item.get("predicted_omzet", 0)),
                 "lower_bound": float(item.get("lower_bound", 0)),
                 "upper_bound": float(item.get("upper_bound", 0)),
-                "confidence_level": 90, # Approx for Random Forest ci_multiplier
+                "confidence_level": confidence_level,
                 "item_id": None, 
                 "item_type": "sales"
             })
