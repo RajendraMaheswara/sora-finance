@@ -30,14 +30,9 @@ type AppDependencies struct {
 	MenuVariantIngredientHandler         *handler.MenuVariantIngredientHandler
 	MenuVariantHandler                   *handler.MenuVariantHandler
 	MenuHandler                          *handler.MenuHandler
-	PaymentMethodHandler                 *handler.PaymentMethodHandler
 	StoreDiscountHandler                 *handler.StoreDiscountHandler
 	StoreOperationalHourHandler          *handler.StoreOperationalHourHandler
-	StorePaymentMethodHandler            *handler.StorePaymentMethodHandler
-	SubscriptionTypeHandler              *handler.SubscriptionTypeHandler
 	FinanceDailyDiscountSummaryHandler   *handler.FinanceDailyDiscountSummaryHandler
-	FinanceDailyHppSummaryHandler        *handler.FinanceDailyHppSummaryHandler
-	FinanceDailyRegulationSummaryHandler *handler.FinanceDailyRegulationSummaryHandler
 	FinanceDailySummaryHandler           *handler.FinanceDailySummaryHandler
 	FinanceMonthlySummaryHandler         *handler.FinanceMonthlySummaryHandler
 	ForecastPredictionHandler            *handler.ForecastPredictionHandler
@@ -130,10 +125,6 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 	menuService := service.NewMenuService(menuRepo)
 	menuHandler := handler.NewMenuHandler(menuService)
 
-	paymentMethodRepo := repository.NewPaymentMethodRepository(pool)
-	paymentMethodService := service.NewPaymentMethodService(paymentMethodRepo)
-	paymentMethodHandler := handler.NewPaymentMethodHandler(paymentMethodService)
-
 	storeDiscountRepo := repository.NewStoreDiscountRepository(pool)
 	storeDiscountService := service.NewStoreDiscountService(storeDiscountRepo)
 	storeDiscountHandler := handler.NewStoreDiscountHandler(storeDiscountService)
@@ -142,25 +133,9 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 	storeOperationalHourService := service.NewStoreOperationalHourService(storeOperationalHourRepo)
 	storeOperationalHourHandler := handler.NewStoreOperationalHourHandler(storeOperationalHourService)
 
-	storePaymentMethodRepo := repository.NewStorePaymentMethodRepository(pool)
-	storePaymentMethodService := service.NewStorePaymentMethodService(storePaymentMethodRepo)
-	storePaymentMethodHandler := handler.NewStorePaymentMethodHandler(storePaymentMethodService)
-
-	subscriptionTypeRepo := repository.NewSubscriptionTypeRepository(pool)
-	subscriptionTypeService := service.NewSubscriptionTypeService(subscriptionTypeRepo)
-	subscriptionTypeHandler := handler.NewSubscriptionTypeHandler(subscriptionTypeService)
-
 	financeDailyDiscountSummaryRepo := repository.NewFinanceDailyDiscountSummaryRepository(pool)
 	financeDailyDiscountSummaryService := service.NewFinanceDailyDiscountSummaryService(financeDailyDiscountSummaryRepo)
 	financeDailyDiscountSummaryHandler := handler.NewFinanceDailyDiscountSummaryHandler(financeDailyDiscountSummaryService)
-
-	financeDailyHppSummaryRepo := repository.NewFinanceDailyHppSummaryRepository(pool)
-	financeDailyHppSummaryService := service.NewFinanceDailyHppSummaryService(financeDailyHppSummaryRepo)
-	financeDailyHppSummaryHandler := handler.NewFinanceDailyHppSummaryHandler(financeDailyHppSummaryService)
-
-	financeDailyRegulationSummaryRepo := repository.NewFinanceDailyRegulationSummaryRepository(pool)
-	financeDailyRegulationSummaryService := service.NewFinanceDailyRegulationSummaryService(financeDailyRegulationSummaryRepo)
-	financeDailyRegulationSummaryHandler := handler.NewFinanceDailyRegulationSummaryHandler(financeDailyRegulationSummaryService)
 
 	financeDailySummaryRepo := repository.NewFinanceDailySummaryRepository(pool)
 	financeDailySummaryService := service.NewFinanceDailySummaryService(financeDailySummaryRepo)
@@ -223,14 +198,9 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 		MenuVariantIngredientHandler:         menuVariantIngredientHandler,
 		MenuVariantHandler:                   menuVariantHandler,
 		MenuHandler:                          menuHandler,
-		PaymentMethodHandler:                 paymentMethodHandler,
 		StoreDiscountHandler:                 storeDiscountHandler,
 		StoreOperationalHourHandler:          storeOperationalHourHandler,
-		StorePaymentMethodHandler:            storePaymentMethodHandler,
-		SubscriptionTypeHandler:              subscriptionTypeHandler,
 		FinanceDailyDiscountSummaryHandler:   financeDailyDiscountSummaryHandler,
-		FinanceDailyHppSummaryHandler:        financeDailyHppSummaryHandler,
-		FinanceDailyRegulationSummaryHandler: financeDailyRegulationSummaryHandler,
 		FinanceDailySummaryHandler:           financeDailySummaryHandler,
 		FinanceMonthlySummaryHandler:         financeMonthlySummaryHandler,
 		ForecastPredictionHandler:            forecastPredictionHandler,
