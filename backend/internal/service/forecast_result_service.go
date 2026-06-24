@@ -49,3 +49,7 @@ func (s *ForecastResultService) BulkInsert(ctx context.Context, runID int64, ite
 
 	return s.repo.BulkInsert(ctx, runID, items)
 }
+
+func (s *ForecastResultService) GetLatestVisitors(ctx context.Context, horizonLabel string, requestedStoreID string) (*models.VisitorForecastLatestResponse, error) {
+	return s.repo.GetLatestVisitors(ctx, horizonLabel, requestedStoreID)
+}

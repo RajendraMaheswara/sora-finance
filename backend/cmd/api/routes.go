@@ -363,11 +363,6 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/{id}", deps.MenuHandler.GetByID)
 		})
 
-		r.Route("/api/payment-methods", func(r chi.Router) {
-			r.Get("/", deps.PaymentMethodHandler.GetAll)
-			r.Get("/{id}", deps.PaymentMethodHandler.GetByID)
-		})
-
 		r.Route("/api/store-discounts", func(r chi.Router) {
 			r.Get("/", deps.StoreDiscountHandler.GetAll)
 			r.Get("/{id}", deps.StoreDiscountHandler.GetByID)
@@ -378,29 +373,9 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/{id}", deps.StoreOperationalHourHandler.GetByID)
 		})
 
-		r.Route("/api/store-payment-methods", func(r chi.Router) {
-			r.Get("/", deps.StorePaymentMethodHandler.GetAll)
-			r.Get("/{id}", deps.StorePaymentMethodHandler.GetByID)
-		})
-
-		r.Route("/api/subscription-types", func(r chi.Router) {
-			r.Get("/", deps.SubscriptionTypeHandler.GetAll)
-			r.Get("/{id}", deps.SubscriptionTypeHandler.GetByID)
-		})
-
 		r.Route("/api/finance-daily-discount-summaries", func(r chi.Router) {
 			r.Get("/", deps.FinanceDailyDiscountSummaryHandler.GetAll)
 			r.Get("/{id}", deps.FinanceDailyDiscountSummaryHandler.GetByID)
-		})
-
-		r.Route("/api/finance-daily-hpp-summaries", func(r chi.Router) {
-			r.Get("/", deps.FinanceDailyHppSummaryHandler.GetAll)
-			r.Get("/{id}", deps.FinanceDailyHppSummaryHandler.GetByID)
-		})
-
-		r.Route("/api/finance-daily-regulation-summaries", func(r chi.Router) {
-			r.Get("/", deps.FinanceDailyRegulationSummaryHandler.GetAll)
-			r.Get("/{id}", deps.FinanceDailyRegulationSummaryHandler.GetByID)
 		})
 
 		r.Route("/api/finance-daily-summaries", func(r chi.Router) {
@@ -413,6 +388,8 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/{id}", deps.ForecastPredictionHandler.GetByID)
 			r.Post("/", deps.ForecastPredictionHandler.Save)
 		})
+
+		r.Get("/api/forecast/visitors/latest", deps.ForecastResultHandler.GetLatestVisitors)
 
 		r.Route("/api/forecast-results", func(r chi.Router) {
 			r.Get("/", deps.ForecastResultHandler.GetAll)

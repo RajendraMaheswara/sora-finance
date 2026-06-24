@@ -3,6 +3,9 @@ package repository
 import (
 	"context"
 	"errors"
+	"strconv"
+	"time"
+
 	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 
@@ -137,4 +140,149 @@ func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, 
 	br.Close()
 
 	return tx.Commit(ctx)
+}
+
+func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizonLabel string, requestedStoreID string) (*models.VisitorForecastLatestResponse, error) {
+	claims, _ := auth.ClaimsFromContext(ctx)
+
+	storeID := requestedStoreID
+	if claims != nil && !auth.IsSystemAdmin(claims) {
+		storeID = claims.StoreID
+	}
+
+	query := `
+		SELECT
+			run.id,
+			run.store_id::text,
+			run.forecast_type,
+			run.horizon_label,
+			run.horizon_days,
+			run.granularity,
+			run.model_name,
+			run.model_version,
+			run.feature_version,
+			run.train_start_date,
+			run.train_end_date,
+			run.predict_start_date,
+			run.predict_end_date,
+			COALESCE(run.metrics, '{}'::jsonb),
+			COALESCE(run.summary, '{}'::jsonb),
+			COALESCE(run.data_quality, '{}'::jsonb),
+			run.status,
+			run.is_latest,
+			run.created_at
+		FROM forecast_runs run
+		WHERE run.forecast_type = 'visitors'
+		  AND run.status = 'success'
+		  AND run.is_latest = true
+	`
+	args := []interface{}{}
+
+	if horizonLabel != "" {
+		args = append(args, horizonLabel)
+		query += " AND run.horizon_label = $" + strconv.Itoa(len(args))
+	}
+	if storeID != "" {
+		args = append(args, storeID)
+		query += " AND run.store_id = $" + strconv.Itoa(len(args))
+	}
+
+	query += `
+		ORDER BY run.finished_at DESC NULLS LAST, run.created_at DESC
+		LIMIT 1
+	`
+
+	var run models.VisitorForecastRun
+	var trainStartDate, trainEndDate, predictStartDate, predictEndDate time.Time
+	var createdAt time.Time
+
+	err := r.db.QueryRow(ctx, query, args...).Scan(
+		&run.ID,
+		&run.StoreID,
+		&run.ForecastType,
+		&run.HorizonLabel,
+		&run.HorizonDays,
+		&run.Granularity,
+		&run.ModelName,
+		&run.ModelVersion,
+		&run.FeatureVersion,
+		&trainStartDate,
+		&trainEndDate,
+		&predictStartDate,
+		&predictEndDate,
+		&run.Metrics,
+		&run.Summary,
+		&run.DataQuality,
+		&run.Status,
+		&run.IsLatest,
+		&createdAt,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	run.TrainStartDate = trainStartDate.Format("2006-01-02")
+	run.TrainEndDate = trainEndDate.Format("2006-01-02")
+	run.PredictStartDate = predictStartDate.Format("2006-01-02")
+	run.PredictEndDate = predictEndDate.Format("2006-01-02")
+	run.CreatedAt = createdAt.Format(time.RFC3339)
+
+	rows, err := r.db.Query(ctx, `
+		SELECT
+			id,
+			run_id,
+			target_date,
+			predicted_value,
+			lower_bound,
+			upper_bound,
+			confidence_level,
+			actual_value,
+			item_id,
+			item_type,
+			created_at
+		FROM forecast_results
+		WHERE run_id = $1
+		  AND (item_type IS NULL OR item_type = 'visitors')
+		ORDER BY target_date ASC, id ASC
+	`, run.ID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	results := make([]models.VisitorForecastResult, 0)
+	for rows.Next() {
+		var item models.VisitorForecastResult
+		var targetDate, itemCreatedAt time.Time
+		err := rows.Scan(
+			&item.ID,
+			&item.RunID,
+			&targetDate,
+			&item.PredictedValue,
+			&item.LowerBound,
+			&item.UpperBound,
+			&item.ConfidenceLevel,
+			&item.ActualValue,
+			&item.ItemID,
+			&item.ItemType,
+			&itemCreatedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		item.TargetDate = targetDate.Format("2006-01-02")
+		item.CreatedAt = itemCreatedAt.Format(time.RFC3339)
+		results = append(results, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return &models.VisitorForecastLatestResponse{
+		Run:     run,
+		Results: results,
+	}, nil
 }
