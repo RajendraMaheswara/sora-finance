@@ -59,6 +59,33 @@ func (h *ForecastResultHandler) GetByID(w http.ResponseWriter, r *http.Request) 
 	respondWithJSON(w, http.StatusOK, item)
 }
 
+func (h *ForecastResultHandler) GetLatestVisitors(w http.ResponseWriter, r *http.Request) {
+	horizonLabel := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("horizon_label")))
+	if horizonLabel == "" {
+		horizonLabel = "daily"
+	}
+
+	switch horizonLabel {
+	case "daily", "weekly", "monthly":
+	default:
+		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "horizon_label must be daily, weekly, or monthly"})
+		return
+	}
+
+	storeID := strings.TrimSpace(r.URL.Query().Get("store_id"))
+	result, err := h.service.GetLatestVisitors(r.Context(), horizonLabel, storeID)
+	if err != nil {
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if result == nil {
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "latest visitors forecast not found"})
+		return
+	}
+
+	respondWithJSON(w, http.StatusOK, result)
+}
+
 type BulkResultRequest struct {
 	RunID   int64                        `json:"run_id"`
 	Results []models.ForecastResultInput `json:"results"`

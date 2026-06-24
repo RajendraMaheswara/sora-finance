@@ -38,6 +38,33 @@ class SalesForecasterTrainer:
     def _artifact_path(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
         return os.path.join(self.model_dir, self._artifact_basename(store_id, granularity, kind, ext))
 
+    def _legacy_artifact_basename(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        """
+        Kompatibilitas untuk file lama:
+        rf_model_<store_id>.joblib
+        rf_model_weekly_<store_id>.joblib
+        """
+        legacy_kind = "features" if kind == "features" else kind
+        if kind == "metadata":
+            legacy_kind = "meta"
+        if granularity == "daily":
+            return f"rf_{legacy_kind}_{store_id}.{ext}"
+        return f"rf_{legacy_kind}_{granularity}_{store_id}.{ext}"
+
+    def _legacy_artifact_path(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        return os.path.join(self.model_dir, self._legacy_artifact_basename(store_id, granularity, kind, ext))
+
+    def _resolve_artifact_path(self, store_id: str, granularity: str, kind: str, ext: str) -> str:
+        current_path = self._artifact_path(store_id, granularity, kind, ext)
+        if os.path.exists(current_path):
+            return current_path
+
+        legacy_path = self._legacy_artifact_path(store_id, granularity, kind, ext)
+        if os.path.exists(legacy_path):
+            return legacy_path
+
+        return current_path
+
     def _model_path(self, store_id: str, granularity: str) -> str:
         return self._artifact_path(store_id, granularity, "model", "joblib")
 
@@ -144,10 +171,10 @@ class SalesForecasterTrainer:
     def load_model(
         self, store_id: str, granularity: str = "daily"
     ) -> Tuple[RandomForestRegressor, StandardScaler, list, dict]:
-        model_path = self._model_path(store_id, granularity)
-        scaler_path = self._scaler_path(store_id, granularity)
-        feature_path = self._feature_cols_path(store_id, granularity)
-        meta_path = self._meta_path(store_id, granularity)
+        model_path = self._resolve_artifact_path(store_id, granularity, "model", "joblib")
+        scaler_path = self._resolve_artifact_path(store_id, granularity, "scaler", "joblib")
+        feature_path = self._resolve_artifact_path(store_id, granularity, "features", "json")
+        meta_path = self._resolve_artifact_path(store_id, granularity, "metadata", "json")
 
         if not os.path.exists(model_path):
             raise FileNotFoundError(
@@ -168,17 +195,27 @@ class SalesForecasterTrainer:
         return model, scaler, feature_cols, meta
 
     def model_exists(self, store_id: str, granularity: str = "daily") -> bool:
-        model_path = self._model_path(store_id, granularity)
+        model_path = self._resolve_artifact_path(store_id, granularity, "model", "joblib")
         return os.path.exists(model_path)
 
     def list_trained_stores(self, granularity: str = "daily") -> list:
         stores = set()
-        prefix = f"sales_{granularity}_model_store_"
+        new_prefix = f"sales_{granularity}_model_store_"
+        old_prefix = "rf_model_" if granularity == "daily" else f"rf_model_{granularity}_"
 
         for fname in os.listdir(self.model_dir):
-            if fname.startswith(prefix) and fname.endswith(".joblib"):
-                store_id = fname.replace(prefix, "").replace(".joblib", "")
+            if not fname.endswith(".joblib"):
+                continue
+
+            if fname.startswith(new_prefix):
+                store_id = fname.replace(new_prefix, "").replace(".joblib", "")
                 stores.add(store_id)
+                continue
+
+            if fname.startswith(old_prefix):
+                store_id = fname.replace(old_prefix, "").replace(".joblib", "")
+                if granularity != "daily" or "_" not in store_id:
+                    stores.add(store_id)
 
         return sorted(stores)
 
