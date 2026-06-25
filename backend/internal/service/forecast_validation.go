@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -25,22 +26,38 @@ func parseDate(value string) (time.Time, error) {
 	return time.Time{}, errors.New("invalid date format")
 }
 
-func parseTimestampOptional(value *string) (time.Time, error) {
-	if value == nil {
-		return time.Now().UTC(), nil
-	}
-	trimmed := strings.TrimSpace(*value)
+func parseTimestampOptional(value string) (*time.Time, error) {
+	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return time.Now().UTC(), nil
+		return nil, nil
 	}
 	if parsed, err := time.Parse(time.RFC3339Nano, trimmed); err == nil {
-		return parsed, nil
+		return &parsed, nil
 	}
 	if parsed, err := time.Parse(time.RFC3339, trimmed); err == nil {
-		return parsed, nil
+		return &parsed, nil
 	}
 	if parsed, err := time.Parse("2006-01-02", trimmed); err == nil {
-		return parsed, nil
+		return &parsed, nil
 	}
-	return time.Time{}, errors.New("invalid timestamp format")
+	return nil, errors.New("invalid timestamp format")
+}
+
+func normalizeJSON(raw string) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return json.RawMessage(`{}`), nil
+	}
+	if !json.Valid([]byte(trimmed)) {
+		return nil, errors.New("invalid json field")
+	}
+	return json.RawMessage(trimmed), nil
+}
+
+func optionalString(value string) *string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return nil
+	}
+	return &trimmed
 }

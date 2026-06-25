@@ -2,7 +2,7 @@ package models
 
 import "encoding/json"
 
-type VisitorForecastRun struct {
+type ForecastRunSnapshot struct {
 	ID               int64           `json:"id"`
 	StoreID          string          `json:"store_id"`
 	ForecastType     string          `json:"forecast_type"`
@@ -21,10 +21,13 @@ type VisitorForecastRun struct {
 	DataQuality      json.RawMessage `json:"data_quality"`
 	Status           string          `json:"status"`
 	IsLatest         bool            `json:"is_latest"`
+	ErrorMessage     *string         `json:"error_message,omitempty"`
 	CreatedAt        string          `json:"created_at"`
+	StartedAt        *string         `json:"started_at,omitempty"`
+	FinishedAt       *string         `json:"finished_at,omitempty"`
 }
 
-type VisitorForecastResult struct {
+type ForecastResultSnapshot struct {
 	ID              int64    `json:"id"`
 	RunID           int64    `json:"run_id"`
 	TargetDate      string   `json:"target_date"`
@@ -38,7 +41,12 @@ type VisitorForecastResult struct {
 	CreatedAt       string   `json:"created_at"`
 }
 
-type VisitorForecastLatestResponse struct {
-	Run     VisitorForecastRun      `json:"run"`
-	Results []VisitorForecastResult `json:"results"`
+type ForecastLatestResponse struct {
+	Run     ForecastRunSnapshot      `json:"run"`
+	Results []ForecastResultSnapshot `json:"results"`
 }
+
+// Backward-compatible aliases untuk endpoint visitors lama.
+type VisitorForecastRun = ForecastRunSnapshot
+type VisitorForecastResult = ForecastResultSnapshot
+type VisitorForecastLatestResponse = ForecastLatestResponse

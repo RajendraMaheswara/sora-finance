@@ -16,9 +16,9 @@ import (
 	_ "sora-finance-api/docs"
 )
 
-// @title           Sora Finance API
-// @version         1.0
-// @description     REST API untuk aplikasi keuangan Sora (hanya GET endpoints)
+// @title           Sora Finance Forecast API
+// @version         1.1
+// @description     Forecast-only API documentation. Source of truth: forecast_runs + forecast_results.
 // @termsOfService  http://swagger.io/terms/
 // @contact.name    API Support
 // @contact.url     http://www.swagger.io/support
@@ -26,7 +26,7 @@ import (
 // @license.name    Apache 2.0
 // @license.url     http://www.apache.org/licenses/LICENSE-2.0.html
 // @host            localhost:8080
-// @BasePath        /api
+// @BasePath        /
 // @schemes         http
 
 func main() {

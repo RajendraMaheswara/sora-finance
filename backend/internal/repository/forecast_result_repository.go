@@ -26,8 +26,8 @@ func (r *ForecastResultRepository) GetAll(ctx context.Context) ([]models.Forecas
 	query := `
 		SELECT r.id, r.run_id, r.target_date, r.predicted_value, r.lower_bound, r.upper_bound,
 		       r.confidence_level, r.actual_value, r.item_id, r.item_type, r.created_at
-		FROM forecast_results r
-		JOIN forecast_runs run ON run.id = r.run_id
+		FROM public.forecast_results r
+		JOIN public.forecast_runs run ON run.id = r.run_id
 		WHERE 1=1
 	`
 	var args []interface{}
@@ -35,7 +35,7 @@ func (r *ForecastResultRepository) GetAll(ctx context.Context) ([]models.Forecas
 		query += ` AND run.store_id = $1`
 		args = append(args, claims.StoreID)
 	}
-	query += ` ORDER BY r.created_at DESC`
+	query += ` ORDER BY r.created_at DESC LIMIT 500`
 
 	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
@@ -43,7 +43,7 @@ func (r *ForecastResultRepository) GetAll(ctx context.Context) ([]models.Forecas
 	}
 	defer rows.Close()
 
-	var items []models.ForecastResult
+	items := make([]models.ForecastResult, 0)
 	for rows.Next() {
 		var item models.ForecastResult
 		err := rows.Scan(
@@ -64,8 +64,8 @@ func (r *ForecastResultRepository) GetByID(ctx context.Context, id int64) (*mode
 	query := `
 		SELECT r.id, r.run_id, r.target_date, r.predicted_value, r.lower_bound, r.upper_bound,
 		       r.confidence_level, r.actual_value, r.item_id, r.item_type, r.created_at
-		FROM forecast_results r
-		JOIN forecast_runs run ON run.id = r.run_id
+		FROM public.forecast_results r
+		JOIN public.forecast_runs run ON run.id = r.run_id
 		WHERE r.id = $1
 	`
 	args := []interface{}{id}
@@ -93,7 +93,7 @@ func (r *ForecastResultRepository) GetRunStoreID(ctx context.Context, runID int6
 	var storeID string
 	err := r.db.QueryRow(ctx, `
 		SELECT store_id::text
-		FROM forecast_runs
+		FROM public.forecast_runs
 		WHERE id = $1
 	`, runID).Scan(&storeID)
 	if err != nil {
@@ -105,28 +105,30 @@ func (r *ForecastResultRepository) GetRunStoreID(ctx context.Context, runID int6
 	return storeID, nil
 }
 
-func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, items []models.ForecastResultInput) error {
-	if len(items) == 0 {
-		return nil
-	}
-
+func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, items []models.ForecastResultCreateData) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
 
+	// Forecast result adalah detail milik satu run. Saat run yang sama disave ulang,
+	// detail lama diganti agar hasil tidak dobel.
+	if _, err := tx.Exec(ctx, `DELETE FROM public.forecast_results WHERE run_id = $1`, runID); err != nil {
+		return err
+	}
+
 	batch := &pgx.Batch{}
 	query := `
-		INSERT INTO forecast_results (
+		INSERT INTO public.forecast_results (
 			run_id, target_date, predicted_value, lower_bound, upper_bound,
-			confidence_level, item_id, item_type
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			confidence_level, actual_value, item_id, item_type
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 	`
 	for _, item := range items {
 		batch.Queue(query,
 			runID, item.TargetDate, item.PredictedValue, item.LowerBound, item.UpperBound,
-			item.ConfidenceLevel, item.ItemID, item.ItemType,
+			item.ConfidenceLevel, item.ActualValue, item.ItemID, item.ItemType,
 		)
 	}
 
@@ -137,12 +139,14 @@ func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, 
 			return err
 		}
 	}
-	br.Close()
+	if err := br.Close(); err != nil {
+		return err
+	}
 
 	return tx.Commit(ctx)
 }
 
-func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizonLabel string, requestedStoreID string) (*models.VisitorForecastLatestResponse, error) {
+func (r *ForecastResultRepository) GetLatestForecast(ctx context.Context, forecastType string, horizonLabel string, requestedStoreID string) (*models.ForecastLatestResponse, error) {
 	claims, _ := auth.ClaimsFromContext(ctx)
 
 	storeID := requestedStoreID
@@ -170,31 +174,30 @@ func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizo
 			COALESCE(run.data_quality, '{}'::jsonb),
 			run.status,
 			run.is_latest,
-			run.created_at
-		FROM forecast_runs run
-		WHERE run.forecast_type = 'visitors'
+			run.error_message,
+			run.created_at,
+			run.started_at,
+			run.finished_at
+		FROM public.forecast_runs run
+		WHERE run.forecast_type = $1
+		  AND run.horizon_label = $2
 		  AND run.status = 'success'
 		  AND run.is_latest = true
 	`
-	args := []interface{}{}
-
-	if horizonLabel != "" {
-		args = append(args, horizonLabel)
-		query += " AND run.horizon_label = $" + strconv.Itoa(len(args))
-	}
+	args := []interface{}{forecastType, horizonLabel}
 	if storeID != "" {
 		args = append(args, storeID)
 		query += " AND run.store_id = $" + strconv.Itoa(len(args))
 	}
-
 	query += `
-		ORDER BY run.finished_at DESC NULLS LAST, run.created_at DESC
+		ORDER BY run.finished_at DESC NULLS LAST, run.created_at DESC, run.id DESC
 		LIMIT 1
 	`
 
-	var run models.VisitorForecastRun
+	var run models.ForecastRunSnapshot
 	var trainStartDate, trainEndDate, predictStartDate, predictEndDate time.Time
 	var createdAt time.Time
+	var startedAt, finishedAt *time.Time
 
 	err := r.db.QueryRow(ctx, query, args...).Scan(
 		&run.ID,
@@ -215,7 +218,10 @@ func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizo
 		&run.DataQuality,
 		&run.Status,
 		&run.IsLatest,
+		&run.ErrorMessage,
 		&createdAt,
+		&startedAt,
+		&finishedAt,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -229,6 +235,14 @@ func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizo
 	run.PredictStartDate = predictStartDate.Format("2006-01-02")
 	run.PredictEndDate = predictEndDate.Format("2006-01-02")
 	run.CreatedAt = createdAt.Format(time.RFC3339)
+	if startedAt != nil {
+		v := startedAt.Format(time.RFC3339)
+		run.StartedAt = &v
+	}
+	if finishedAt != nil {
+		v := finishedAt.Format(time.RFC3339)
+		run.FinishedAt = &v
+	}
 
 	rows, err := r.db.Query(ctx, `
 		SELECT
@@ -243,9 +257,8 @@ func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizo
 			item_id,
 			item_type,
 			created_at
-		FROM forecast_results
+		FROM public.forecast_results
 		WHERE run_id = $1
-		  AND (item_type IS NULL OR item_type = 'visitors')
 		ORDER BY target_date ASC, id ASC
 	`, run.ID)
 	if err != nil {
@@ -253,9 +266,9 @@ func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizo
 	}
 	defer rows.Close()
 
-	results := make([]models.VisitorForecastResult, 0)
+	results := make([]models.ForecastResultSnapshot, 0)
 	for rows.Next() {
-		var item models.VisitorForecastResult
+		var item models.ForecastResultSnapshot
 		var targetDate, itemCreatedAt time.Time
 		err := rows.Scan(
 			&item.ID,
@@ -281,7 +294,7 @@ func (r *ForecastResultRepository) GetLatestVisitors(ctx context.Context, horizo
 		return nil, err
 	}
 
-	return &models.VisitorForecastLatestResponse{
+	return &models.ForecastLatestResponse{
 		Run:     run,
 		Results: results,
 	}, nil

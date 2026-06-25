@@ -32,7 +32,8 @@ type ForecastRun struct {
 	FinishedAt       *time.Time      `json:"finished_at,omitempty"`
 }
 
-// ForecastRunInput untuk request POST
+// ForecastRunInput adalah request mentah dari forecast-service/frontend.
+// Validasi dan normalisasi dilakukan di service sebelum masuk repository.
 type ForecastRunInput struct {
 	StoreID          string `json:"store_id"`
 	ForecastType     string `json:"forecast_type"`
@@ -52,4 +53,29 @@ type ForecastRunInput struct {
 	Status           string `json:"status"`
 	StartedAt        string `json:"started_at"`
 	FinishedAt       string `json:"finished_at"`
+	ErrorMessage     string `json:"error_message"`
+}
+
+// ForecastRunCreateData adalah data yang sudah tervalidasi dan siap disimpan.
+type ForecastRunCreateData struct {
+	StoreID          uuid.UUID
+	ForecastType     string
+	HorizonLabel     string
+	HorizonDays      int
+	Granularity      string
+	ModelName        string
+	ModelVersion     string
+	FeatureVersion   *string
+	TrainStartDate   time.Time
+	TrainEndDate     time.Time
+	PredictStartDate time.Time
+	PredictEndDate   time.Time
+	Metrics          json.RawMessage
+	Summary          json.RawMessage
+	DataQuality      json.RawMessage
+	Status           string
+	IsLatest         bool
+	ErrorMessage     *string
+	StartedAt        *time.Time
+	FinishedAt       *time.Time
 }

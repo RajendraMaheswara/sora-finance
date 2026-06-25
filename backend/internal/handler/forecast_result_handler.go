@@ -3,9 +3,10 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+
 	"sora-finance-api/internal/models"
 	"sora-finance-api/internal/service"
-	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -20,7 +21,7 @@ func NewForecastResultHandler(service *service.ForecastResultService) *ForecastR
 
 // GetAll godoc
 // @Summary      Get all forecast results
-// @Description  Mengembalikan daftar semua forecast results
+// @Description  Mengembalikan daftar semua forecast results dari forecast_runs + forecast_results
 // @Tags         Forecast
 // @Produce      json
 // @Success      200  {array}  models.ForecastResult
@@ -29,7 +30,7 @@ func NewForecastResultHandler(service *service.ForecastResultService) *ForecastR
 func (h *ForecastResultHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	items, err := h.service.GetAll(r.Context())
 	if err != nil {
-		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, items)
@@ -49,7 +50,7 @@ func (h *ForecastResultHandler) GetByID(w http.ResponseWriter, r *http.Request) 
 	id := chi.URLParam(r, "id")
 	item, err := h.service.GetByID(r.Context(), id)
 	if err != nil {
-		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		respondForecastError(w, err)
 		return
 	}
 	if item == nil {
@@ -59,23 +60,44 @@ func (h *ForecastResultHandler) GetByID(w http.ResponseWriter, r *http.Request) 
 	respondWithJSON(w, http.StatusOK, item)
 }
 
-func (h *ForecastResultHandler) GetLatestVisitors(w http.ResponseWriter, r *http.Request) {
+func (h *ForecastResultHandler) GetLatestForecast(w http.ResponseWriter, r *http.Request) {
+	forecastType := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("forecast_type")))
+	if forecastType == "" {
+		forecastType = strings.ToLower(strings.TrimSpace(r.URL.Query().Get("module")))
+	}
+	if forecastType == "" {
+		forecastType = "visitors"
+	}
+
 	horizonLabel := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("horizon_label")))
 	if horizonLabel == "" {
 		horizonLabel = "daily"
 	}
 
-	switch horizonLabel {
-	case "daily", "weekly", "monthly":
-	default:
-		respondWithJSON(w, http.StatusBadRequest, map[string]string{"error": "horizon_label must be daily, weekly, or monthly"})
+	storeID := strings.TrimSpace(r.URL.Query().Get("store_id"))
+	result, err := h.service.GetLatestForecast(r.Context(), forecastType, horizonLabel, storeID)
+	if err != nil {
+		respondForecastError(w, err)
+		return
+	}
+	if result == nil {
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "latest forecast not found"})
 		return
 	}
 
+	respondWithJSON(w, http.StatusOK, result)
+}
+
+func (h *ForecastResultHandler) GetLatestVisitors(w http.ResponseWriter, r *http.Request) {
+	horizonLabel := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("horizon_label")))
+	if horizonLabel == "" {
+		horizonLabel = "daily"
+	}
 	storeID := strings.TrimSpace(r.URL.Query().Get("store_id"))
+
 	result, err := h.service.GetLatestVisitors(r.Context(), horizonLabel, storeID)
 	if err != nil {
-		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		respondForecastError(w, err)
 		return
 	}
 	if result == nil {
@@ -100,21 +122,14 @@ func (h *ForecastResultHandler) BulkCreate(w http.ResponseWriter, r *http.Reques
 	}
 
 	if err := h.service.BulkInsert(r.Context(), req.RunID, req.Results); err != nil {
-		status := http.StatusInternalServerError
-		if strings.Contains(err.Error(), "forbidden") {
-			status = http.StatusForbidden
-		} else if strings.Contains(err.Error(), "not found") {
-			status = http.StatusNotFound
-		} else if strings.Contains(err.Error(), "unauthorized") {
-			status = http.StatusUnauthorized
-		}
-		respondWithJSON(w, status, map[string]string{"error": err.Error()})
+		respondForecastError(w, err)
 		return
 	}
 
 	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":  "success",
-		"message": "Results saved",
+		"message": "forecast results saved",
+		"run_id":  req.RunID,
 		"count":   len(req.Results),
 	})
 }
