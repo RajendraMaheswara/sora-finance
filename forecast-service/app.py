@@ -564,18 +564,18 @@ def inventory_preview():
         forecaster = InventoryForecaster(store_id, ingredient_id, freq)
         result = forecaster.predict(periods=periods, freq=freq, start_date=start_date)
 
-        result["request_meta"] = {
-            "module": "inventory",
-            "horizon_label": horizon_label,
-            "horizon_count": horizon_count,
-            "mode": "preview",
-            "saved_to_database": False
-        }
-
         return jsonify({
-            "success": True,
+            "status": "success",
             "message": f"Preview forecast {horizon_label} berhasil",
-            "data": result
+            "data": result,
+            "request": {
+                "store_id": store_id,
+                "ingredient_id": ingredient_id,
+                "horizon_label": horizon_label,
+                "horizon_count": horizon_count,
+                "start_date": start_date,
+                "start_date_mode": "custom" if start_date else "auto"
+            }
         })
     except FileNotFoundError:
         return jsonify({"error": "Model belum di-training"}), 404
@@ -608,7 +608,7 @@ def inventory_save():
 
         if success:
             return jsonify({
-                "success": True,
+                "status": "success",
                 "message": f"Forecast {horizon_label} berhasil disimpan ke database"
             })
         else:
@@ -645,18 +645,22 @@ def inventory_run():
         # Simpan ke database
         success = forecaster.save_all_forecasts(periods=periods, freq=freq, start_date=start_date)
 
-        result["request_meta"] = {
-            "module": "inventory",
-            "horizon_label": horizon_label,
-            "horizon_count": horizon_count,
-            "mode": "run",
-            "saved_to_database": success
-        }
-
         return jsonify({
-            "success": success,
-            "message": f"Forecast {horizon_label} {'berhasil' if success else 'gagal'} disimpan",
-            "data": result
+            "status": "success" if success else "error",
+            "message": f"Forecast {horizon_label} {'berhasil dijalankan dan disimpan.' if success else 'gagal disimpan.'}",
+            "data": result,
+            "request": {
+                "store_id": store_id,
+                "ingredient_id": ingredient_id,
+                "horizon_label": horizon_label,
+                "horizon_count": horizon_count,
+                "start_date": start_date,
+                "start_date_mode": "custom" if start_date else "auto"
+            },
+            "save_result": {
+                "status": "saved" if success else "failed",
+                "saved_results": len(result.get('forecasts', []))
+            } if success else None
         })
     except FileNotFoundError:
         return jsonify({"error": "Model belum di-training"}), 404
