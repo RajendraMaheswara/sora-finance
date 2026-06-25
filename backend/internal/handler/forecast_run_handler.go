@@ -3,9 +3,12 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+
 	"sora-finance-api/internal/auth"
 	"sora-finance-api/internal/models"
 	"sora-finance-api/internal/service"
+
+	"github.com/go-chi/chi/v5"
 )
 
 type ForecastRunHandler struct {
@@ -14,6 +17,20 @@ type ForecastRunHandler struct {
 
 func NewForecastRunHandler(service *service.ForecastRunService) *ForecastRunHandler {
 	return &ForecastRunHandler{service: service}
+}
+
+func (h *ForecastRunHandler) GetByID(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	item, err := h.service.GetByID(r.Context(), id)
+	if err != nil {
+		respondForecastError(w, err)
+		return
+	}
+	if item == nil {
+		respondWithJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+	respondWithJSON(w, http.StatusOK, item)
 }
 
 func (h *ForecastRunHandler) Create(w http.ResponseWriter, r *http.Request) {
@@ -36,12 +53,12 @@ func (h *ForecastRunHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	id, err := h.service.Create(r.Context(), input)
 	if err != nil {
-		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		respondForecastError(w, err)
 		return
 	}
 
 	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
 		"run_id": id,
-		"status": "success",
+		"status": "created",
 	})
 }

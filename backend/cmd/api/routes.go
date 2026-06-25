@@ -107,7 +107,7 @@ func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
 			return
 		}
 		defer rows.Close()
@@ -129,7 +129,7 @@ func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
 			); err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
 				return
 			}
 			row.Date = targetDate.Format("2006-01-02")
@@ -138,7 +138,7 @@ func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
 		if err := rows.Err(); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
 			return
 		}
 
@@ -271,12 +271,8 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/", deps.SalesMonthlySummaryHandler.GetAll)
 			r.Get("/{id}", deps.SalesMonthlySummaryHandler.GetByID)
 		})
-		r.Route("/internal/forecast/forecast-predictions", func(r chi.Router) {
-			r.Get("/", deps.ForecastPredictionHandler.GetAll)
-			r.Get("/{id}", deps.ForecastPredictionHandler.GetByID)
-			r.Post("/", deps.ForecastPredictionHandler.Save)
-		})
 		r.Route("/internal/forecast/forecast-runs", func(r chi.Router) {
+			r.Get("/{id}", deps.ForecastRunHandler.GetByID)
 			r.Post("/", deps.ForecastRunHandler.Create)
 		})
 		r.Route("/internal/forecast/forecast-results", func(r chi.Router) {
@@ -289,7 +285,7 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 	r.Group(func(r chi.Router) {
 		r.Use(authpkg.Middleware(deps.JWTSecret))
 		r.Use(authpkg.StoreMiddleware)
-		r.Get("/api/dashboard/forecast", deps.ForecastPredictionHandler.GetMyStoreForecast)
+		r.Get("/api/forecast/latest", deps.ForecastResultHandler.GetLatestForecast)
 
 		r.Route("/api/stores", func(r chi.Router) {
 			r.Get("/", deps.StoreHandler.GetAll)
@@ -383,12 +379,6 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/{id}", deps.FinanceDailySummaryHandler.GetByID)
 		})
 
-		r.Route("/api/forecast-predictions", func(r chi.Router) {
-			r.Get("/", deps.ForecastPredictionHandler.GetAll)
-			r.Get("/{id}", deps.ForecastPredictionHandler.GetByID)
-			r.Post("/", deps.ForecastPredictionHandler.Save)
-		})
-
 		r.Get("/api/forecast/visitors/latest", deps.ForecastResultHandler.GetLatestVisitors)
 
 		r.Route("/api/forecast-results", func(r chi.Router) {
@@ -398,6 +388,7 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 		})
 
 		r.Route("/api/forecast-runs", func(r chi.Router) {
+			r.Get("/{id}", deps.ForecastRunHandler.GetByID)
 			r.Post("/", deps.ForecastRunHandler.Create)
 		})
 

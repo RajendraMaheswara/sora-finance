@@ -14,37 +14,36 @@ import (
 )
 
 type AppDependencies struct {
-	DB                                   *pgxpool.Pool
-	StoreHandler                         *handler.StoreHandler
-	UserHandler                          *handler.UserHandler
-	AuthHandler                          *handler.AuthHandler
-	CustomerHandler                      *handler.CustomerHandler
-	TestTableHandler                     *handler.TestTableHandler
-	FoodIngredientHandler                *handler.FoodIngredientHandler
-	MenuIngredientHandler                *handler.MenuIngredientHandler
-	MenuOfferDetailHandler               *handler.MenuOfferDetailHandler
-	MenuOfferHandler                     *handler.MenuOfferHandler
-	MenuOnlineOrderHandler               *handler.MenuOnlineOrderHandler
-	MenuPackagingIngredientHandler       *handler.MenuPackagingIngredientHandler
-	MenuPackagingHandler                 *handler.MenuPackagingHandler
-	MenuVariantIngredientHandler         *handler.MenuVariantIngredientHandler
-	MenuVariantHandler                   *handler.MenuVariantHandler
-	MenuHandler                          *handler.MenuHandler
-	StoreDiscountHandler                 *handler.StoreDiscountHandler
-	StoreOperationalHourHandler          *handler.StoreOperationalHourHandler
-	FinanceDailyDiscountSummaryHandler   *handler.FinanceDailyDiscountSummaryHandler
-	FinanceDailySummaryHandler           *handler.FinanceDailySummaryHandler
-	FinanceMonthlySummaryHandler         *handler.FinanceMonthlySummaryHandler
-	ForecastPredictionHandler            *handler.ForecastPredictionHandler
-	ForecastResultHandler                *handler.ForecastResultHandler
-	ForecastRunHandler                   *handler.ForecastRunHandler
-	IngredientStockHistoryHandler        *handler.IngredientStockHistoryHandler
-	OrderItemHandler                     *handler.OrderItemHandler
-	OrderHandler                         *handler.OrderHandler
-	SalesDailySummaryHandler             *handler.SalesDailySummaryHandler
-	SalesMenuSummaryHandler              *handler.SalesMenuSummaryHandler
-	SalesMonthlySummaryHandler           *handler.SalesMonthlySummaryHandler
-	JWTSecret                            string
+	DB                                 *pgxpool.Pool
+	StoreHandler                       *handler.StoreHandler
+	UserHandler                        *handler.UserHandler
+	AuthHandler                        *handler.AuthHandler
+	CustomerHandler                    *handler.CustomerHandler
+	TestTableHandler                   *handler.TestTableHandler
+	FoodIngredientHandler              *handler.FoodIngredientHandler
+	MenuIngredientHandler              *handler.MenuIngredientHandler
+	MenuOfferDetailHandler             *handler.MenuOfferDetailHandler
+	MenuOfferHandler                   *handler.MenuOfferHandler
+	MenuOnlineOrderHandler             *handler.MenuOnlineOrderHandler
+	MenuPackagingIngredientHandler     *handler.MenuPackagingIngredientHandler
+	MenuPackagingHandler               *handler.MenuPackagingHandler
+	MenuVariantIngredientHandler       *handler.MenuVariantIngredientHandler
+	MenuVariantHandler                 *handler.MenuVariantHandler
+	MenuHandler                        *handler.MenuHandler
+	StoreDiscountHandler               *handler.StoreDiscountHandler
+	StoreOperationalHourHandler        *handler.StoreOperationalHourHandler
+	FinanceDailyDiscountSummaryHandler *handler.FinanceDailyDiscountSummaryHandler
+	FinanceDailySummaryHandler         *handler.FinanceDailySummaryHandler
+	FinanceMonthlySummaryHandler       *handler.FinanceMonthlySummaryHandler
+	ForecastResultHandler              *handler.ForecastResultHandler
+	ForecastRunHandler                 *handler.ForecastRunHandler
+	IngredientStockHistoryHandler      *handler.IngredientStockHistoryHandler
+	OrderItemHandler                   *handler.OrderItemHandler
+	OrderHandler                       *handler.OrderHandler
+	SalesDailySummaryHandler           *handler.SalesDailySummaryHandler
+	SalesMenuSummaryHandler            *handler.SalesMenuSummaryHandler
+	SalesMonthlySummaryHandler         *handler.SalesMonthlySummaryHandler
+	JWTSecret                          string
 }
 
 func initDependencies(pool *pgxpool.Pool) *AppDependencies {
@@ -145,10 +144,6 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 	financeMonthlySummaryService := service.NewFinanceMonthlySummaryService(financeMonthlySummaryRepo)
 	financeMonthlySummaryHandler := handler.NewFinanceMonthlySummaryHandler(financeMonthlySummaryService)
 
-	forecastPredictionRepo := repository.NewForecastPredictionRepository(pool)
-	forecastPredictionService := service.NewForecastPredictionService(forecastPredictionRepo)
-	forecastPredictionHandler := handler.NewForecastPredictionHandler(forecastPredictionService)
-
 	forecastResultRepo := repository.NewForecastResultRepository(pool)
 	forecastResultService := service.NewForecastResultService(forecastResultRepo)
 	forecastResultHandler := handler.NewForecastResultHandler(forecastResultService)
@@ -182,36 +177,35 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 	salesMonthlySummaryHandler := handler.NewSalesMonthlySummaryHandler(salesMonthlySummaryService)
 
 	return &AppDependencies{
-		DB:                                   pool,
-		StoreHandler:                         storeHandler,
-		UserHandler:                          userHandler,
-		AuthHandler:                          authHandler,
-		CustomerHandler:                      customerHandler,
-		TestTableHandler:                     testHandler,
-		FoodIngredientHandler:                foodIngredientHandler,
-		MenuIngredientHandler:                menuIngredientHandler,
-		MenuOfferDetailHandler:               menuOfferDetailHandler,
-		MenuOfferHandler:                     menuOfferHandler,
-		MenuOnlineOrderHandler:               menuOnlineOrderHandler,
-		MenuPackagingIngredientHandler:       menuPackagingIngredientHandler,
-		MenuPackagingHandler:                 menuPackagingHandler,
-		MenuVariantIngredientHandler:         menuVariantIngredientHandler,
-		MenuVariantHandler:                   menuVariantHandler,
-		MenuHandler:                          menuHandler,
-		StoreDiscountHandler:                 storeDiscountHandler,
-		StoreOperationalHourHandler:          storeOperationalHourHandler,
-		FinanceDailyDiscountSummaryHandler:   financeDailyDiscountSummaryHandler,
-		FinanceDailySummaryHandler:           financeDailySummaryHandler,
-		FinanceMonthlySummaryHandler:         financeMonthlySummaryHandler,
-		ForecastPredictionHandler:            forecastPredictionHandler,
-		ForecastResultHandler:                forecastResultHandler,
-		ForecastRunHandler:                   forecastRunHandler,
-		IngredientStockHistoryHandler:        ingredientStockHistoryHandler,
-		OrderItemHandler:                     orderItemHandler,
-		OrderHandler:                         orderHandler,
-		SalesDailySummaryHandler:             salesDailySummaryHandler,
-		SalesMenuSummaryHandler:              salesMenuSummaryHandler,
-		SalesMonthlySummaryHandler:           salesMonthlySummaryHandler,
-		JWTSecret:                            jwtSecret,
+		DB:                                 pool,
+		StoreHandler:                       storeHandler,
+		UserHandler:                        userHandler,
+		AuthHandler:                        authHandler,
+		CustomerHandler:                    customerHandler,
+		TestTableHandler:                   testHandler,
+		FoodIngredientHandler:              foodIngredientHandler,
+		MenuIngredientHandler:              menuIngredientHandler,
+		MenuOfferDetailHandler:             menuOfferDetailHandler,
+		MenuOfferHandler:                   menuOfferHandler,
+		MenuOnlineOrderHandler:             menuOnlineOrderHandler,
+		MenuPackagingIngredientHandler:     menuPackagingIngredientHandler,
+		MenuPackagingHandler:               menuPackagingHandler,
+		MenuVariantIngredientHandler:       menuVariantIngredientHandler,
+		MenuVariantHandler:                 menuVariantHandler,
+		MenuHandler:                        menuHandler,
+		StoreDiscountHandler:               storeDiscountHandler,
+		StoreOperationalHourHandler:        storeOperationalHourHandler,
+		FinanceDailyDiscountSummaryHandler: financeDailyDiscountSummaryHandler,
+		FinanceDailySummaryHandler:         financeDailySummaryHandler,
+		FinanceMonthlySummaryHandler:       financeMonthlySummaryHandler,
+		ForecastResultHandler:              forecastResultHandler,
+		ForecastRunHandler:                 forecastRunHandler,
+		IngredientStockHistoryHandler:      ingredientStockHistoryHandler,
+		OrderItemHandler:                   orderItemHandler,
+		OrderHandler:                       orderHandler,
+		SalesDailySummaryHandler:           salesDailySummaryHandler,
+		SalesMenuSummaryHandler:            salesMenuSummaryHandler,
+		SalesMonthlySummaryHandler:         salesMonthlySummaryHandler,
+		JWTSecret:                          jwtSecret,
 	}
 }

@@ -1,2511 +1,806 @@
-basePath: /api
-definitions:
-  models.Customer:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      name:
-        type: string
-      phone:
-        type: string
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.FinanceDailyDiscountSummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_discount_id:
-        type: string
-      m_store_id:
-        type: string
-      name:
-        type: string
-      t_finance_daily_summary_id:
-        type: string
-      total_discount:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.FinanceDailyHppSummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_menu_category_id:
-        type: string
-      m_store_id:
-        type: string
-      name:
-        type: string
-      t_finance_daily_summary_id:
-        type: string
-      total_hpp:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.FinanceDailyRegulationSummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      m_store_regulation_id:
-        type: string
-      name:
-        type: string
-      t_finance_daily_summary_id:
-        type: string
-      total_regulation:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.FinanceDailySummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      date:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      total_cash:
-        type: number
-      total_cost_and_expense:
-        type: number
-      total_debit:
-        type: number
-      total_discount:
-        type: number
-      total_ewallet:
-        type: number
-      total_hpp:
-        type: number
-      total_income:
-        type: number
-      total_net_income:
-        type: number
-      total_regulation_customer:
-        type: number
-      total_regulation_outlet:
-        type: number
-      total_rounding:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.FinanceMonthlySummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      date:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      total_cash:
-        type: number
-      total_cost_and_expense:
-        type: number
-      total_debit:
-        type: number
-      total_discount:
-        type: number
-      total_ewallet:
-        type: number
-      total_hpp:
-        type: number
-      total_income:
-        type: number
-      total_net_income:
-        type: number
-      total_regulation_customer:
-        type: number
-      total_regulation_outlet:
-        type: number
-      total_rounding:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.FoodIngredient:
-    properties:
-      code:
-        type: string
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      deleted_note:
-        type: string
-      deleted_reason:
-        type: string
-      id:
-        type: string
-      m_food_unit_id:
-        type: string
-      m_store_id:
-        type: string
-      name:
-        type: string
-      note:
-        type: string
-      stock_limit:
-        type: number
-      unit_price:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.IngredientStockHistory:
-    properties:
-      added:
-        type: number
-      created_at:
-        type: string
-      created_by:
-        type: string
-      current_stock:
-        type: number
-      date:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      deleted_note:
-        type: string
-      deleted_reason:
-        type: string
-      id:
-        type: string
-      ingredient_code:
-        type: string
-      ingredient_name:
-        type: string
-      ingredient_unit_name:
-        type: string
-      journal:
-        type: number
-      m_food_ingredient_id:
-        type: string
-      m_store_id:
-        type: string
-      note:
-        type: string
-      previous_stock:
-        type: number
-      reduced:
-        type: number
-      remaining_capital:
-        type: number
-      status:
-        type: string
-      stock_change:
-        type: number
-      total_remaining_capital:
-        type: number
-      total_unit_price:
-        type: number
-      type:
-        type: string
-      unit_price:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.Menu:
-    properties:
-      background_color:
-        type: string
-      code:
-        type: string
-      cogs:
-        type: number
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      description:
-        type: string
-      id:
-        type: string
-      image_url:
-        type: string
-      m_menu_category_id:
-        type: string
-      m_store_id:
-        type: string
-      m_store_regulation_id:
-        type: string
-      name:
-        type: string
-      price:
-        type: number
-      total_stock:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuIngredient:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_food_ingredient_id:
-        type: string
-      m_menu_id:
-        type: string
-      m_store_id:
-        type: string
-      qty:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuOffer:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      expired_offer_date:
-        type: string
-      id:
-        type: string
-      image_url:
-        type: string
-      m_store_id:
-        type: string
-      m_store_regulation_id:
-        type: string
-      name:
-        type: string
-      price:
-        type: number
-      start_offer_date:
-        type: string
-      terms_and_conditions:
-        type: string
-      total_stock:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuOfferDetail:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_menu_id:
-        type: string
-      m_menu_offer_id:
-        type: string
-      m_menu_packaging_id:
-        type: string
-      m_menu_variant_id:
-        type: string
-      m_store_id:
-        type: string
-      qty:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuOnlineOrder:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      is_percentage:
-        type: boolean
-      m_menu_id:
-        type: string
-      m_menu_online_order_type_id:
-        type: integer
-      m_menu_packaging_id:
-        type: string
-      m_store_id:
-        type: string
-      name:
-        type: string
-      price:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuPackaging:
-    properties:
-      cogs:
-        type: number
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      m_store_regulation_id:
-        type: string
-      name:
-        type: string
-      price:
-        type: number
-      total_stock:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuPackagingIngredient:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_food_ingredient_id:
-        type: string
-      m_menu_packaging_id:
-        type: string
-      m_store_id:
-        type: string
-      qty:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuVariant:
-    properties:
-      cogs:
-        type: number
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      m_store_regulation_id:
-        type: string
-      name:
-        type: string
-      price:
-        type: number
-      total_stock:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.MenuVariantIngredient:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_food_ingredient_id:
-        type: string
-      m_menu_variant_id:
-        type: string
-      m_store_id:
-        type: string
-      qty:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.Order:
-    properties:
-      cancelled_at:
-        type: string
-      cancelled_by:
-        type: string
-      cancelled_note:
-        type: string
-      cancelled_reason:
-        type: string
-      cashier_name:
-        type: string
-      created_at:
-        type: string
-      created_by:
-        type: string
-      customer_name:
-        type: string
-      customer_phone:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      deleted_note:
-        type: string
-      deleted_reason:
-        type: string
-      id:
-        type: string
-      m_cashier_id:
-        type: string
-      m_customer_id:
-        type: string
-      m_menu_online_order_type_id:
-        type: integer
-      m_order_payment_status_id:
-        type: integer
-      m_order_status_id:
-        type: integer
-      m_store_id:
-        type: string
-      m_store_payment_method_id:
-        type: string
-      m_store_regulation_ids:
-        items:
-          type: string
-        type: array
-      m_table_id:
-        type: string
-      order_number:
-        type: string
-      payment_method_name:
-        type: string
-      rounding_price:
-        type: number
-      sub_total:
-        type: number
-      table_name:
-        type: string
-      total_admin_debit_fee:
-        type: number
-      total_admin_ewallet_fee:
-        type: number
-      total_item_price:
-        type: number
-      total_paid:
-        type: number
-      total_price:
-        type: number
-      total_regulation:
-        type: number
-      total_return:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.OrderItem:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      is_ready:
-        type: boolean
-      m_customer_id:
-        type: string
-      m_menu_id:
-        type: string
-      m_menu_offer_id:
-        type: string
-      m_menu_online_order_id:
-        type: string
-      m_menu_packaging_id:
-        type: string
-      m_menu_variant_id:
-        type: string
-      m_order_type_id:
-        type: integer
-      m_store_discount_id:
-        type: string
-      m_store_id:
-        type: string
-      manual_discount_is_percentage:
-        type: boolean
-      manual_discount_name:
-        type: string
-      manual_discount_nominal:
-        type: number
-      menu_category_name:
-        type: string
-      menu_cogs:
-        type: number
-      menu_name:
-        type: string
-      menu_offer_cogs:
-        type: number
-      menu_offer_name:
-        type: string
-      menu_offer_price:
-        type: number
-      menu_online_order_name:
-        type: string
-      menu_online_order_price:
-        type: number
-      menu_packaging_cogs:
-        type: number
-      menu_packaging_name:
-        type: string
-      menu_packaging_price:
-        type: number
-      menu_price:
-        type: number
-      menu_variant_cogs:
-        type: number
-      menu_variant_name:
-        type: string
-      menu_variant_price:
-        type: number
-      note:
-        type: string
-      order_type_name:
-        type: string
-      qty:
-        type: number
-      store_discount_name:
-        type: string
-      store_discount_price:
-        type: number
-      t_order_id:
-        type: string
-      total_price:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.PaymentMethod:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      description:
-        type: string
-      id:
-        type: string
-      logo_url:
-        type: string
-      m_payment_method_type_id:
-        type: integer
-      name:
-        type: string
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.SalesDailySummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      date:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      total_discount:
-        type: number
-      total_hpp:
-        type: number
-      total_omzet:
-        type: number
-      total_profit:
-        type: number
-      total_regulation:
-        type: number
-      total_rounding:
-        type: number
-      total_transaction:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.SalesMenuSummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      date:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_menu_id:
-        type: string
-      m_menu_offer_id:
-        type: string
-      m_menu_online_order_id:
-        type: string
-      m_menu_packaging_id:
-        type: string
-      m_menu_variant_id:
-        type: string
-      m_store_id:
-        type: string
-      menu_name:
-        type: string
-      menu_offer_name:
-        type: string
-      menu_online_order_name:
-        type: string
-      menu_packaging_name:
-        type: string
-      menu_variant_name:
-        type: string
-      qty:
-        type: number
-      total_menu_offer_price:
-        type: number
-      total_menu_online_order_price:
-        type: number
-      total_menu_packaging_price:
-        type: number
-      total_menu_price:
-        type: number
-      total_menu_variant_price:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.SalesMonthlySummary:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      date:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      m_store_id:
-        type: string
-      total_discount:
-        type: number
-      total_hpp:
-        type: number
-      total_omzet:
-        type: number
-      total_profit:
-        type: number
-      total_regulation:
-        type: number
-      total_rounding:
-        type: number
-      total_transaction:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.Store:
-    properties:
-      coins:
-        type: integer
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      expired_date:
-        type: string
-      id:
-        type: string
-      is_active:
-        type: boolean
-      is_tutorial_completed:
-        type: boolean
-      m_subscription_type_id:
-        type: integer
-      name:
-        type: string
-      tutorial_step:
-        type: integer
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.StoreDiscount:
-    properties:
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      description:
-        type: string
-      id:
-        type: string
-      is_percentage:
-        type: boolean
-      m_store_id:
-        type: string
-      name:
-        type: string
-      nominal:
-        type: number
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.StoreOperationalHour:
-    properties:
-      close_time:
-        type: string
-      created_at:
-        type: string
-      created_by:
-        type: string
-      day_of_week:
-        type: integer
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      id:
-        type: string
-      is_active:
-        type: boolean
-      m_store_id:
-        type: string
-      open_time:
-        type: string
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.StorePaymentMethod:
-    properties:
-      account_name:
-        type: string
-      account_number:
-        type: string
-      created_at:
-        type: string
-      created_by:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      description:
-        type: string
-      id:
-        type: string
-      is_percentage:
-        type: boolean
-      m_payment_method_id:
-        type: string
-      m_store_id:
-        type: string
-      nominal:
-        type: number
-      qr_code_url:
-        type: string
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.SubscriptionType:
-    properties:
-      coins:
-        type: integer
-      created_at:
-        type: string
-      created_by:
-        type: string
-      day:
-        type: integer
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      description:
-        type: string
-      id:
-        type: integer
-      image_url:
-        type: string
-      is_active:
-        type: boolean
-      max_users:
-        type: integer
-      name:
-        type: string
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-    type: object
-  models.User:
-    properties:
-      address:
-        type: string
-      avatar_url:
-        type: string
-      city_of_birth:
-        type: string
-      created_at:
-        type: string
-      created_by:
-        type: string
-      date_of_birth:
-        type: string
-      deleted_at:
-        type: string
-      deleted_by:
-        type: string
-      email:
-        type: string
-      email_verified_at:
-        type: string
-      id:
-        type: string
-      is_active:
-        type: boolean
-      is_email_verified:
-        type: boolean
-      is_phone_verified:
-        type: boolean
-      m_role_access_id:
-        type: string
-      m_role_id:
-        type: string
-      m_store_id:
-        type: string
-      m_user_verification_type_id:
-        type: integer
-      name:
-        type: string
-      nip:
-        type: string
-      password:
-        description: omit from response
-        type: string
-      phone:
-        type: string
-      phone_verified_at:
-        type: string
-      updated_at:
-        type: string
-      updated_by:
-        type: string
-      username:
-        type: string
-    type: object
-host: localhost:8080
+swagger: '2.0'
 info:
-  contact:
-    email: support@swagger.io
-    name: API Support
-    url: http://www.swagger.io/support
-  description: REST API untuk aplikasi keuangan Sora (hanya GET endpoints)
-  license:
-    name: Apache 2.0
-    url: http://www.apache.org/licenses/LICENSE-2.0.html
-  termsOfService: http://swagger.io/terms/
-  title: Sora Finance API
-  version: "1.0"
-paths:
-  /customers:
-    get:
-      description: Mengembalikan daftar semua customer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.Customer'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all customers
-      tags:
-      - Customers
-  /customers/{id}:
-    get:
-      description: Mengembalikan satu customer berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.Customer'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get customer by ID
-      tags:
-      - Customers
-  /finance-daily-discount-summaries:
-    get:
-      description: Mengembalikan daftar semua finance daily discount summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.FinanceDailyDiscountSummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all finance daily discount summaries
-      tags:
-      - FinanceDailyDiscountSummaries
-  /finance-daily-discount-summaries/{id}:
-    get:
-      description: Mengembalikan satu finance daily discount summary berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.FinanceDailyDiscountSummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get finance daily discount summary by ID
-      tags:
-      - FinanceDailyDiscountSummaries
-  /finance-daily-hpp-summaries:
-    get:
-      description: Mengembalikan daftar semua finance daily hpp summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.FinanceDailyHppSummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all finance daily hpp summaries
-      tags:
-      - FinanceDailyHppSummaries
-  /finance-daily-hpp-summaries/{id}:
-    get:
-      description: Mengembalikan satu finance daily hpp summary berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.FinanceDailyHppSummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get finance daily hpp summary by ID
-      tags:
-      - FinanceDailyHppSummaries
-  /finance-daily-regulation-summaries:
-    get:
-      description: Mengembalikan daftar semua finance daily regulation summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.FinanceDailyRegulationSummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all finance daily regulation summaries
-      tags:
-      - FinanceDailyRegulationSummaries
-  /finance-daily-regulation-summaries/{id}:
-    get:
-      description: Mengembalikan satu finance daily regulation summary berdasarkan
-        ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.FinanceDailyRegulationSummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get finance daily regulation summary by ID
-      tags:
-      - FinanceDailyRegulationSummaries
-  /finance-daily-summaries:
-    get:
-      description: Mengembalikan daftar semua finance daily summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.FinanceDailySummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all finance daily summaries
-      tags:
-      - FinanceDailySummaries
-  /finance-daily-summaries/{id}:
-    get:
-      description: Mengembalikan satu finance daily summary berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.FinanceDailySummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get finance daily summary by ID
-      tags:
-      - FinanceDailySummaries
-  /finance-monthly-summaries:
-    get:
-      description: Mengembalikan daftar semua finance monthly summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.FinanceMonthlySummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all finance monthly summaries
-      tags:
-      - FinanceMonthlySummaries
-  /finance-monthly-summaries/{id}:
-    get:
-      description: Mengembalikan satu finance monthly summary berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.FinanceMonthlySummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get finance monthly summary by ID
-      tags:
-      - FinanceMonthlySummaries
-  /food-ingredients:
-    get:
-      description: Mengembalikan daftar semua food ingredients
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.FoodIngredient'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all food ingredients
-      tags:
-      - FoodIngredients
-  /food-ingredients/{id}:
-    get:
-      description: Mengembalikan satu food ingredient berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.FoodIngredient'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get food ingredient by ID
-      tags:
-      - FoodIngredients
-  /ingredient-stock-histories:
-    get:
-      description: Mengembalikan daftar semua ingredient stock histories
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.IngredientStockHistory'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all ingredient stock histories
-      tags:
-      - IngredientStockHistories
-  /ingredient-stock-histories/{id}:
-    get:
-      description: Mengembalikan satu ingredient stock history berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.IngredientStockHistory'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get ingredient stock history by ID
-      tags:
-      - IngredientStockHistories
-  /menu-ingredients:
-    get:
-      description: Mengembalikan daftar semua menu ingredients
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuIngredient'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu ingredients
-      tags:
-      - MenuIngredients
-  /menu-ingredients/{id}:
-    get:
-      description: Mengembalikan satu menu ingredient berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuIngredient'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu ingredient by ID
-      tags:
-      - MenuIngredients
-  /menu-offer-details:
-    get:
-      description: Mengembalikan daftar semua menu offer details
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuOfferDetail'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu offer details
-      tags:
-      - MenuOfferDetails
-  /menu-offer-details/{id}:
-    get:
-      description: Mengembalikan satu menu offer detail berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuOfferDetail'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu offer detail by ID
-      tags:
-      - MenuOfferDetails
-  /menu-offers:
-    get:
-      description: Mengembalikan daftar semua menu offers
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuOffer'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu offers
-      tags:
-      - MenuOffers
-  /menu-offers/{id}:
-    get:
-      description: Mengembalikan satu menu offer berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuOffer'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu offer by ID
-      tags:
-      - MenuOffers
-  /menu-online-orders:
-    get:
-      description: Mengembalikan daftar semua menu online orders
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuOnlineOrder'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu online orders
-      tags:
-      - MenuOnlineOrders
-  /menu-online-orders/{id}:
-    get:
-      description: Mengembalikan satu menu online order berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuOnlineOrder'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu online order by ID
-      tags:
-      - MenuOnlineOrders
-  /menu-packaging-ingredients:
-    get:
-      description: Mengembalikan daftar semua menu packaging ingredients
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuPackagingIngredient'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu packaging ingredients
-      tags:
-      - MenuPackagingIngredients
-  /menu-packaging-ingredients/{id}:
-    get:
-      description: Mengembalikan satu menu packaging ingredient berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuPackagingIngredient'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu packaging ingredient by ID
-      tags:
-      - MenuPackagingIngredients
-  /menu-packagings:
-    get:
-      description: Mengembalikan daftar semua menu packagings
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuPackaging'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu packagings
-      tags:
-      - MenuPackagings
-  /menu-packagings/{id}:
-    get:
-      description: Mengembalikan satu menu packaging berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuPackaging'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu packaging by ID
-      tags:
-      - MenuPackagings
-  /menu-variant-ingredients:
-    get:
-      description: Mengembalikan daftar semua menu variant ingredients
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuVariantIngredient'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu variant ingredients
-      tags:
-      - MenuVariantIngredients
-  /menu-variant-ingredients/{id}:
-    get:
-      description: Mengembalikan satu menu variant ingredient berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuVariantIngredient'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu variant ingredient by ID
-      tags:
-      - MenuVariantIngredients
-  /menu-variants:
-    get:
-      description: Mengembalikan daftar semua menu variants
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.MenuVariant'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menu variants
-      tags:
-      - MenuVariants
-  /menu-variants/{id}:
-    get:
-      description: Mengembalikan satu menu variant berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.MenuVariant'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu variant by ID
-      tags:
-      - MenuVariants
-  /menus:
-    get:
-      description: Mengembalikan daftar semua menus
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.Menu'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all menus
-      tags:
-      - Menus
-  /menus/{id}:
-    get:
-      description: Mengembalikan satu menu berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.Menu'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get menu by ID
-      tags:
-      - Menus
-  /order-items:
-    get:
-      description: Mengembalikan daftar semua order items
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.OrderItem'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all order items
-      tags:
-      - OrderItems
-  /order-items/{id}:
-    get:
-      description: Mengembalikan satu order item berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.OrderItem'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get order item by ID
-      tags:
-      - OrderItems
-  /orders:
-    get:
-      description: Mengembalikan daftar semua orders
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.Order'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all orders
-      tags:
-      - Orders
-  /orders/{id}:
-    get:
-      description: Mengembalikan satu order berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.Order'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get order by ID
-      tags:
-      - Orders
-  /payment-methods:
-    get:
-      description: Mengembalikan daftar semua payment methods
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.PaymentMethod'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all payment methods
-      tags:
-      - PaymentMethods
-  /payment-methods/{id}:
-    get:
-      description: Mengembalikan satu payment method berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.PaymentMethod'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get payment method by ID
-      tags:
-      - PaymentMethods
-  /sales-daily-summaries:
-    get:
-      description: Mengembalikan daftar semua sales daily summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.SalesDailySummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all sales daily summaries
-      tags:
-      - SalesDailySummaries
-  /sales-daily-summaries/{id}:
-    get:
-      description: Mengembalikan satu sales daily summary berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.SalesDailySummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get sales daily summary by ID
-      tags:
-      - SalesDailySummaries
-  /sales-menu-summaries:
-    get:
-      description: Mengembalikan daftar semua sales menu summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.SalesMenuSummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all sales menu summaries
-      tags:
-      - SalesMenuSummaries
-  /sales-menu-summaries/{id}:
-    get:
-      description: Mengembalikan satu sales menu summary berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.SalesMenuSummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get sales menu summary by ID
-      tags:
-      - SalesMenuSummaries
-  /sales-monthly-summaries:
-    get:
-      description: Mengembalikan daftar semua sales monthly summaries
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.SalesMonthlySummary'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all sales monthly summaries
-      tags:
-      - SalesMonthlySummaries
-  /sales-monthly-summaries/{id}:
-    get:
-      description: Mengembalikan satu sales monthly summary berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.SalesMonthlySummary'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get sales monthly summary by ID
-      tags:
-      - SalesMonthlySummaries
-  /store-discounts:
-    get:
-      description: Mengembalikan daftar semua store discounts
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.StoreDiscount'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all store discounts
-      tags:
-      - StoreDiscounts
-  /store-discounts/{id}:
-    get:
-      description: Mengembalikan satu store discount berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.StoreDiscount'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get store discount by ID
-      tags:
-      - StoreDiscounts
-  /store-operational-hours:
-    get:
-      description: Mengembalikan daftar semua store operational hours
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.StoreOperationalHour'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all store operational hours
-      tags:
-      - StoreOperationalHours
-  /store-operational-hours/{id}:
-    get:
-      description: Mengembalikan satu store operational hour berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.StoreOperationalHour'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get store operational hour by ID
-      tags:
-      - StoreOperationalHours
-  /store-payment-methods:
-    get:
-      description: Mengembalikan daftar semua store payment methods
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.StorePaymentMethod'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all store payment methods
-      tags:
-      - StorePaymentMethods
-  /store-payment-methods/{id}:
-    get:
-      description: Mengembalikan satu store payment method berdasarkan ID
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.StorePaymentMethod'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get store payment method by ID
-      tags:
-      - StorePaymentMethods
-  /stores:
-    get:
-      description: Mengembalikan daftar semua store yang aktif
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.Store'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Dapatkan semua store
-      tags:
-      - Stores
-  /stores/{id}:
-    get:
-      description: Mengembalikan satu store berdasarkan UUID
-      parameters:
-      - description: UUID store
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.Store'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Dapatkan store berdasarkan ID
-      tags:
-      - Stores
-  /subscription-types:
-    get:
-      description: Mengembalikan daftar semua subscription types
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.SubscriptionType'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all subscription types
-      tags:
-      - SubscriptionTypes
-  /subscription-types/{id}:
-    get:
-      description: Mengembalikan satu subscription type berdasarkan ID
-      parameters:
-      - description: ID
-        in: path
-        name: id
-        required: true
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.SubscriptionType'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get subscription type by ID
-      tags:
-      - SubscriptionTypes
-  /users:
-    get:
-      description: Mengembalikan daftar semua user (password dihilangkan)
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              $ref: '#/definitions/models.User'
-            type: array
-        "500":
-          description: Internal Server Error
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get all users
-      tags:
-      - Users
-  /users/{id}:
-    get:
-      description: Mengembalikan satu user berdasarkan ID (password dihilangkan)
-      parameters:
-      - description: UUID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/models.User'
-        "400":
-          description: Bad Request
-          schema:
-            additionalProperties: true
-            type: object
-        "404":
-          description: Not Found
-          schema:
-            additionalProperties: true
-            type: object
-      summary: Get user by ID
-      tags:
-      - Users
+  description: 'Forecast-only API documentation. Forecast source of truth: forecast_runs
+    + forecast_results.'
+  title: Sora Finance Forecast API
+  version: '1.1'
+host: localhost:8080
+basePath: /
 schemes:
 - http
-swagger: "2.0"
+paths:
+  /api/forecast/latest:
+    get:
+      summary: Get latest forecast
+      description: Mengambil latest successful forecast dari forecast_runs + forecast_results.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Bearer JWT token
+        name: Authorization
+        in: header
+        required: true
+      - name: forecast_type
+        in: query
+        required: false
+        type: string
+        enum:
+        - visitors
+        - sales
+        - inventory
+        default: visitors
+      - name: horizon_label
+        in: query
+        required: false
+        type: string
+        enum:
+        - daily
+        - weekly
+        - monthly
+        default: daily
+      - name: store_id
+        in: query
+        required: false
+        type: string
+        format: uuid
+        description: Only system admin can request another store explicitly.
+      responses: &id001
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/ForecastLatestResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /api/forecast/visitors/latest:
+    get:
+      summary: Get latest visitors forecast
+      description: Shortcut latest forecast untuk forecast_type=visitors.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Bearer JWT token
+        name: Authorization
+        in: header
+        required: true
+      - name: horizon_label
+        in: query
+        required: false
+        type: string
+        enum:
+        - daily
+        - weekly
+        - monthly
+        default: daily
+      - name: store_id
+        in: query
+        required: false
+        type: string
+        format: uuid
+        description: Only system admin can request another store explicitly.
+      responses: *id001
+  /api/forecast-runs/{id}:
+    get:
+      summary: Get forecast run by ID
+      description: Mengambil satu forecast run dari forecast_runs.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Bearer JWT token
+        name: Authorization
+        in: header
+        required: true
+      - name: id
+        in: path
+        required: true
+        type: integer
+        format: int64
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/ForecastRun'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /api/forecast-runs:
+    post:
+      summary: Create forecast run
+      description: Membuat metadata forecast run. is_latest hanya true untuk status
+        success; run success lama untuk store/type/horizon yang sama otomatis dibuat
+        false.
+      tags:
+      - Forecast Core
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Bearer JWT token
+        name: Authorization
+        in: header
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/ForecastRunInput'
+      responses:
+        '201':
+          description: Created
+          schema:
+            $ref: '#/definitions/ForecastRunCreateResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '403':
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /api/forecast-results:
+    get:
+      summary: Get forecast results
+      description: Mengambil daftar forecast_results, scoped by store untuk user non-admin.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Bearer JWT token
+        name: Authorization
+        in: header
+        required: true
+      responses:
+        '200':
+          description: OK
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/ForecastResult'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+    post:
+      summary: Bulk save forecast results
+      description: Mengganti detail forecast_results untuk satu run_id. Field results
+        wajib ada dan tidak boleh kosong.
+      tags:
+      - Forecast Core
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Bearer JWT token
+        name: Authorization
+        in: header
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/ForecastResultsBulkRequest'
+      responses:
+        '201':
+          description: Created
+          schema:
+            $ref: '#/definitions/ForecastResultsBulkResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '403':
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /api/forecast-results/{id}:
+    get:
+      summary: Get forecast result by ID
+      description: Mengambil satu forecast result berdasarkan ID.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Bearer JWT token
+        name: Authorization
+        in: header
+        required: true
+      - name: id
+        in: path
+        required: true
+        type: integer
+        format: int64
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/ForecastResult'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /internal/forecast/visitors-daily-history:
+    get:
+      summary: Get visitors daily history
+      description: Endpoint internal untuk forecast-service mengambil data historis
+        visitors harian dari orders/order_items.
+      tags:
+      - Forecast Historical Data
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Internal forecast service key
+        name: X-Service-Key
+        in: header
+        required: true
+      - name: store_id
+        in: query
+        required: true
+        type: string
+        format: uuid
+      responses:
+        '200':
+          description: OK
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/VisitorsDailyHistoryRow'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /internal/forecast/forecast-runs/{id}:
+    get:
+      summary: Get forecast run by ID
+      description: Mengambil satu forecast run dari forecast_runs.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Internal forecast service key
+        name: X-Service-Key
+        in: header
+        required: true
+      - name: id
+        in: path
+        required: true
+        type: integer
+        format: int64
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/ForecastRun'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /internal/forecast/forecast-runs:
+    post:
+      summary: Create forecast run
+      description: Membuat metadata forecast run. is_latest hanya true untuk status
+        success; run success lama untuk store/type/horizon yang sama otomatis dibuat
+        false.
+      tags:
+      - Forecast Core
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Internal forecast service key
+        name: X-Service-Key
+        in: header
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/ForecastRunInput'
+      responses:
+        '201':
+          description: Created
+          schema:
+            $ref: '#/definitions/ForecastRunCreateResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '403':
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /internal/forecast/forecast-results:
+    get:
+      summary: Get forecast results
+      description: Mengambil daftar forecast_results, scoped by store untuk user non-admin.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Internal forecast service key
+        name: X-Service-Key
+        in: header
+        required: true
+      responses:
+        '200':
+          description: OK
+          schema:
+            type: array
+            items:
+              $ref: '#/definitions/ForecastResult'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+    post:
+      summary: Bulk save forecast results
+      description: Mengganti detail forecast_results untuk satu run_id. Field results
+        wajib ada dan tidak boleh kosong.
+      tags:
+      - Forecast Core
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Internal forecast service key
+        name: X-Service-Key
+        in: header
+        required: true
+      - name: body
+        in: body
+        required: true
+        schema:
+          $ref: '#/definitions/ForecastResultsBulkRequest'
+      responses:
+        '201':
+          description: Created
+          schema:
+            $ref: '#/definitions/ForecastResultsBulkResponse'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '403':
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+  /internal/forecast/forecast-results/{id}:
+    get:
+      summary: Get forecast result by ID
+      description: Mengambil satu forecast result berdasarkan ID.
+      tags:
+      - Forecast Core
+      produces:
+      - application/json
+      parameters:
+      - type: string
+        description: Internal forecast service key
+        name: X-Service-Key
+        in: header
+        required: true
+      - name: id
+        in: path
+        required: true
+        type: integer
+        format: int64
+      responses:
+        '200':
+          description: OK
+          schema:
+            $ref: '#/definitions/ForecastResult'
+        '400':
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '401':
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '404':
+          description: Not Found
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+        '500':
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/ErrorResponse'
+definitions:
+  ErrorResponse:
+    type: object
+    properties:
+      error:
+        type: string
+  ForecastRunInput:
+    type: object
+    required:
+    - store_id
+    - forecast_type
+    - horizon_label
+    - horizon_days
+    - granularity
+    - model_name
+    - model_version
+    - train_start_date
+    - train_end_date
+    - predict_start_date
+    - predict_end_date
+    - status
+    properties:
+      store_id:
+        type: string
+        format: uuid
+      forecast_type:
+        type: string
+        enum:
+        - visitors
+        - sales
+        - inventory
+      horizon_label:
+        type: string
+        enum:
+        - daily
+        - weekly
+        - monthly
+      horizon_days:
+        type: integer
+        minimum: 1
+        maximum: 366
+      granularity:
+        type: string
+        enum:
+        - daily
+        - weekly
+        - monthly
+      model_name:
+        type: string
+      model_version:
+        type: string
+      feature_version:
+        type: string
+      train_start_date:
+        type: string
+        format: date
+      train_end_date:
+        type: string
+        format: date
+      predict_start_date:
+        type: string
+        format: date
+      predict_end_date:
+        type: string
+        format: date
+      metrics:
+        type: string
+        description: Valid JSON string. Empty value is normalized to {}.
+      summary:
+        type: string
+        description: Valid JSON string. Empty value is normalized to {}.
+      data_quality:
+        type: string
+        description: Valid JSON string. Empty value is normalized to {}.
+      status:
+        type: string
+        enum:
+        - running
+        - success
+        - failed
+      started_at:
+        type: string
+        format: date-time
+      finished_at:
+        type: string
+        format: date-time
+      error_message:
+        type: string
+  ForecastRunCreateResponse:
+    type: object
+    properties:
+      run_id:
+        type: integer
+        format: int64
+      status:
+        type: string
+  ForecastRun:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      store_id:
+        type: string
+        format: uuid
+      forecast_type:
+        type: string
+      horizon_label:
+        type: string
+      horizon_days:
+        type: integer
+      granularity:
+        type: string
+      model_name:
+        type: string
+      model_version:
+        type: string
+      feature_version:
+        type: string
+      train_start_date:
+        type: string
+        format: date
+      train_end_date:
+        type: string
+        format: date
+      predict_start_date:
+        type: string
+        format: date
+      predict_end_date:
+        type: string
+        format: date
+      metrics:
+        type: object
+      summary:
+        type: object
+      data_quality:
+        type: object
+      status:
+        type: string
+      is_latest:
+        type: boolean
+      error_message:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+      started_at:
+        type: string
+        format: date-time
+      finished_at:
+        type: string
+        format: date-time
+  ForecastResultInput:
+    type: object
+    required:
+    - target_date
+    - predicted_value
+    properties:
+      target_date:
+        type: string
+        format: date
+      predicted_value:
+        type: number
+        format: double
+        minimum: 0
+      lower_bound:
+        type: number
+        format: double
+      upper_bound:
+        type: number
+        format: double
+      confidence_level:
+        type: integer
+        minimum: 0
+        maximum: 100
+      actual_value:
+        type: number
+        format: double
+      item_id:
+        type: string
+      item_type:
+        type: string
+  ForecastResult:
+    type: object
+    properties:
+      id:
+        type: integer
+        format: int64
+      run_id:
+        type: integer
+        format: int64
+      target_date:
+        type: string
+        format: date
+      predicted_value:
+        type: number
+        format: double
+      lower_bound:
+        type: number
+        format: double
+      upper_bound:
+        type: number
+        format: double
+      confidence_level:
+        type: integer
+      actual_value:
+        type: number
+        format: double
+      item_id:
+        type: string
+      item_type:
+        type: string
+      created_at:
+        type: string
+        format: date-time
+  ForecastResultsBulkRequest:
+    type: object
+    required:
+    - run_id
+    - results
+    properties:
+      run_id:
+        type: integer
+        format: int64
+      results:
+        type: array
+        minItems: 1
+        maxItems: 1000
+        items:
+          $ref: '#/definitions/ForecastResultInput'
+  ForecastResultsBulkResponse:
+    type: object
+    properties:
+      status:
+        type: string
+      message:
+        type: string
+      run_id:
+        type: integer
+        format: int64
+      count:
+        type: integer
+  ForecastLatestResponse:
+    type: object
+    properties:
+      run:
+        $ref: '#/definitions/ForecastRun'
+      results:
+        type: array
+        items:
+          $ref: '#/definitions/ForecastResult'
+  VisitorsDailyHistoryRow:
+    type: object
+    properties:
+      date:
+        type: string
+        format: date
+      visitors:
+        type: integer
+      valid_orders_count:
+        type: integer
+      physical_orders_count:
+        type: integer
+      online_orders_count:
+        type: integer
+      dine_in_orders_count:
+        type: integer
+      takeaway_orders_count:
+        type: integer
+      physical_item_qty:
+        type: number
+      avg_physical_item_qty:
+        type: number

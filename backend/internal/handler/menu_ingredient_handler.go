@@ -26,7 +26,7 @@ func NewMenuIngredientHandler(service *service.MenuIngredientService) *MenuIngre
 func (h *MenuIngredientHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	items, err := h.service.GetAll(r.Context())
 	if err != nil {
-		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, items)

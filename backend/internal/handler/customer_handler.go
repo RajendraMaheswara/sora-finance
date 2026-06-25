@@ -26,7 +26,7 @@ func NewCustomerHandler(service *service.CustomerService) *CustomerHandler {
 func (h *CustomerHandler) GetAll(w http.ResponseWriter, r *http.Request) {
 	customers, err := h.service.GetAll(r.Context())
 	if err != nil {
-		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		respondWithJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal server error"})
 		return
 	}
 	respondWithJSON(w, http.StatusOK, customers)
