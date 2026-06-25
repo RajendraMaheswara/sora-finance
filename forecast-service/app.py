@@ -190,6 +190,151 @@ def _visitors_request_meta(payload):
     }
 
 
+def _parse_iso_date(value):
+    if not value:
+        return None
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return value
+    if isinstance(value, datetime):
+        return value.date()
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
+
+
+def _days_between(start_value, end_value):
+    start = _parse_iso_date(start_value)
+    end = _parse_iso_date(end_value)
+    if not start or not end:
+        return None
+    return (end - start).days + 1
+
+
+def _clean_visitors_forecast_item(item, horizon_label):
+    """Format item forecast visitors untuk response client.
+
+    predicted_transactions sengaja tidak dikirim karena nilainya sama dengan
+    predicted_visitors dan membuat response visitors ambigu.
+    """
+    if horizon_label == "daily":
+        cleaned = {
+            "date": item.get("date"),
+            "predicted_visitors": item.get("predicted_visitors"),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+            "day_of_week": item.get("day_of_week"),
+            "is_weekend": item.get("is_weekend"),
+        }
+    elif horizon_label == "weekly":
+        cleaned = {
+            "period_start": item.get("period_start"),
+            "period_end": item.get("period_end"),
+            "predicted_visitors": item.get("predicted_visitors"),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+        }
+    else:
+        cleaned = {
+            "period_start": item.get("period_start"),
+            "period_end": item.get("period_end"),
+            "predicted_visitors": item.get("predicted_visitors"),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+        }
+
+    return {key: value for key, value in cleaned.items() if value is not None}
+
+
+def _visitors_model_metadata_public(raw_metadata, horizon_label, save_result=None):
+    raw_metadata = raw_metadata or {}
+    model_metrics = raw_metadata.get("metrics") or {}
+    save_metrics = (save_result or {}).get("metrics") or {}
+
+    metadata = {
+        "trained_at": raw_metadata.get("trained_at"),
+        "training_data_points": raw_metadata.get("training_data_points"),
+        "metric_horizon": raw_metadata.get("metric_horizon") or horizon_label,
+        "horizon_method": raw_metadata.get("horizon_method"),
+        # Nama cv_mae/cv_rmse dipertahankan sesuai permintaan.
+        "cv_mae": raw_metadata.get("cv_mae"),
+        "cv_rmse": raw_metadata.get("cv_rmse"),
+        "error_ratio": model_metrics.get(f"{horizon_label}_error_ratio"),
+        "wape": model_metrics.get(f"{horizon_label}_wape"),
+        "error_percentage": model_metrics.get(f"{horizon_label}_error_percentage") or model_metrics.get(f"{horizon_label}_mae_percentage"),
+        "bias": model_metrics.get(f"{horizon_label}_bias"),
+        "mean_error": model_metrics.get(f"{horizon_label}_mean_error"),
+        "bias_percentage": model_metrics.get(f"{horizon_label}_bias_percentage"),
+        "interval_coverage": model_metrics.get(f"{horizon_label}_interval_coverage"),
+        "avg_interval_width": model_metrics.get(f"{horizon_label}_avg_interval_width"),
+        "relative_interval_width": model_metrics.get(f"{horizon_label}_relative_interval_width"),
+        "reliability": model_metrics.get(f"{horizon_label}_reliability"),
+        "confidence_level": save_metrics.get("confidence_level"),
+        "metrics_version": model_metrics.get("metrics_version"),
+        "metric_source": model_metrics.get("metric_source"),
+        "feature_importance": raw_metadata.get("feature_importance") or {},
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def _visitors_save_result_public(save_result):
+    if not save_result:
+        return None
+    return {
+        "run_id": save_result.get("run_id"),
+        "saved_results": save_result.get("saved_results"),
+        "status": "saved",
+    }
+
+
+def _visitors_response_data_public(forecast_result, payload, save_result=None):
+    raw = _json_model(forecast_result)
+    horizon_label = payload["horizon_label"]
+    horizon_count = payload["horizon_count"]
+
+    forecasts = [
+        _clean_visitors_forecast_item(item, horizon_label)
+        for item in raw.get("forecasts", [])
+    ]
+    total_predicted = int(sum(float(item.get("predicted_visitors") or 0) for item in forecasts))
+    forecast_count = len(forecasts)
+    avg_predicted = round(total_predicted / forecast_count, 2) if forecast_count else 0
+
+    forecast_start = raw.get("forecast_start_date")
+    forecast_end = raw.get("forecast_end_date")
+    horizon_days = _days_between(forecast_start, forecast_end)
+    if horizon_days is None:
+        horizon_days = raw.get("forecast_horizon_days")
+        if horizon_days is None and save_result:
+            horizon_days = save_result.get("horizon_days")
+
+    return {
+        "store_id": raw.get("store_id"),
+        "generated_at": raw.get("generated_at"),
+        "forecast_start_date": forecast_start,
+        "forecast_end_date": forecast_end,
+        "horizon": {
+            "label": horizon_label,
+            "count": horizon_count,
+            "days": horizon_days,
+        },
+        "start_date_source": raw.get("start_date_source"),
+        "last_actual_date": raw.get("last_actual_date"),
+        "business_cutoff_rule": raw.get("business_cutoff_rule"),
+        "summary": {
+            "total_predicted_visitors": total_predicted,
+            "average_predicted_visitors": avg_predicted,
+            "forecast_count": forecast_count,
+        },
+        "forecasts": forecasts,
+        "model_metadata": _visitors_model_metadata_public(
+            raw.get("model_metadata"),
+            horizon_label,
+            save_result=save_result,
+        ),
+    }
+
+
 def _run_visitors_preview(payload):
     return asyncio.run(visitors_forecast_service.forecast_by_horizon(
         store_id=payload["store_id"],
@@ -221,7 +366,7 @@ def visitors_preview_standard():
             "status": "success",
             "message": "Forecast visitors berhasil dibuat tanpa disimpan.",
             "request": _visitors_request_meta(payload),
-            "data": _json_model(result),
+            "data": _visitors_response_data_public(result, payload),
         }), 200
     except Exception as exc:
         return _handle_visitors_standard_error(exc)
@@ -245,8 +390,8 @@ def visitors_save_standard():
             "status": "success",
             "message": "Forecast visitors berhasil disimpan ke database.",
             "request": _visitors_request_meta(payload),
-            "save_result": save_result,
-            "data": _json_model(forecast_result),
+            "save_result": _visitors_save_result_public(save_result),
+            "data": _visitors_response_data_public(forecast_result, payload, save_result),
         }), 201
     except Exception as exc:
         return _handle_visitors_standard_error(exc, prefix="Save forecast gagal")
@@ -270,8 +415,8 @@ def visitors_run_standard():
             "status": "success",
             "message": "Forecast visitors berhasil dijalankan dan disimpan.",
             "request": _visitors_request_meta(payload),
-            "save_result": save_result,
-            "data": _json_model(forecast_result),
+            "save_result": _visitors_save_result_public(save_result),
+            "data": _visitors_response_data_public(forecast_result, payload, save_result),
         }), 201
     except Exception as exc:
         return _handle_visitors_standard_error(exc, prefix="Run forecast gagal")

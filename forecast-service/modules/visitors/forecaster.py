@@ -1340,28 +1340,76 @@ class ForecastService:
             return "low_medium"
         return "low"
 
-    def _metric_block(self, prefix: str, actual: np.ndarray, predicted: np.ndarray) -> Dict[str, Any]:
+    def _empty_metric_block(self, prefix: str) -> Dict[str, Any]:
+        return {
+            f"{prefix}_metric_available": False,
+            f"{prefix}_mae": None,
+            f"{prefix}_rmse": None,
+            f"{prefix}_mae_percentage": None,
+            f"{prefix}_error_ratio": None,
+            f"{prefix}_wape": None,
+            f"{prefix}_error_percentage": None,
+            f"{prefix}_bias": None,
+            f"{prefix}_mean_error": None,
+            f"{prefix}_bias_percentage": None,
+            f"{prefix}_interval_coverage": None,
+            f"{prefix}_avg_interval_width": None,
+            f"{prefix}_relative_interval_width": None,
+            f"{prefix}_reliability": None,
+        }
+
+    def _metric_block(
+        self,
+        prefix: str,
+        actual: np.ndarray,
+        predicted: np.ndarray,
+        lower_bound: Optional[np.ndarray] = None,
+        upper_bound: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
         actual = np.asarray(actual, dtype=float)
         predicted = np.asarray(predicted, dtype=float)
         if len(actual) == 0 or len(predicted) == 0:
-            return {
-                f"{prefix}_metric_available": False,
-                f"{prefix}_mae": None,
-                f"{prefix}_rmse": None,
-                f"{prefix}_mae_percentage": None,
-                f"{prefix}_error_ratio": None,
-                f"{prefix}_reliability": None,
-            }
+            return self._empty_metric_block(prefix)
 
         mae = float(mean_absolute_error(actual, predicted))
         rmse = float(np.sqrt(mean_squared_error(actual, predicted)))
-        baseline = float(np.mean(np.abs(actual)))
-        if baseline <= 0:
-            error_ratio = None
-            mae_percentage = None
+
+        # WAPE/error_percentage: error absolut dibandingkan total actual.
+        # Untuk actual visitors yang non-negatif, ini stabil dan aman untuk daily yang mungkin bernilai 0.
+        total_actual = float(np.sum(np.abs(actual)))
+        if total_actual <= 0:
+            wape = None
+            error_percentage = None
         else:
-            error_ratio = mae / baseline
-            mae_percentage = error_ratio * 100.0
+            wape = float(np.sum(np.abs(actual - predicted)) / total_actual)
+            error_percentage = wape * 100.0
+
+        # Legacy alias: error_ratio/mae_percentage sekarang mengikuti WAPE agar tetap
+        # kompatibel dengan response lama tetapi maknanya lebih tepat secara agregat.
+        error_ratio = wape
+        mae_percentage = error_percentage
+
+        # Bias/mean_error: positif berarti model cenderung overestimate, negatif berarti underestimate.
+        mean_error = float(np.mean(predicted - actual))
+        avg_actual = float(np.mean(np.abs(actual)))
+        if avg_actual <= 0:
+            bias_percentage = None
+        else:
+            bias_percentage = mean_error / avg_actual * 100.0
+
+        interval_coverage = None
+        avg_interval_width = None
+        relative_interval_width = None
+        if lower_bound is not None and upper_bound is not None:
+            lower = np.asarray(lower_bound, dtype=float)
+            upper = np.asarray(upper_bound, dtype=float)
+            if len(lower) == len(actual) and len(upper) == len(actual) and len(lower) > 0:
+                interval_coverage = float(np.mean((actual >= lower) & (actual <= upper)))
+                widths = np.maximum(0.0, upper - lower)
+                avg_interval_width = float(np.mean(widths))
+                avg_predicted = float(np.mean(np.abs(predicted)))
+                if avg_predicted > 0:
+                    relative_interval_width = avg_interval_width / avg_predicted
 
         return {
             f"{prefix}_metric_available": True,
@@ -1369,6 +1417,14 @@ class ForecastService:
             f"{prefix}_rmse": self._round_metric(rmse),
             f"{prefix}_mae_percentage": self._round_metric(mae_percentage, 2),
             f"{prefix}_error_ratio": self._round_metric(error_ratio, 4),
+            f"{prefix}_wape": self._round_metric(wape, 4),
+            f"{prefix}_error_percentage": self._round_metric(error_percentage, 2),
+            f"{prefix}_bias": self._round_metric(mean_error),
+            f"{prefix}_mean_error": self._round_metric(mean_error),
+            f"{prefix}_bias_percentage": self._round_metric(bias_percentage, 2),
+            f"{prefix}_interval_coverage": self._round_metric(interval_coverage, 4),
+            f"{prefix}_avg_interval_width": self._round_metric(avg_interval_width),
+            f"{prefix}_relative_interval_width": self._round_metric(relative_interval_width, 4),
             f"{prefix}_reliability": self._classify_reliability(error_ratio),
         }
 
@@ -1381,26 +1437,46 @@ class ForecastService:
 
         if horizon == "weekly":
             df["period_start"] = df["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time.date())
-            grouped = df.groupby("period_start").agg(
-                actual=("actual", "sum"),
-                predicted=("predicted", "sum"),
-                days=("date", "count"),
-            ).reset_index()
+            agg_spec = {
+                "actual": ("actual", "sum"),
+                "predicted": ("predicted", "sum"),
+                "days": ("date", "count"),
+            }
+            if "lower_bound" in df.columns and "upper_bound" in df.columns:
+                agg_spec["lower_bound"] = ("lower_bound", "sum")
+                agg_spec["upper_bound"] = ("upper_bound", "sum")
+            grouped = df.groupby("period_start").agg(**agg_spec).reset_index()
             # Hanya nilai minggu penuh agar metric weekly tidak tercampur minggu parsial.
             grouped = grouped[grouped["days"] >= 7]
-            return self._metric_block("weekly", grouped["actual"].values, grouped["predicted"].values)
+            return self._metric_block(
+                "weekly",
+                grouped["actual"].values,
+                grouped["predicted"].values,
+                grouped["lower_bound"].values if "lower_bound" in grouped.columns else None,
+                grouped["upper_bound"].values if "upper_bound" in grouped.columns else None,
+            )
 
         if horizon == "monthly":
             df["period"] = df["date"].dt.to_period("M")
-            grouped = df.groupby("period").agg(
-                actual=("actual", "sum"),
-                predicted=("predicted", "sum"),
-                days=("date", "count"),
-            ).reset_index()
+            agg_spec = {
+                "actual": ("actual", "sum"),
+                "predicted": ("predicted", "sum"),
+                "days": ("date", "count"),
+            }
+            if "lower_bound" in df.columns and "upper_bound" in df.columns:
+                agg_spec["lower_bound"] = ("lower_bound", "sum")
+                agg_spec["upper_bound"] = ("upper_bound", "sum")
+            grouped = df.groupby("period").agg(**agg_spec).reset_index()
             grouped["expected_days"] = grouped["period"].apply(lambda p: int(p.days_in_month))
             # Hanya bulan penuh agar monthly MAE/RMSE benar-benar metric bulanan.
             grouped = grouped[grouped["days"] >= grouped["expected_days"]]
-            return self._metric_block("monthly", grouped["actual"].values, grouped["predicted"].values)
+            return self._metric_block(
+                "monthly",
+                grouped["actual"].values,
+                grouped["predicted"].values,
+                grouped["lower_bound"].values if "lower_bound" in grouped.columns else None,
+                grouped["upper_bound"].values if "upper_bound" in grouped.columns else None,
+            )
 
         return self._metric_block(horizon, np.array([]), np.array([]))
 
@@ -1415,7 +1491,7 @@ class ForecastService:
         yang diagregasi, bukan sekadar menyalin metric daily model.
         """
         if df_features.empty or len(df_features) < 40:
-            return pd.DataFrame(columns=["date", "actual", "predicted"])
+            return pd.DataFrame(columns=["date", "actual", "predicted", "lower_bound", "upper_bound"])
 
         X = df_features[feature_cols].values
         y = df_features["visitors"].values.astype(float)
@@ -1425,7 +1501,7 @@ class ForecastService:
         try:
             tscv = TimeSeriesSplit(n_splits=n_splits)
         except Exception:
-            return pd.DataFrame(columns=["date", "actual", "predicted"])
+            return pd.DataFrame(columns=["date", "actual", "predicted", "lower_bound", "upper_bound"])
 
         rows: List[Dict[str, Any]] = []
         for train_idx, val_idx in tscv.split(X):
@@ -1449,17 +1525,44 @@ class ForecastService:
                 n_jobs=-1,
             )
             fold_model.fit(X_train, y_train)
-            y_pred = np.maximum(fold_model.predict(X_val), 0)
 
-            for dt, actual, predicted in zip(dates.iloc[val_idx], y_val, y_pred):
+            tree_pred_matrix = np.array([tree.predict(X_val) for tree in fold_model.estimators_])
+            pred_means = np.mean(tree_pred_matrix, axis=0)
+            pred_stds = np.std(tree_pred_matrix, axis=0)
+            y_pred = np.maximum(pred_means, 0)
+
+            hist_std = float(np.std(y_train, ddof=1)) if len(y_train) > 1 else 5.0
+            if not np.isfinite(hist_std):
+                hist_std = 5.0
+            ci_multiplier = 1.28
+
+            open_flags = None
+            if "is_store_open" in df_features.columns:
+                open_flags = df_features["is_store_open"].iloc[val_idx].values
+
+            for idx, (dt, actual, predicted, pred_mean, pred_std) in enumerate(
+                zip(dates.iloc[val_idx], y_val, y_pred, pred_means, pred_stds)
+            ):
+                if open_flags is not None and float(open_flags[idx]) <= 0.0:
+                    predicted_value = 0.0
+                    lower = 0.0
+                    upper = 0.0
+                else:
+                    predicted_value = float(max(0.0, predicted))
+                    interval_radius = ci_multiplier * (float(pred_std) + hist_std * 0.3)
+                    lower = float(max(0.0, pred_mean - interval_radius))
+                    upper = float(max(predicted_value, pred_mean + interval_radius))
+
                 rows.append({
                     "date": dt,
                     "actual": float(actual),
-                    "predicted": float(predicted),
+                    "predicted": predicted_value,
+                    "lower_bound": lower,
+                    "upper_bound": upper,
                 })
 
         if not rows:
-            return pd.DataFrame(columns=["date", "actual", "predicted"])
+            return pd.DataFrame(columns=["date", "actual", "predicted", "lower_bound", "upper_bound"])
         return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
 
     def _calculate_horizon_metrics(
@@ -1484,7 +1587,7 @@ class ForecastService:
         oos_df = self._build_oos_daily_predictions(df_features, feature_cols)
 
         metrics: Dict[str, Any] = {
-            "metrics_version": "horizon-aware-oos-v1",
+            "metrics_version": "horizon-aware-oos-v2",
             "metric_source": "time_series_split_oos_daily_predictions",
             "metric_note": (
                 "weekly/monthly metrics are calculated by aggregating out-of-sample daily "
@@ -1496,7 +1599,13 @@ class ForecastService:
         }
 
         if not oos_df.empty:
-            metrics.update(self._metric_block("daily", oos_df["actual"].values, oos_df["predicted"].values))
+            metrics.update(self._metric_block(
+                "daily",
+                oos_df["actual"].values,
+                oos_df["predicted"].values,
+                oos_df["lower_bound"].values if "lower_bound" in oos_df.columns else None,
+                oos_df["upper_bound"].values if "upper_bound" in oos_df.columns else None,
+            ))
             metrics.update(self._aggregate_oos_metric(oos_df, "weekly"))
             metrics.update(self._aggregate_oos_metric(oos_df, "monthly"))
         else:
@@ -1516,6 +1625,14 @@ class ForecastService:
                 "daily_rmse": self._round_metric(rmse),
                 "daily_mae_percentage": self._round_metric(ratio * 100 if ratio is not None else None, 2),
                 "daily_error_ratio": self._round_metric(ratio, 4),
+                "daily_wape": self._round_metric(ratio, 4),
+                "daily_error_percentage": self._round_metric(ratio * 100 if ratio is not None else None, 2),
+                "daily_bias": None,
+                "daily_mean_error": None,
+                "daily_bias_percentage": None,
+                "daily_interval_coverage": None,
+                "daily_avg_interval_width": None,
+                "daily_relative_interval_width": None,
                 "daily_reliability": self._classify_reliability(ratio),
                 "metric_source": "trainer_cv_fallback",
             })
@@ -1540,7 +1657,7 @@ class ForecastService:
         raw_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
     ) -> ModelMetadata:
         metrics = dict(meta.get("horizon_metrics") or {})
-        if metrics.get("metrics_version") != "horizon-aware-oos-v1":
+        if metrics.get("metrics_version") != "horizon-aware-oos-v2":
             metrics = self._calculate_horizon_metrics(store_id=store_id, meta=meta, raw_data=raw_data)
             meta["horizon_metrics"] = metrics
             try:
@@ -1568,6 +1685,14 @@ class ForecastService:
             f"{horizon_label}_rmse": metrics.get(f"{horizon_label}_rmse"),
             f"{horizon_label}_mae_percentage": metrics.get(f"{horizon_label}_mae_percentage"),
             f"{horizon_label}_error_ratio": metrics.get(f"{horizon_label}_error_ratio"),
+            f"{horizon_label}_wape": metrics.get(f"{horizon_label}_wape"),
+            f"{horizon_label}_error_percentage": metrics.get(f"{horizon_label}_error_percentage"),
+            f"{horizon_label}_bias": metrics.get(f"{horizon_label}_bias"),
+            f"{horizon_label}_mean_error": metrics.get(f"{horizon_label}_mean_error"),
+            f"{horizon_label}_bias_percentage": metrics.get(f"{horizon_label}_bias_percentage"),
+            f"{horizon_label}_interval_coverage": metrics.get(f"{horizon_label}_interval_coverage"),
+            f"{horizon_label}_avg_interval_width": metrics.get(f"{horizon_label}_avg_interval_width"),
+            f"{horizon_label}_relative_interval_width": metrics.get(f"{horizon_label}_relative_interval_width"),
             f"{horizon_label}_reliability": metrics.get(f"{horizon_label}_reliability"),
         }
         selected_metrics = {k: v for k, v in selected_metrics.items() if v is not None}
@@ -1756,6 +1881,14 @@ class ForecastService:
 
         selected_error_ratio = metadata_metrics.get(f"{horizon_label}_error_ratio")
         selected_mae_percentage = metadata_metrics.get(f"{horizon_label}_mae_percentage")
+        selected_wape = metadata_metrics.get(f"{horizon_label}_wape")
+        selected_error_percentage = metadata_metrics.get(f"{horizon_label}_error_percentage")
+        selected_bias = metadata_metrics.get(f"{horizon_label}_bias")
+        selected_mean_error = metadata_metrics.get(f"{horizon_label}_mean_error")
+        selected_bias_percentage = metadata_metrics.get(f"{horizon_label}_bias_percentage")
+        selected_interval_coverage = metadata_metrics.get(f"{horizon_label}_interval_coverage")
+        selected_avg_interval_width = metadata_metrics.get(f"{horizon_label}_avg_interval_width")
+        selected_relative_interval_width = metadata_metrics.get(f"{horizon_label}_relative_interval_width")
         selected_reliability = metadata_metrics.get(f"{horizon_label}_reliability")
 
         metrics = {
@@ -1770,6 +1903,22 @@ class ForecastService:
             f"{horizon_label}_rmse": rmse,
             f"{horizon_label}_mae_percentage": selected_mae_percentage,
             f"{horizon_label}_error_ratio": selected_error_ratio,
+            "wape": selected_wape,
+            "error_percentage": selected_error_percentage,
+            "bias": selected_bias,
+            "mean_error": selected_mean_error,
+            "bias_percentage": selected_bias_percentage,
+            "interval_coverage": selected_interval_coverage,
+            "avg_interval_width": selected_avg_interval_width,
+            "relative_interval_width": selected_relative_interval_width,
+            f"{horizon_label}_wape": selected_wape,
+            f"{horizon_label}_error_percentage": selected_error_percentage,
+            f"{horizon_label}_bias": selected_bias,
+            f"{horizon_label}_mean_error": selected_mean_error,
+            f"{horizon_label}_bias_percentage": selected_bias_percentage,
+            f"{horizon_label}_interval_coverage": selected_interval_coverage,
+            f"{horizon_label}_avg_interval_width": selected_avg_interval_width,
+            f"{horizon_label}_relative_interval_width": selected_relative_interval_width,
             f"{horizon_label}_reliability": selected_reliability,
         }
         summary = {
