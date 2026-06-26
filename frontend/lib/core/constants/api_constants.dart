@@ -1,3 +1,3 @@
 class ApiConstants {
-  static const String baseUrl = 'http://localhost:8080/api';
+  static const String baseUrl = 'https://sora.rozaliya266.my.id/api';
 }
