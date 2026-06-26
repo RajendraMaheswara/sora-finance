@@ -1,852 +1,218 @@
-# Forecast Service Full Guide - Sora Finance
+# Forecast Service API Guide
 
-## Hal yang perlu diluruskan lebih dulu
+README ini berisi panduan lengkap route `forecast-service` untuk kebutuhan testing via Postman. Forecast-service ini dipakai sebagai service Python untuk menjalankan forecast penjualan, pengunjung, dan inventory. Pada tahap development, forecast **tidak perlu dibuat di frontend** dan cukup dijalankan dari Postman.
 
-`forecast-service` saat ini adalah service Python Flask yang menjalankan forecast untuk tiga domain: `visitors`, `sales`, dan `inventory`.
+## 1. Konsep Utama
 
-Guide ini memakai kontrak route standar yang sama untuk tiga modul utama:
+Forecast-service memakai 3 mode eksekusi API:
 
-```text
-POST /api/forecast/{module}/preview
-POST /api/forecast/{module}/save
-POST /api/forecast/{module}/run
-```
+| Mode | Fungsi | Simpan ke Database? | Cocok untuk |
+|---|---|---:|---|
+| `preview` | Menghitung forecast dan mengembalikan hasil di response | Tidak | Testing model via Postman |
+| `save` | Menyimpan hasil forecast dari preview ke backend/database | Ya | Setelah hasil preview dicek |
+| `run` | Menghitung forecast lalu langsung menyimpan ke backend/database | Ya | Scheduler / automation nanti |
 
-Dengan `{module}`:
-
-```text
-visitors
-sales
-inventory
-```
-
-Kontrak standar per modul:
+Alur yang disarankan saat development:
 
 ```text
-POST /api/forecast/visitors/preview
-POST /api/forecast/visitors/save
-POST /api/forecast/visitors/run
-
-POST /api/forecast/sales/preview
-POST /api/forecast/sales/save
-POST /api/forecast/sales/run
-
-POST /api/forecast/inventory/preview
-POST /api/forecast/inventory/save
-POST /api/forecast/inventory/run
+1. Jalankan /preview dulu.
+2. Cek hasil forecast di response Postman.
+3. Jika hasil sudah masuk akal, baru jalankan /save.
+4. Jika sudah stabil, /run atau /run-all bisa dipakai untuk otomatisasi/scheduler.
 ```
 
-Body standar untuk `visitors`, `sales`, dan `inventory` dibuat seragam:
+## 2. Modul Forecast
 
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30
-}
-```
+Forecast-service memiliki 3 modul utama:
 
-Untuk inventory, body standar perlu tambahan `ingredient_id` jika forecast hanya untuk satu bahan:
+| Module | Keterangan |
+|---|---|
+| `sales` | Forecast penjualan/omzet |
+| `visitors` | Forecast pengunjung/transaksi/customer count |
+| `inventory` | Forecast kebutuhan stok bahan |
 
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "weekly",
- "horizon_count": 1
-}
-```
-
-Jika `ingredient_id` tidak dikirim, inventory menjalankan forecast untuk semua ingredient aktif pada store tersebut.
-
-`app.py` menjalankan Flask dengan `port=5000` secara hardcoded. Nilai `SERVICE_PORT` di `.env.example` tidak dipakai oleh `app.py` saat ini.
-
-## 1. Fungsi forecast-service
-
-`forecast-service` adalah service terpisah dari backend Go. Tugasnya:
-
-1. Mengambil data historis dari backend/internal API Go atau fallback direct database pada beberapa modul.
-2. Melakukan preprocessing data historis.
-3. Melatih model machine learning.
-4. Menyimpan artifact model ke folder `models/`.
-5. Menghasilkan forecast harian, mingguan, atau bulanan.
-6. Menyimpan hasil forecast ke database/backend sesuai modul.
-
-Arsitektur sederhananya:
+Route final memakai pola:
 
 ```text
-Frontend/Postman
- |
- v
-forecast-service Flask :5000
- |
- | ambil data historis
- v
-backend Go :8080 / internal forecast API
- |
- v
-PostgreSQL/Supabase
-
-forecast-service juga menyimpan model lokal:
-forecast-service/models/{visitors,sales,inventory}/...
+/api/forecast/{module}/{action}
 ```
 
-## 2. Struktur folder utama
+Contoh:
 
 ```text
-forecast-service/
-├── app.py
-├── config.py
-├── requirements.txt
-├── test_db.py
-├── README.md
-├── .env.example
-├── models/
-│ ├── visitors/
-│ ├── sales/
-│ └── inventory/
-└── modules/
- ├── visitors/
- │ ├── forecaster.py
- │ ├── trainer.py
- │ └── README.md
- ├── sales/
- │ ├── forecaster.py
- │ └── trainer.py
- └── inventory/
- ├── forecaster.py
- └── trainer.py
+/api/forecast/sales/preview
+/api/forecast/visitors/run
+/api/forecast/inventory/retrain
 ```
 
-Penjelasan:
+## 3. Horizon Forecast
 
-- `app.py`: entry point Flask dan definisi semua route HTTP.
-- `config.py`: pembacaan `.env`, path model, URL backend, DB config, service key header.
-- `requirements.txt`: dependency Python.
-- `modules/visitors`: forecast pengunjung.
-- `modules/sales`: forecast omzet/penjualan.
-- `modules/inventory`: forecast penggunaan stok bahan.
-- `models/`: artifact model hasil training.
+Forecast menggunakan `horizon_label`:
 
-## 3. Dependency dan model yang dipakai
+| horizon_label | Arti | Output |
+|---|---|---|
+| `weekly` | Prediksi 7 hari ke depan | Daily rows, 7 data tanggal |
+| `monthly` | Prediksi 1 bulan ke depan | Daily rows, 28/29/30/31 data tanggal |
 
-Visitors memakai `RandomForestRegressor` dari scikit-learn.
-
-Sales memakai `RandomForestRegressor` dari scikit-learn.
-
-Inventory memakai `Prophet`.
-
-Dependency penting:
+Catatan penting:
 
 ```text
-flask
-pandas
-numpy
-scikit-learn
-joblib
-requests
-httpx
-psycopg2-binary
-APScheduler
-prophet
-cmdstanpy
-holidays
-python-dotenv
+weekly dan monthly tetap menghasilkan data harian, bukan 1 total angka.
 ```
 
-## 4. Environment `.env`
+Contoh weekly:
 
-Buat file:
+```text
+2026-06-22
+2026-06-23
+2026-06-24
+2026-06-25
+2026-06-26
+2026-06-27
+2026-06-28
+```
+
+## 4. Environment Configuration
+
+Buat atau sesuaikan file:
 
 ```text
 forecast-service/.env
 ```
 
-Contoh minimal untuk development lokal:
+Contoh development:
 
 ```env
-GOLANG_API_BASE_URL=http://localhost:8080/internal/forecast
-BACKEND_API_URL=http://localhost:8080/internal/forecast
-INTERNAL_SERVICE_KEY=isi_key_yang_sama_dengan_backend
+FORECAST_MODE=manual
+ENABLE_FORECAST_SCHEDULER=false
+FORECAST_RUN_AFTER_CLOSE_MINUTES=60
+FORECAST_24H_RUN_TIME=02:00
+
+BACKEND_API_URL=http://localhost:8080/api
+GOLANG_API_BASE_URL=http://localhost:8080/api
 BACKEND_REQUEST_TIMEOUT_SECONDS=30
 
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=postgres
-DB_NAME=postgres
-DB_SSLMODE=disable
-
-FORECAST_HORIZON_DAYS=30
-RETRAIN_INTERVAL_DAYS=7
-TRAINING_MAX_WORKERS=2
+# Optional. Bisa dikosongkan saat hanya memakai /preview.
+# Dibutuhkan jika memakai /save atau /run karena backend Go memakai JWT.
+BACKEND_AUTH_TOKEN=
 ```
 
-Contoh untuk Supabase:
+Jika ingin menyimpan hasil forecast ke database tanpa mengirim token di setiap body Postman, isi:
 
 ```env
-GOLANG_API_BASE_URL=http://localhost:8080/internal/forecast
-BACKEND_API_URL=http://localhost:8080/internal/forecast
-INTERNAL_SERVICE_KEY=isi_key_yang_sama_dengan_backend
-BACKEND_REQUEST_TIMEOUT_SECONDS=30
-
-DB_HOST=aws-xxx.pooler.supabase.com
-DB_PORT=5432
-DB_USER=postgres.xxx
-DB_PASSWORD=password_supabase
-DB_NAME=postgres
-DB_SSLMODE=require
-
-FORECAST_HORIZON_DAYS=30
-RETRAIN_INTERVAL_DAYS=7
-TRAINING_MAX_WORKERS=1
+BACKEND_AUTH_TOKEN=isi_token_admin_atau_owner_dari_backend_go
 ```
 
-Catatan penting:
+Untuk production/scheduler nanti:
 
-- `INTERNAL_SERVICE_KEY` dipakai oleh `Config.backend_headers()` sebagai header `X-Service-Key`.
-- Backend Go internal route juga memakai `INTERNAL_SERVICE_KEY`. Nilainya harus sama di backend dan forecast-service.
-- `SERVICE_PORT` di `.env.example` tidak dipakai oleh `app.py` saat ini karena port Flask hardcoded `5000`.
+```env
+FORECAST_MODE=scheduler
+ENABLE_FORECAST_SCHEDULER=true
+FORECAST_RUN_AFTER_CLOSE_MINUTES=60
+FORECAST_24H_RUN_TIME=02:00
+```
 
-## 5. Cara menjalankan lokal
+## 5. Menjalankan Forecast Service
 
-Masuk ke folder:
+Masuk ke folder `forecast-service`:
 
 ```powershell
-cd forecast-service
+cd "C:\Program Files (x64)\Kuliah\Semester 4\PT Sora Abadi\Implementation\produk berhasil\main_proto\sora-finance\forecast-service"
 ```
 
-Buat virtual environment:
+Install dependency jika belum:
 
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-```
-
-Untuk Linux:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Install dependency:
-
-```bash
 pip install -r requirements.txt
 ```
 
-Cek syntax:
+Cek syntax Python:
 
-```bash
-python -m py_compile app.py config.py modules/visitors/forecaster.py modules/visitors/trainer.py modules/sales/forecaster.py modules/sales/trainer.py modules/inventory/forecaster.py modules/inventory/trainer.py
+```powershell
+python -m py_compile app.py config.py modules/sales/forecaster.py modules/inventory/forecaster.py modules/inventory/trainer.py modules/visitors/forecaster.py modules/visitors/trainer.py
 ```
 
-Jalankan:
+Jalankan service:
 
-```bash
+```powershell
 python app.py
 ```
 
-Service berjalan di:
+Default service berjalan di:
 
 ```text
 http://localhost:5000
 ```
 
-Health check:
+## 6. Health Check
+
+### GET `/health`
+
+Untuk cek apakah service hidup.
 
 ```http
 GET http://localhost:5000/health
 ```
 
-Response health check saat backend reachable:
+Contoh response:
 
 ```json
 {
- "status": "healthy",
- "service": "sora-forecast-service",
- "version": "1.0.0",
- "golang_api_reachable": true,
- "loaded_models": ["..."],
- "timestamp": "..."
+  "status": "ok"
 }
 ```
 
-Jika backend tidak reachable, status menjadi `degraded`.
+## 7. Standar Request Body
 
-## 6. Integrasi dengan backend Go
-
-Backend Go menyediakan route internal khusus forecast-service:
-
-```text
-GET /internal/health
-GET /internal/forecast/stores
-GET /internal/forecast/orders
-GET /internal/forecast/visitors-daily-history
-GET /internal/forecast/order-items
-GET /internal/forecast/store-operational-hours
-GET /internal/forecast/food-ingredients
-GET /internal/forecast/ingredient-stock-histories
-GET /internal/forecast/sales-daily-summaries
-GET /internal/forecast/sales-monthly-summaries
-POST /internal/forecast/forecast-predictions
-POST /internal/forecast/forecast-runs
-POST /internal/forecast/forecast-results
-```
-
-Backend internal route diproteksi oleh `X-Service-Key`.
-
-Forecast-service mengirim header:
-
-```http
-X-Service-Key: <INTERNAL_SERVICE_KEY>
-```
-
-Jika muncul error 401/403 dari backend internal route, cek tiga hal:
-
-1. `INTERNAL_SERVICE_KEY` di backend Go sudah diisi.
-2. `INTERNAL_SERVICE_KEY` di forecast-service sama persis.
-3. `BACKEND_API_URL` dan `GOLANG_API_BASE_URL` mengarah ke `/internal/forecast`, bukan `/api`, bila memakai internal route.
-
-## 7. Tabel database yang dipakai
-
-Tabel utama untuk hasil forecast baru:
-
-```text
-public.forecast_runs
-public.forecast_results
-```
-
-`forecast_runs` menyimpan metadata satu kali run forecast:
-
-- `store_id`
-- `forecast_type`: `visitors`, `sales`, atau `inventory`
-- `horizon_label`: `daily`, `weekly`, `monthly`
-- `horizon_days`
-- `granularity`
-- `model_name`
-- `model_version`
-- `feature_version`
-- `train_start_date`
-- `train_end_date`
-- `predict_start_date`
-- `predict_end_date`
-- `metrics`
-- `summary`
-- `data_quality`
-- `status`
-- `is_latest`
-- `started_at`
-- `finished_at`
-
-`forecast_results` menyimpan baris prediksi per tanggal/periode:
-
-- `run_id`
-- `target_date`
-- `predicted_value`
-- `lower_bound`
-- `upper_bound`
-- `confidence_level`
-- `actual_value`
-- `item_id`
-- `item_type`
-
-## 8. Konsep `preview`, `save`, dan `run`
-
-Konsep standar:
-
-```text
-preview = hitung forecast, tidak simpan database
-save = simpan hasil forecast ke database
-run = hitung forecast lalu langsung simpan database
-```
-
-Kontrak route standar:
-
-```text
-POST /api/forecast/{module}/preview
-POST /api/forecast/{module}/save
-POST /api/forecast/{module}/run
-```
-
-### Penjelasan Route
-
-- `preview`: hitung forecast, tidak simpan.
-- `save`: hitung forecast dari body standar, lalu simpan.
-- `run`: hitung forecast dari body standar, lalu simpan.
-
-
-## 9. Horizon forecast
-
-Horizon standar:
-
-```text
-daily = horizon_count hari
-weekly = horizon_count minggu
-monthly = horizon_count bulan
-```
-
-Body standar untuk visitors, sales, dan inventory:
+### Body dasar
 
 ```json
 {
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30
+  "store_id": "uuid-store",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-Weekly:
+### Body inventory semua bahan
 
 ```json
 {
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "weekly",
- "horizon_count": 1
+  "store_id": "uuid-store",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-Monthly:
+### Body inventory satu bahan
 
 ```json
 {
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "monthly",
- "horizon_count": 1
+  "store_id": "uuid-store",
+  "ingredient_id": "uuid-ingredient",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-Optional `start_date`:
+Field:
 
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
+| Field | Wajib | Keterangan |
+|---|---:|---|
+| `store_id` | Ya | ID store yang akan diproses |
+| `horizon_label` | Ya untuk preview/run | `weekly` atau `monthly` |
+| `force` | Tidak | `true` untuk paksa proses ulang |
+| `modules` | Tidak | Khusus `preview-all`, `run-all`, `retrain-all` |
+| `ingredient_id` | Tidak | Khusus inventory; jika kosong berarti semua bahan |
+| `backend_token` | Tidak | Token JWT backend Go untuk `/save` dan `/run` |
 
-Inventory single ingredient memakai body standar plus `ingredient_id`:
+Catatan: gunakan `store_id`, bukan `m_store_id`, untuk kontrak API baru. `m_store_id` hanya nama kolom database.
 
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
+## 8. Preview Forecast
 
-Aturan `start_date`:
+Preview digunakan untuk testing karena **belum menyimpan hasil ke database**.
 
-- Daily: jika kosong, mulai dari tanggal server hari ini.
-- Weekly: jika kosong, mulai dari tanggal hari ini dan menghasilkan agregasi 7 hari berurutan.
-- Monthly: jika kosong, mulai dari bulan penuh berikutnya; jika `start_date` dikirim, bulan pertama mengikuti bulan `start_date`.
-
-Aturan inventory:
-
-- Jika `ingredient_id` dikirim, forecast hanya untuk ingredient tersebut.
-- Jika `ingredient_id` tidak dikirim, forecast untuk semua ingredient aktif pada store.
-- Untuk `daily`, hasil disimpan per tanggal.
-- Untuk `weekly`, hasil bisa disimpan pada tanggal awal periode minggu.
-- Untuk `monthly`, hasil bisa disimpan pada tanggal awal bulan.
-
-## 10. Modul Visitors
-
-### 10.1 Fungsi
-
-Visitors forecast memprediksi pengunjung fisik outlet.
-
-Target visitors tidak sekadar jumlah transaksi. Kode memakai rule `items_capped`:
-
-```text
-order online = 0 visitor fisik
-order fisik qty 0–3 item = 1 visitor
-order fisik qty 4–5 item = 2 visitors
-order fisik qty 6–8 item = 3 visitors
-order fisik qty >8 item = 4 visitors
-```
-
-Order yang valid:
-
-- `deleted_at` kosong.
-- `cancelled_at` kosong.
-- `m_order_status_id` bukan 3.
-- `m_order_status_id = 2` atau `m_order_payment_status_id = 200`.
-
-Order online dihitung 0 visitors fisik, karena dianggap bukan pengunjung outlet.
-
-### 10.2 Data source visitors
-
-Urutan data source:
-
-1. Forecast-service memanggil backend:
-
-```text
-GET {GOLANG_API_BASE_URL}/visitors-daily-history?store_id=...
-GET {GOLANG_API_BASE_URL}/store-operational-hours?store_id=...
-```
-
-2. Jika `visitors-daily-history` tidak tersedia, fallback ke:
-
-```text
-GET {GOLANG_API_BASE_URL}/orders?store_id=...
-GET {GOLANG_API_BASE_URL}/order-items?store_id=...
-```
-
-3. Jika `store-operational-hours` gagal, kode fallback default toko dianggap buka 24 jam.
-
-Fetch visitors historis sengaja diarahkan ke backend/internal API agar tidak menambah session Supabase pooler untuk retrain/preview.
-
-### 10.3 Feature engineering visitors
-
-Fitur utama:
-
-- `day_of_week`
-- `day_of_month`
-- `month`
-- `quarter`
-- `week_of_year`
-- `is_weekend`
-- `is_month_start`
-- `is_month_end`
-- `sin_dow`, `cos_dow`
-- `sin_month`, `cos_month`
-- lag visitors: `lag_1`, `lag_2`, `lag_3`, `lag_7`, `lag_14`, `lag_21`, `lag_28`
-- rolling window: `rolling_mean_7`, `rolling_std_7`, `rolling_max_7`, `rolling_min_7`, dan window 14/28
-- `expanding_mean`
-- fitur operasional: `is_store_open`, `open_duration_hours`, `is_24_hours`
-- lag/rolling channel: online/dine-in/takeaway ratio bila tersedia
-
-Data tanggal yang bolong dilengkapi menjadi full daily range, dan nilai numerik kosong diisi 0.
-
-Baris awal akan hilang setelah feature engineering karena butuh lag maksimal 28 hari. Karena itu minimal data historis adalah 30 hari, tetapi semakin panjang data semakin bagus.
-
-### 10.4 Training visitors
-
-Endpoint:
-
-```http
-POST http://localhost:5000/api/forecast/visitors/retrain
-```
-
-Body:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "force": true
-}
-```
-
-Response berisi:
-
-- `store_id`
-- `status`
-- `message`
-- `training_data_points`
-- `cv_mae`
-- `cv_rmse`
-- `trained_at`
-- `feature_importance`
-
-Training menghasilkan artifact:
-
-```text
-models/visitors/visitors_daily_model_store_<store_id>.joblib
-models/visitors/visitors_daily_scaler_store_<store_id>.joblib
-models/visitors/visitors_daily_features_store_<store_id>.json
-models/visitors/visitors_daily_metadata_store_<store_id>.json
-```
-
-Jika model belum ada atau feature version lama, forecast visitors akan auto-retrain.
-
-### 10.5 List model visitors
-
-```http
-GET http://localhost:5000/api/forecast/visitors/models
-```
-
-Response:
-
-```json
-{
- "status": "success",
- "trained_store_count": 2,
- "store_ids": ["..."]
-}
-```
-
-### 10.6 Preview visitors
-
-```http
-POST http://localhost:5000/api/forecast/visitors/preview
-```
-
-Daily 30 hari:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30
-}
-```
-
-Weekly 1 minggu:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "weekly",
- "horizon_count": 1
-}
-```
-
-Monthly 1 bulan:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "monthly",
- "horizon_count": 1
-}
-```
-
-Dengan start date:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "weekly",
- "horizon_count": 1,
- "start_date": "2026-07-02"
-}
-```
-
-Response preview visitors:
-
-```json
-{
- "status": "success",
- "message": "Forecast visitors berhasil dibuat tanpa disimpan.",
- "request": {
- "store_id": "...",
- "horizon_label": "daily",
- "horizon_count": 30
- },
- "data": {
- "store_id": "...",
- "generated_at": "...",
- "forecast_horizon_days": 30,
- "forecasts": [
- {
- "date": "2026-07-02",
- "predicted_visitors": 123,
- "predicted_transactions": 123,
- "lower_bound": 100,
- "upper_bound": 150,
- "day_of_week": "Kamis",
- "is_weekend": false
- }
- ],
- "model_metadata": {
- "trained_at": "...",
- "training_data_points": 154,
- "feature_importance": {},
- "cv_mae": 10.0,
- "cv_rmse": 12.0,
- "horizon_method": "direct_daily_random_forest_model",
- "metric_horizon": "daily",
- "metrics": {}
- },
- "status": "success",
- "message": "..."
- }
-}
-```
-
-### 10.7 Save visitors
-
-```http
-POST http://localhost:5000/api/forecast/visitors/save
-```
-
-Body sama seperti preview:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
-
-Save visitors akan:
-
-1. Generate forecast.
-2. Set `is_latest=false` untuk run visitors lama dengan store dan horizon yang sama.
-3. Insert satu row ke `forecast_runs`.
-4. Insert banyak row ke `forecast_results`.
-
-Response:
-
-```json
-{
- "status": "success",
- "message": "Forecast visitors berhasil disimpan ke database.",
- "request": {...},
- "save_result": {
- "run_id": 123,
- "saved_results": 30,
- "horizon_label": "daily",
- "horizon_days": 30,
- "metrics": {...},
- "summary": {...}
- },
- "data": {...}
-}
-```
-
-### 10.8 Run visitors
-
-```http
-POST http://localhost:5000/api/forecast/visitors/run
-```
-
-Body sama seperti preview/save.
-
-Implementasi visitors `/run` saat ini sama-sama generate forecast lalu save ke database.
-
-### 10.9 Legacy visitors endpoints
-
-Masih tersedia:
-
-```http
-POST /api/forecast/visitors/daily
-POST /api/forecast/visitors/predict-weekly
-POST /api/forecast/visitors/predict-monthly
-```
-
-Daily body:
-
-```json
-{
- "store_id": "...",
- "forecast_days": 30,
- "start_date": "2026-07-02"
-}
-```
-
-Weekly body:
-
-```json
-{
- "store_id": "...",
- "forecast_weeks": 4,
- "start_date": "2026-07-02"
-}
-```
-
-Monthly body:
-
-```json
-{
- "store_id": "...",
- "forecast_months": 3,
- "start_date": "2026-07-01"
-}
-```
-
-Rekomendasi: pakai route standar `preview/save/run`, bukan legacy, untuk frontend/scheduler baru.
-
-### 10.10 Metrics visitors
-
-Visitors menghitung horizon-aware metrics berbasis out-of-sample daily predictions dari `TimeSeriesSplit`.
-
-Daily metrics:
-
-- `daily_mae`
-- `daily_rmse`
-- `daily_mae_percentage`
-- `daily_error_ratio`
-- `daily_reliability`
-
-Weekly metrics:
-
-- dihitung dari agregasi prediksi daily OOS ke minggu penuh.
-- minggu parsial tidak dihitung.
-
-Monthly metrics:
-
-- dihitung dari agregasi prediksi daily OOS ke bulan penuh.
-- bulan parsial tidak dihitung.
-
-Reliability rule:
-
-```text
-error_ratio <= 0.10 = high
-error_ratio <= 0.20 = medium
-error_ratio <= 0.30 = low_medium
-> 0.30 = low
-```
-
-## 11. Modul Sales
-
-### 11.1 Fungsi
-
-Sales forecast memprediksi omzet/penjualan.
-
-Model: Random Forest.
-
-Target: `omzet`.
-
-Data source:
-
-1. Backend Go:
- - `sales-daily-summaries`
- - `sales-monthly-summaries`
- - `orders`
-2. Jika backend tidak mengembalikan data, ada fallback direct DB pada sales.
-
-### 11.2 Retrain sales
-
-```http
-POST http://localhost:5000/api/forecast/sales/retrain
-```
-
-Body:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "force": true
-}
-```
-
-Minimal data sales daily untuk retrain adalah 30 hari.
-
-Artifact sales:
-
-```text
-models/sales/sales_daily_model_store_<store_id>.joblib
-models/sales/sales_daily_scaler_store_<store_id>.joblib
-models/sales/sales_daily_features_store_<store_id>.json
-models/sales/sales_daily_metadata_store_<store_id>.json
-```
-
-Untuk weekly/monthly, artifact mengikuti granularity:
-
-```text
-models/sales/sales_weekly_model_store_<store_id>.joblib
-models/sales/sales_monthly_model_store_<store_id>.joblib
-```
-
-### 11.3 Preview sales
+### POST `/api/forecast/sales/preview`
 
 ```http
 POST http://localhost:5000/api/forecast/sales/preview
@@ -856,66 +222,256 @@ Body:
 
 ```json
 {
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
+  "store_id": "7acfd0aa-254e-4c71-9f86-fc2b5213d7f5",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-`horizon_label` menerima:
-
-```text
-daily
-weekly
-monthly
-```
-
-### 11.4 Save sales
+### POST `/api/forecast/visitors/preview`
 
 ```http
-POST http://localhost:5000/api/forecast/sales/save
+POST http://localhost:5000/api/forecast/visitors/preview
 ```
-
-Sales `/save` tidak menerima body standar langsung. Body wajib berisi `forecast`.
-
-Alur:
-
-1. Jalankan `/api/forecast/sales/preview`.
-2. Ambil response forecast.
-3. Kirim ke `/api/forecast/sales/save`.
 
 Body:
 
 ```json
 {
- "backend_token": "optional_jwt_jika_tidak_pakai_internal_service_key",
- "forecast": {
- "store_id": "...",
- "generated_at": "...",
- "forecast_horizon_days": 30,
- "forecasts": [],
- "model_metadata": {},
- "request_meta": {
- "module": "sales",
- "horizon_label": "daily",
- "horizon_count": 30,
- "mode": "preview",
- "saved_to_database": false
- }
- }
+  "store_id": "7acfd0aa-254e-4c71-9f86-fc2b5213d7f5",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-Save sales mencoba menyimpan ke:
+### POST `/api/forecast/inventory/preview`
 
-1. `forecast-predictions`
-2. `forecast-runs`
-3. `forecast-results`
+Untuk semua bahan:
 
-Jika `forecast_predictions` sudah dihapus tetapi endpoint backend masih dipanggil, save sales berisiko gagal pada step pertama.
+```http
+POST http://localhost:5000/api/forecast/inventory/preview
+```
 
-### 11.5 Run sales
+Body:
+
+```json
+{
+  "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+  "horizon_label": "weekly",
+  "force": true
+}
+```
+
+Untuk satu bahan:
+
+```json
+{
+  "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+  "ingredient_id": "b98b5042-30b5-4dc7-80ce-7dbb4797c4c7",
+  "horizon_label": "weekly",
+  "force": true
+}
+```
+
+### POST `/api/forecast/preview-all`
+
+Menjalankan preview untuk beberapa/semua modul dalam sekali request.
+
+```http
+POST http://localhost:5000/api/forecast/preview-all
+```
+
+Body semua modul:
+
+```json
+{
+  "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+  "horizon_label": "weekly",
+  "force": true
+}
+```
+
+Body modul tertentu:
+
+```json
+{
+  "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+  "horizon_label": "weekly",
+  "modules": ["sales", "visitors"],
+  "force": true
+}
+```
+
+Jika `modules` tidak dikirim, default menjalankan:
+
+```json
+["sales", "visitors", "inventory"]
+```
+
+Contoh response preview:
+
+```json
+{
+  "success": true,
+  "message": "Forecast preview generated. Belum tersimpan ke database.",
+  "data": {
+    "store_id": "uuid-store",
+    "module": "sales",
+    "horizon_label": "weekly",
+    "horizon_days": 7,
+    "granularity": "daily",
+    "predict_start_date": "2026-06-22",
+    "predict_end_date": "2026-06-28",
+    "saved_to_database": false,
+    "results": [
+      {
+        "target_date": "2026-06-22",
+        "predicted_value": 1800000,
+        "lower_bound": 1500000,
+        "upper_bound": 2100000
+      }
+    ]
+  }
+}
+```
+
+## 9. Save Forecast ke Database
+
+Save digunakan untuk menyimpan hasil preview ke backend/database.
+
+### Catatan token backend
+
+Karena backend Go memakai JWT, request save perlu token. Token bisa dikirim dengan salah satu cara:
+
+Cara 1, kirim di body:
+
+```json
+{
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER"
+}
+```
+
+Cara 2, isi di `.env` forecast-service:
+
+```env
+BACKEND_AUTH_TOKEN=ISI_TOKEN_ADMIN_ATAU_OWNER
+```
+
+### POST `/api/forecast/sales/save`
+
+```http
+POST http://localhost:5000/api/forecast/sales/save
+```
+
+Body:
+
+```json
+{
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "forecast": {
+    "store_id": "uuid-store",
+    "module": "sales",
+    "horizon_label": "weekly",
+    "horizon_days": 7,
+    "granularity": "daily",
+    "predict_start_date": "2026-06-22",
+    "predict_end_date": "2026-06-28",
+    "results": [
+      {
+        "target_date": "2026-06-22",
+        "predicted_value": 1800000,
+        "lower_bound": 1500000,
+        "upper_bound": 2100000
+      }
+    ]
+  }
+}
+```
+
+### POST `/api/forecast/visitors/save`
+
+```http
+POST http://localhost:5000/api/forecast/visitors/save
+```
+
+Body sama seperti sales, tetapi `module` bernilai `visitors`.
+
+### POST `/api/forecast/inventory/save`
+
+```http
+POST http://localhost:5000/api/forecast/inventory/save
+```
+
+Untuk inventory, setiap result boleh memiliki `item_id` dan `item_type`:
+
+```json
+{
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "forecast": {
+    "store_id": "uuid-store",
+    "module": "inventory",
+    "horizon_label": "weekly",
+    "horizon_days": 7,
+    "granularity": "daily",
+    "predict_start_date": "2026-06-22",
+    "predict_end_date": "2026-06-28",
+    "results": [
+      {
+        "target_date": "2026-06-22",
+        "item_id": "uuid-ingredient",
+        "item_type": "ingredient",
+        "predicted_value": 12.5,
+        "lower_bound": 10.0,
+        "upper_bound": 15.0
+      }
+    ]
+  }
+}
+```
+
+### POST `/api/forecast/save-all`
+
+Untuk menyimpan hasil dari `preview-all`.
+
+```http
+POST http://localhost:5000/api/forecast/save-all
+```
+
+Body:
+
+```json
+{
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "forecasts": {
+    "sales": {
+      "store_id": "uuid-store",
+      "module": "sales",
+      "horizon_label": "weekly",
+      "horizon_days": 7,
+      "granularity": "daily",
+      "predict_start_date": "2026-06-22",
+      "predict_end_date": "2026-06-28",
+      "results": []
+    },
+    "visitors": {
+      "store_id": "uuid-store",
+      "module": "visitors",
+      "horizon_label": "weekly",
+      "horizon_days": 7,
+      "granularity": "daily",
+      "predict_start_date": "2026-06-22",
+      "predict_end_date": "2026-06-28",
+      "results": []
+    }
+  }
+}
+```
+
+## 10. Run Forecast dan Langsung Save
+
+Gunakan route ini hanya jika hasil forecast sudah dipercaya, karena hasilnya langsung dikirim ke backend/database.
+
+### POST `/api/forecast/sales/run`
 
 ```http
 POST http://localhost:5000/api/forecast/sales/run
@@ -925,550 +481,481 @@ Body:
 
 ```json
 {
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02",
- "backend_token": "optional"
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "store_id": "uuid-store",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-Sales `/run` menghitung forecast lalu menyimpan ke backend.
-
-## 12. Modul Inventory
-
-### 12.1 Fungsi
-
-Inventory forecast memprediksi penggunaan stok bahan per ingredient.
-
-Model: Prophet.
-
-Target: `reduced` dari `ingredient-stock-histories`, diaggregasi harian per `store_id` dan `ingredient_id`.
-
-Inventory memakai fitur:
-
-- weekend
-- hari libur nasional Indonesia
-- placeholder `is_store_closed=0`
-
-### 12.2 Kontrak route standar inventory
-
-Route inventory distandarkan menjadi:
+### POST `/api/forecast/visitors/run`
 
 ```http
-POST http://localhost:5000/api/forecast/inventory/preview
-POST http://localhost:5000/api/forecast/inventory/save
+POST http://localhost:5000/api/forecast/visitors/run
+```
+
+Body:
+
+```json
+{
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "store_id": "uuid-store",
+  "horizon_label": "weekly",
+  "force": true
+}
+```
+
+### POST `/api/forecast/inventory/run`
+
+```http
 POST http://localhost:5000/api/forecast/inventory/run
 ```
 
-Makna route:
-
-```text
-preview = generate forecast inventory tanpa simpan database
-save = generate forecast inventory lalu simpan database
-run = generate forecast inventory lalu simpan database
-```
-
-Agar konsisten dengan visitors, `save` dan `run` inventory memakai body standar. Keduanya menghitung forecast dari request body, bukan menerima payload forecast hasil preview.
-
-### 12.3 Body standar inventory
-
-Daily 30 hari untuk satu ingredient:
+Body semua bahan:
 
 ```json
 {
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "daily",
- "horizon_count": 30
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "store_id": "uuid-store",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-Weekly 1 minggu untuk satu ingredient:
+Body satu bahan:
 
 ```json
 {
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "weekly",
- "horizon_count": 1
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "store_id": "uuid-store",
+  "ingredient_id": "uuid-ingredient",
+  "horizon_label": "weekly",
+  "force": true
 }
 ```
 
-Monthly 1 bulan untuk satu ingredient:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "monthly",
- "horizon_count": 1
-}
-```
-
-Dengan `start_date`:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "weekly",
- "horizon_count": 1,
- "start_date": "2026-07-02"
-}
-```
-
-Forecast semua ingredient pada satu store:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
-
-Aturan field:
-
-- `store_id` wajib.
-- `ingredient_id` optional.
-- Jika `ingredient_id` dikirim, forecast hanya untuk satu bahan.
-- Jika `ingredient_id` tidak dikirim, forecast untuk semua bahan aktif pada store.
-- `horizon_label` wajib dan hanya boleh `daily`, `weekly`, atau `monthly`.
-- `horizon_count` wajib dan harus integer positif.
-- `start_date` optional dengan format `YYYY-MM-DD`.
-
-### 12.4 Training inventory semua pasangan store/ingredient
-
-Training tetap dapat memakai route lama karena training bukan bagian dari kontrak `preview/save/run`:
+### POST `/api/forecast/run-all`
 
 ```http
-POST http://localhost:5000/api/inventory/train/start
+POST http://localhost:5000/api/forecast/run-all
 ```
 
-Response:
+Body:
 
 ```json
 {
- "task_id": "uuid",
- "message": "Training dimulai. Pantau progress di /api/inventory/train/status/<task_id>"
+  "backend_token": "ISI_TOKEN_ADMIN_ATAU_OWNER",
+  "store_id": "uuid-store",
+  "horizon_label": "weekly",
+  "modules": ["sales", "visitors", "inventory"],
+  "force": true
 }
 ```
 
-Cek status:
+## 11. Retrain Model
+
+Retrain digunakan untuk melatih ulang model. Retrain tidak sama dengan run forecast.
+
+```text
+run forecast = membuat prediksi memakai model yang sudah ada
+retrain      = melatih ulang model dari data historis
+```
+
+### POST `/api/forecast/sales/retrain`
+
+```http
+POST http://localhost:5000/api/forecast/sales/retrain
+```
+
+Body:
+
+```json
+{
+  "store_id": "uuid-store",
+  "force": true
+}
+```
+
+Catatan: model sales saat ini masih dicatat sebagai model global; `store_id` dipakai untuk kontrak API dan akan bisa dipakai untuk pengembangan store-specific model.
+
+### POST `/api/forecast/visitors/retrain`
+
+```http
+POST http://localhost:5000/api/forecast/visitors/retrain
+```
+
+Body:
+
+```json
+{
+  "store_id": "uuid-store",
+  "force": true
+}
+```
+
+### POST `/api/forecast/inventory/retrain`
+
+```http
+POST http://localhost:5000/api/forecast/inventory/retrain
+```
+
+Body semua bahan:
+
+```json
+{
+  "store_id": "uuid-store",
+  "force": true
+}
+```
+
+Body satu bahan:
+
+```json
+{
+  "store_id": "uuid-store",
+  "ingredient_id": "uuid-ingredient",
+  "force": true
+}
+```
+
+### POST `/api/forecast/retrain-all`
+
+```http
+POST http://localhost:5000/api/forecast/retrain-all
+```
+
+Body semua modul:
+
+```json
+{
+  "store_id": "uuid-store",
+  "force": true
+}
+```
+
+Body modul tertentu:
+
+```json
+{
+  "store_id": "uuid-store",
+  "modules": ["sales", "visitors", "inventory"],
+  "force": true
+}
+```
+
+## 12. Training Task Status
+
+Beberapa training berjalan background dan mengembalikan `task_id`. Gunakan endpoint status berikut.
+
+### GET `/api/forecast/train/status/<task_id>`
+
+Untuk cek training sales legacy/background.
+
+```http
+GET http://localhost:5000/api/forecast/train/status/<task_id>
+```
+
+### GET `/api/inventory/train/status/<task_id>`
+
+Untuk cek training inventory.
 
 ```http
 GET http://localhost:5000/api/inventory/train/status/<task_id>
 ```
 
-Response status:
+## 13. Legacy Routes
 
-```json
-{
- "status": "RUNNING",
- "total": 10,
- "processed": 3,
- "current_pair": "store_id / ingredient_id",
- "message": ""
-}
-```
+Route berikut masih disediakan untuk kompatibilitas testing lama. Untuk pengembangan baru, gunakan route standar di atas.
 
-Route training lama:
-
-```http
-POST /api/inventory/train
-```
-
-`training_tasks` disimpan di memory Python. Jika service restart, status task hilang.
-
-### 12.5 Preview inventory
-
-```http
-POST http://localhost:5000/api/forecast/inventory/preview
-```
-
-Body satu ingredient:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
-
-Response preview inventory:
-
-```json
-{
- "status": "success",
- "message": "Forecast inventory berhasil dibuat tanpa disimpan.",
- "request": {
- "store_id": "...",
- "ingredient_id": "...",
- "horizon_label": "daily",
- "horizon_count": 30
- },
- "data": {
- "store_id": "...",
- "ingredient_id": "...",
- "generated_at": "...",
- "forecast_horizon_days": 30,
- "forecasts": [
- {
- "date": "2026-07-02",
- "predicted_usage": 12.5,
- "lower_bound": 9.5,
- "upper_bound": 15.5,
- "unit": "kg"
- }
- ],
- "model_metadata": {
- "model_name": "prophet",
- "metrics": {}
- }
- }
-}
-```
-
-Response preview semua ingredient:
-
-```json
-{
- "status": "success",
- "message": "Forecast inventory semua ingredient berhasil dibuat tanpa disimpan.",
- "request": {
- "store_id": "...",
- "horizon_label": "daily",
- "horizon_count": 30
- },
- "data": {
- "store_id": "...",
- "ingredient_count": 10,
- "results": [
- {
- "ingredient_id": "...",
- "ingredient_name": "Tepung",
- "forecasts": []
- }
- ]
- }
-}
-```
-
-### 12.7 Save inventory
-
-```http
-POST http://localhost:5000/api/forecast/inventory/save
-```
-
-Body sama seperti preview:
-
-```json
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
-
-Save inventory sebaiknya:
-
-1. Generate forecast inventory.
-2. Set `is_latest=false` untuk run inventory lama dengan store, ingredient, dan horizon yang sama.
-3. Insert satu row ke `forecast_runs`.
-4. Insert banyak row ke `forecast_results`.
-5. Isi `forecast_results.item_id = ingredient_id`.
-6. Isi `forecast_results.item_type = 'ingredient'`.
-
-Response save inventory yang disarankan:
-
-```json
-{
- "status": "success",
- "message": "Forecast inventory berhasil disimpan ke database.",
- "request": {
- "store_id": "...",
- "ingredient_id": "...",
- "horizon_label": "daily",
- "horizon_count": 30
- },
- "save_result": {
- "run_id": 123,
- "saved_results": 30,
- "horizon_label": "daily",
- "horizon_days": 30
- },
- "data": {}
-}
-```
-
-### 12.8 Run inventory
-
-```http
-POST http://localhost:5000/api/forecast/inventory/run
-```
-
-Body sama seperti preview/save.
-
-Secara kontrak, `/run` inventory adalah shortcut untuk generate forecast dan langsung simpan. Untuk konsistensi dengan visitors, response `/run` boleh sama dengan `/save`, tetapi message sebaiknya berbeda.
-
-### 12.9 Artifact inventory
+### Visitors legacy
 
 ```text
-models/inventory/model_store<store_id>_ingr<ingredient_id>.pkl
-models/inventory/metrics_model_store<store_id>_ingr<ingredient_id>.json
+GET  /api/forecast/visitors/models
+POST /api/forecast/visitors/retrain
+POST /api/forecast/visitors/daily
+POST /api/forecast/visitors/weekly
+POST /api/forecast/visitors/monthly
+POST /api/forecast/visitors/predict-weekly
+POST /api/forecast/visitors/predict-monthly
 ```
 
-### 12.10 Model belum ada
+Contoh visitors weekly legacy:
 
-Jika model belum ada:
+```http
+POST http://localhost:5000/api/forecast/visitors/weekly
+```
+
+Body:
 
 ```json
 {
- "status": "error",
- "message": "Model inventory belum di-training untuk store_id dan ingredient_id ini."
+  "store_id": "uuid-store"
 }
 ```
 
-Alternatif yang lebih otomatis:
+### Sales legacy
 
-- Jika model belum ada dan data historis cukup, service auto-train model untuk ingredient tersebut.
-- Jika data historis tidak cukup, response error harus menjelaskan jumlah data yang tersedia dan minimal data yang dibutuhkan.
-
-## 13. Scheduler
-
-Di `app.py`, scheduler dibuat saat service start.
-
-Job yang ada:
-
-1. Inventory training tiap Minggu pukul 02:00.
-2. Visitors retrain interval berdasarkan `Config.VISITORS_RETRAIN_INTERVAL_DAYS`, default 7 hari.
-
-Scheduler aktif tanpa membaca `ENABLE_FORECAST_SCHEDULER`.
-
-Risiko:
-
-- Pada server kecil, scheduler bisa memulai training berat tanpa sengaja.
-- Inventory training semua ingredient bisa berat karena Prophet.
-- Jika backend/database belum siap, scheduler akan menghasilkan error log.
-
-Rekomendasi production:
-
-- Tambahkan guard env sebelum `scheduler.start()`.
-- Untuk server 2 GB, matikan inventory auto-training dulu.
-- Jalankan retrain visitors/sales secara terjadwal dari systemd timer/cron jika ingin lebih terkontrol.
-
-Contoh konsep patch:
-
-```python
-if os.getenv("ENABLE_FORECAST_SCHEDULER", "false").lower() == "true":
- scheduler.start()
- atexit.register(lambda: scheduler.shutdown())
+```text
+POST /api/forecast/penjualan-harian
+POST /api/forecast/penjualan-mingguan
+POST /api/forecast/penjualan-bulanan
+POST /api/forecast/sales
+POST /api/forecast/
+POST /api/forecast/train/status/<task_id>
 ```
 
+Legacy body lama masih bisa memakai `m_store_id`, tetapi standar baru tetap `store_id`.
 
+### Inventory legacy
 
-## 14. Urutan testing Postman yang disarankan
+```text
+POST /api/inventory/forecast
+POST /api/inventory/train/start
+POST /api/inventory/train/status/<task_id>
+POST /api/inventory/train
+POST /api/inventory/save-all-forecasts
+POST /api/inventory/save-all-existing
+```
 
-### 14.1 Cek backend internal dulu
+Contoh legacy inventory:
 
 ```http
-GET http://localhost:8080/internal/health
-X-Service-Key: <key>
+POST http://localhost:5000/api/inventory/forecast
 ```
 
-### 14.2 Cek forecast-service
+Body:
+
+```json
+{
+  "store_id": "uuid-store",
+  "ingredient_id": "uuid-ingredient",
+  "periods": 4,
+  "freq": "W"
+}
+```
+
+Catatan: route legacy inventory masih memakai konsep `periods` dan `freq`. Untuk standar baru, gunakan `horizon_label`.
+
+## 14. Rekomendasi Urutan Testing di Postman
+
+### A. Cek service
 
 ```http
 GET http://localhost:5000/health
 ```
 
-### 14.3 Visitors retrain
+### B. Retrain model jika belum ada model
+
+Visitors:
 
 ```http
 POST http://localhost:5000/api/forecast/visitors/retrain
-Content-Type: application/json
-
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "force": true
-}
 ```
 
-### 14.4 Visitors preview
+Sales:
 
 ```http
+POST http://localhost:5000/api/forecast/sales/retrain
+```
+
+Inventory:
+
+```http
+POST http://localhost:5000/api/forecast/inventory/retrain
+```
+
+### C. Previtrain/startew forecast
+
+```http
+POST http://localhost:5000/api/forecast/sales/preview
 POST http://localhost:5000/api/forecast/visitors/preview
-Content-Type: application/json
-
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
-
-### 14.5 Visitors save
-
-```http
-POST http://localhost:5000/api/forecast/visitors/save
-Content-Type: application/json
-
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
-```
-
-### 14.6 Inventory preview
-
-```http
 POST http://localhost:5000/api/forecast/inventory/preview
-Content-Type: application/json
-
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
 ```
 
-### 14.7 Inventory save
+### D. Save jika hasil sudah benar
 
 ```http
-POST http://localhost:5000/api/forecast/inventory/save
-Content-Type: application/json
-
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "ingredient_id": "uuid-ingredient",
- "horizon_label": "daily",
- "horizon_count": 30,
- "start_date": "2026-07-02"
-}
+POST http://localhost:5000/api/forecast/sales/save
 ```
 
-### 14.8 Inventory run semua ingredient
+### E. Run langsung hanya jika sudah yakin
 
 ```http
-POST http://localhost:5000/api/forecast/inventory/run
-Content-Type: application/json
-
-{
- "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
- "horizon_label": "weekly",
- "horizon_count": 1,
- "start_date": "2026-07-02"
-}
+POST http://localhost:5000/api/forecast/run-all
 ```
 
-### 14.9 Cek database
+## 15. Scheduler Plan
 
-```sql
-SELECT *
-FROM forecast_runs
-WHERE store_id = 'b4e2f559-9615-4263-84fe-9ee97780748f'
- AND forecast_type = 'visitors'
-ORDER BY created_at DESC;
+Scheduler belum wajib dipakai saat development. Untuk testing Postman, gunakan:
+
+```env
+FORECAST_MODE=manual
+ENABLE_FORECAST_SCHEDULER=false
 ```
 
-```sql
-SELECT r.*
-FROM forecast_results r
-JOIN forecast_runs fr ON fr.id = r.run_id
-WHERE fr.store_id = 'b4e2f559-9615-4263-84fe-9ee97780748f'
- AND fr.forecast_type = 'visitors'
-ORDER BY r.target_date ASC;
+Nanti saat automation sudah siap:
+
+```env
+FORECAST_MODE=scheduler
+ENABLE_FORECAST_SCHEDULER=true
+FORECAST_RUN_AFTER_CLOSE_MINUTES=60
+FORECAST_24H_RUN_TIME=02:00
 ```
 
-Cek inventory:
+Aturan scheduler yang direncanakan:
 
-```sql
-SELECT *
-FROM forecast_runs
-WHERE store_id = 'b4e2f559-9615-4263-84fe-9ee97780748f'
- AND forecast_type = 'inventory'
-ORDER BY created_at DESC;
+```text
+1. Sistem cek jam tutup masing-masing store.
+2. Forecast jalan setelah toko tutup + buffer 1 jam.
+3. Jika toko 24 jam, forecast jalan jam 02:00.
+4. Akhir minggu menjalankan weekly forecast untuk 7 hari ke depan.
+5. Akhir bulan menjalankan monthly forecast untuk 1 bulan ke depan.
+6. Scheduler memakai /api/forecast/run-all agar hasil langsung tersimpan.
 ```
 
-```sql
-SELECT r.*
-FROM forecast_results r
-JOIN forecast_runs fr ON fr.id = r.run_id
-WHERE fr.store_id = 'b4e2f559-9615-4263-84fe-9ee97780748f'
- AND fr.forecast_type = 'inventory'
- AND r.item_type = 'ingredient'
-ORDER BY r.target_date ASC;
-```
+## 16. Troubleshooting
 
-## 15. Troubleshooting
-
-### 15.1 `Tidak ada data historis untuk store ...`
-
-Penyebab umum:
-
-- `store_id` salah.
-- Backend internal route tidak mengembalikan data.
-- Header `X-Service-Key` salah sehingga request internal gagal.
-- Tidak ada order valid sesuai rule visitors.
-- Data historis kurang dari 30 hari.
-
-Cek:
-
-```http
-GET http://localhost:8080/internal/forecast/visitors-daily-history?store_id=<store_id>
-X-Service-Key: <key>
-```
-
-### 15.2 `Model untuk store ... tidak ditemukan`
+### A. Forecast preview error karena model tidak ditemukan
 
 Solusi:
 
-```http
-POST /api/forecast/visitors/retrain
+```text
+Jalankan retrain dulu untuk modul tersebut.
 ```
 
-Atau biarkan auto-retrain saat forecast, selama data historis cukup.
+Contoh:
 
-### 15.3 `Data historis terlalu sedikit`
+```http
+POST http://localhost:5000/api/forecast/visitors/retrain
+```
 
-Visitors dan sales butuh minimal 30 hari historis untuk daily model.
+### B. Save/run gagal 401 dari backend
 
-Karena feature engineering visitors memakai `lag_28`, data 30 hari hanya menghasilkan sedikit training point. Lebih baik punya 90+ hari data.
+Penyebab:
 
-### 15.4 Health `degraded`
+```text
+Token backend tidak dikirim atau sudah expired.
+```
 
-Artinya forecast-service hidup, tetapi backend Go tidak reachable.
+Solusi:
 
-Cek:
+```text
+Login ulang ke backend Go, ambil token baru, lalu kirim sebagai backend_token atau isi BACKEND_AUTH_TOKEN di .env.
+```
 
-- Backend Go sudah run di port 8080.
-- URL `GOLANG_API_BASE_URL` benar.
-- Internal service key benar.
-- Backend route `/internal/forecast/stores` bisa diakses.
+### C. Preview tidak masuk database
 
-### 15.5 Save visitors gagal koneksi DB
+Itu memang benar. Preview hanya untuk testing.
 
-Visitors save memakai direct PostgreSQL. Cek:
+Gunakan `/save` atau `/run` jika ingin menyimpan ke database.
+
+### D. Jangan pakai m_store_id di route baru
+
+Route baru memakai:
+
+```json
+{
+  "store_id": "uuid-store"
+}
+```
+
+Bukan:
+
+```json
+{
+  "m_store_id": "uuid-store"
+}
+```
+
+### E. Service Flask debug mode
+
+Untuk development boleh memakai debug. Untuk production nanti, jangan jalankan Flask bawaan dengan `debug=True`; gunakan WSGI server seperti Gunicorn/Waitress atau jalankan di container yang sesuai.
+
+## 17. Ringkasan Route Final
+
+```text
+GET  /health
+
+POST /api/forecast/sales/preview
+POST /api/forecast/visitors/preview
+POST /api/forecast/inventory/preview
+POST /api/forecast/preview-all
+
+POST /api/forecast/sales/save
+POST /api/forecast/visitors/save
+POST /api/forecast/inventory/save
+POST /api/forecast/save-all
+
+POST /api/forecast/sales/run
+POST /api/forecast/visitors/run
+POST /api/forecast/inventory/run
+POST /api/forecast/run-all
+
+POST /api/forecast/sales/retrain
+POST /api/forecast/visitors/retrain
+POST /api/forecast/inventory/retrain
+POST /api/forecast/retrain-all
+```
+
+## 18. Kesimpulan Workflow
+
+Untuk development Postman:
+
+```text
+preview -> cek hasil -> save jika hasil benar
+```
+
+Untuk scheduler nanti:
+
+```text
+run-all -> forecast semua modul -> langsung save ke backend/database
+```
+
+Route baru yang wajib diprioritaskan:
+
+```text
+/api/forecast/{module}/preview
+/api/forecast/{module}/save
+/api/forecast/{module}/run
+/api/forecast/run-all
+```
+
+
+## Update: Backend Internal Service Key
+
+Forecast-service sekarang tidak perlu token login JWT untuk mengambil data historis atau menyimpan hasil forecast. Gunakan service key internal.
+
+Env yang disarankan:
 
 ```env
-DB_HOST=
-DB_PORT=
-DB_USER=
-DB_PASSWORD=
-DB_NAME=
-DB_SSLMODE=
+BACKEND_API_URL=http://localhost:8080/internal/forecast
+GOLANG_API_BASE_URL=http://localhost:8080/internal/forecast
+INTERNAL_SERVICE_KEY=sora-forecast-internal-key-ganti-yang-panjang
+BACKEND_AUTH_TOKEN=
+FORECAST_MODE=manual
+ENABLE_FORECAST_SCHEDULER=false
+BACKEND_REQUEST_TIMEOUT_SECONDS=30
 ```
 
-Untuk Supabase biasanya `DB_SSLMODE=require`.
+`INTERNAL_SERVICE_KEY` harus sama dengan env backend Go. Forecast-service otomatis mengirim header `X-Service-Key` dan `X-Store-ID` ketika memanggil backend internal.
+
+Untuk testing Postman tetap gunakan route forecast-service:
+
+```http
+POST /api/forecast/sales/preview
+POST /api/forecast/visitors/preview
+POST /api/forecast/inventory/preview
+POST /api/forecast/preview-all
+
+POST /api/forecast/sales/save
+POST /api/forecast/visitors/save
+POST /api/forecast/inventory/save
+POST /api/forecast/save-all
+
+POST /api/forecast/sales/run
+POST /api/forecast/visitors/run
+POST /api/forecast/inventory/run
+POST /api/forecast/run-all
+```
+
+Preview tidak menyimpan database. Save menyimpan hasil preview. Run menghitung forecast dan langsung menyimpan ke backend/database.

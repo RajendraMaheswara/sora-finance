@@ -374,63 +374,61 @@ class InventoryForecaster:
         daily_rows['yhat_lower'] = daily_rows['yhat_lower'].clip(lower=0)
         daily_rows['yhat_upper'] = daily_rows['yhat_upper'].clip(lower=0)
 
+        # Nama hari Indonesia
+        _day_names = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
+        horizon_label = {'D': 'daily', 'W': 'weekly', 'M': 'monthly'}[freq]
+
         if freq == 'D':
             forecast_array = [
                 {"date": row['ds'].strftime('%Y-%m-%d'),
+                 "day_of_week": _day_names[row['ds'].dayofweek],
+                 "is_weekend": row['ds'].dayofweek >= 5,
                  "predicted_usage": round(row['yhat'], 2),
                  "lower_bound": round(row['yhat_lower'], 2),
                  "upper_bound": round(row['yhat_upper'], 2)}
                 for _, row in daily_rows.iterrows()
             ]
-            forecast_key = "daily_forecast"
+            date_key_start = 'date'
+            date_key_end   = 'date'
         elif freq == 'W':
-            daily_rows['week_start'] = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
-            daily_rows['week_end']   = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
-            grouped = daily_rows.groupby(['week_start', 'week_end']).agg(
+            daily_rows['period_start'] = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
+            daily_rows['period_end']   = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
+            daily_rows['week_of_year'] = daily_rows['ds'].dt.isocalendar().week.astype(int)
+            grouped = daily_rows.groupby(['period_start', 'period_end', 'week_of_year']).agg(
                 total_yhat=('yhat', 'sum'), total_yhat_lower=('yhat_lower', 'sum'),
-                total_yhat_upper=('yhat_upper', 'sum'), avg_yhat=('yhat', 'mean')
+                total_yhat_upper=('yhat_upper', 'sum')
             ).reset_index()
             forecast_array = [
-                {"week_start": row['week_start'], "week_end": row['week_end'],
+                {"period_start": row['period_start'], "period_end": row['period_end'],
+                 "week_of_year": int(row['week_of_year']),
                  "predicted_usage": round(row['total_yhat'], 2),
                  "lower_bound": round(row['total_yhat_lower'], 2),
-                 "upper_bound": round(row['total_yhat_upper'], 2),
-                 "average_daily_usage": round(row['avg_yhat'], 2)}
+                 "upper_bound": round(row['total_yhat_upper'], 2)}
                 for _, row in grouped.iterrows()
             ]
-            forecast_key = "weekly_forecast"
+            date_key_start = 'period_start'
+            date_key_end   = 'period_end'
         elif freq == 'M':
-            daily_rows['month_start'] = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
-            daily_rows['month_end']   = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
-            grouped = daily_rows.groupby(['month_start', 'month_end']).agg(
+            daily_rows['period_start'] = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
+            daily_rows['period_end']   = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
+            daily_rows['month_num']    = daily_rows['ds'].dt.month
+            grouped = daily_rows.groupby(['period_start', 'period_end', 'month_num']).agg(
                 total_yhat=('yhat', 'sum'), total_yhat_lower=('yhat_lower', 'sum'),
-                total_yhat_upper=('yhat_upper', 'sum'), avg_yhat=('yhat', 'mean')
+                total_yhat_upper=('yhat_upper', 'sum')
             ).reset_index()
             forecast_array = [
-                {"month_start": row['month_start'], "month_end": row['month_end'],
+                {"period_start": row['period_start'], "period_end": row['period_end'],
+                 "month": int(row['month_num']),
                  "predicted_usage": round(row['total_yhat'], 2),
                  "lower_bound": round(row['total_yhat_lower'], 2),
-                 "upper_bound": round(row['total_yhat_upper'], 2),
-                 "average_daily_usage": round(row['avg_yhat'], 2)}
+                 "upper_bound": round(row['total_yhat_upper'], 2)}
                 for _, row in grouped.iterrows()
             ]
-            forecast_key = "monthly_forecast"
+            date_key_start = 'period_start'
+            date_key_end   = 'period_end'
 
         total_all = round(daily_rows['yhat'].sum(), 2)
         avg_all   = round(daily_rows['yhat'].mean(), 2)
-        forecast_summary = {
-            f"total_predicted_usage_next_{future_periods}_days": total_all,
-            f"average_daily_usage_next_{future_periods}_days": avg_all
-        }
-
-        highest = daily_rows.loc[daily_rows['yhat'].idxmax()]
-        lowest  = daily_rows.loc[daily_rows['yhat'].idxmin()]
-        prediction_analysis = {
-            "highest_prediction_day":   highest['ds'].strftime('%Y-%m-%d'),
-            "highest_prediction_value": round(highest['yhat'], 2),
-            "lowest_prediction_day":    lowest['ds'].strftime('%Y-%m-%d'),
-            "lowest_prediction_value":  round(lowest['yhat'], 2)
-        }
 
         metrics = self._load_metrics()
         if metrics:
@@ -462,25 +460,62 @@ class InventoryForecaster:
                 confidence_score = max(0.0, min(100.0, sum(scores) / len(scores)))
             else:
                 confidence_score = 0.0
-            
-            # Threshold disesuaikan dengan realitas data inventory
-            confidence_level = "HIGH" if confidence_score >= 60 else ("MEDIUM" if confidence_score >= 40 else "LOW")
         else:
-            confidence_score = 0
-            confidence_level = "UNKNOWN"
-        model_confidence = {
-            "confidence_score": round(confidence_score, 2),
-            "confidence_level": confidence_level
-        }
+            metrics = {}
+            confidence_score = 0.0
+
+        confidence_level = int(round(confidence_score))
+
+        # Hitung error_percentage dari sMAPE atau MAPE
+        _smape = metrics.get('smape')
+        if _smape is not None:
+            error_pct = round((_smape * 100 if _smape < 1.0 else _smape), 2)
+        else:
+            _mape = metrics.get('mape')
+            error_pct = round((_mape * 100 if _mape is not None and _mape < 1.0 else (_mape or 0)) , 2)
+
+        # Tentukan forecast start/end date
+        if forecast_array:
+            fc_start = forecast_array[0].get(date_key_start)
+            fc_end   = forecast_array[-1].get(date_key_end)
+        else:
+            fc_start = fc_end = None
 
         result = {
             "store_id": self.store_id,
             "ingredient_id": self.ingredient_id,
-            "metrics": metrics,
-            "forecast_summary": forecast_summary,
-            "prediction_analysis": prediction_analysis,
-            "model_confidence": model_confidence,
-            forecast_key: forecast_array
+            "forecast_start_date": fc_start,
+            "forecast_end_date": fc_end,
+            "last_actual_date": last_hist_date.strftime('%Y-%m-%d'),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "start_date_source": "custom_start_date" if start_date else "auto_last_actual_date",
+            "horizon": {
+                "count": periods,
+                "days": future_periods,
+                "label": horizon_label
+            },
+            "model_metadata": {
+                "confidence_level": confidence_level,
+                "cv_mae": metrics.get('mae'),
+                "cv_rmse": metrics.get('rmse'),
+                "error_percentage": error_pct,
+                "smape": metrics.get('smape'),
+                "mape": metrics.get('mape'),
+                "r2_score": metrics.get('r2_score'),
+                "explained_variance": metrics.get('explained_variance'),
+                "bias_ratio": metrics.get('bias_ratio'),
+                "data_days": metrics.get('data_days'),
+                "cv_initial": metrics.get('cv_initial'),
+                "zero_ratio": metrics.get('zero_ratio'),
+                "outliers_nullified": metrics.get('outliers_nullified'),
+                "stockout_days_nullified": metrics.get('stockout_days_nullified'),
+            },
+            "summary": {
+                "average_predicted_usage": avg_all,
+                "forecast_count": len(forecast_array),
+                "total_predicted_usage": total_all
+            },
+            "forecasts": forecast_array
         }
         return result
 
@@ -494,23 +529,24 @@ class InventoryForecaster:
             print(f"[ERROR] Gagal prediksi: {e}")
             return False
 
-        metrics = result.get('metrics', {}) or {}
-        summary = result.get('forecast_summary', {})
+        model_meta = result.get('model_metadata', {})
+        metrics = {}
+        if model_meta:
+            metrics = {
+                'mae': model_meta.get('cv_mae'),
+                'rmse': model_meta.get('cv_rmse'),
+                'mape': model_meta.get('mape'),
+            }
+        summary = result.get('summary', {})
+
+        forecast_array = result.get('forecasts', [])
+        horizon_label = result.get('horizon', {}).get('label', 'daily')
+        horizon_days  = result.get('horizon', {}).get('days', periods)
 
         if freq == 'D':
-            forecast_array = result.get('daily_forecast', [])
-            horizon_label, date_key = "daily", 'date'
-            horizon_days = periods
-        elif freq == 'W':
-            forecast_array = result.get('weekly_forecast', [])
-            horizon_label, date_key = "weekly", 'week_start'
-            horizon_days = periods * 7
-        elif freq == 'M':
-            forecast_array = result.get('monthly_forecast', [])
-            horizon_label, date_key = "monthly", 'month_start'
-            horizon_days = periods * 30
+            date_key = 'date'
         else:
-            return False
+            date_key = 'period_start'
 
         if not forecast_array:
             return False
@@ -598,8 +634,7 @@ class InventoryForecaster:
             return False
 
         results = []
-        conf_score = result.get('model_confidence', {}).get('confidence_score', 0)
-        conf_level = int(round(conf_score))
+        conf_level = result.get('model_metadata', {}).get('confidence_level', 0)
         for item in forecast_array:
             results.append({
                 "target_date": item[date_key],
