@@ -11,6 +11,7 @@ import psycopg2
 import psycopg2.extras
 import pandas as pd
 import numpy as np
+import holidays
 import json
 from datetime import datetime, date, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -338,6 +339,98 @@ HARI_INDONESIA = {0: 'Senin', 1: 'Selasa', 2: 'Rabu', 3: 'Kamis', 4: 'Jumat', 5:
 
 class SalesPreprocessor:
 
+    def _seconds_from_time_like(self, value: Any) -> Optional[int]:
+        if value is None or pd.isna(value):
+            return None
+        ts = pd.to_datetime(value, errors="coerce")
+        if pd.isna(ts):
+            return None
+        return int(ts.hour) * 3600 + int(ts.minute) * 60 + int(ts.second)
+
+    def _calculate_open_duration_hours(self, is_active: bool, open_time: Any, close_time: Any) -> float:
+        if not is_active:
+            return 0.0
+
+        open_seconds = self._seconds_from_time_like(open_time)
+        close_seconds = self._seconds_from_time_like(close_time)
+        if open_seconds is None or close_seconds is None:
+            return 24.0
+        if close_seconds == open_seconds:
+            return 24.0
+        if close_seconds > open_seconds:
+            duration_seconds = close_seconds - open_seconds
+        else:
+            duration_seconds = (24 * 3600 - open_seconds) + close_seconds
+        return round(max(0.0, min(24.0, duration_seconds / 3600.0)), 2)
+
+    def _parse_operational_hours(self, records: List[Dict]) -> Dict[int, Dict[str, float]]:
+        op_map: Dict[int, Dict[str, float]] = {}
+        for record in records or []:
+            try:
+                day_key = int(record.get("day_of_week", record.get("dayOfWeek")))
+            except Exception:
+                continue
+            is_active = bool(record.get("is_active", record.get("isActive", False)))
+            duration = self._calculate_open_duration_hours(
+                is_active=is_active,
+                open_time=record.get("open_time", record.get("openTime")),
+                close_time=record.get("close_time", record.get("closeTime")),
+            )
+            op_map[day_key] = {
+                "is_store_open": 1.0 if is_active and duration > 0 else 0.0,
+                "open_duration_hours": duration,
+                "is_24_hours": 1.0 if is_active and duration >= 23.99 else 0.0,
+            }
+        return op_map
+
+    def _operational_features_for_date(
+        self,
+        target_date: pd.Timestamp,
+        op_map: Optional[Dict[int, Dict[str, float]]] = None,
+    ) -> Dict[str, float]:
+        if not op_map:
+            return {
+                "is_store_open": 1.0,
+                "open_duration_hours": 24.0,
+                "is_24_hours": 1.0,
+            }
+
+        candidates = [int(target_date.dayofweek), int(target_date.dayofweek) + 1, int(target_date.isoweekday())]
+        for key in candidates:
+            if key in op_map:
+                return op_map[key]
+
+        return {
+            "is_store_open": 1.0,
+            "open_duration_hours": 24.0,
+            "is_24_hours": 1.0,
+        }
+
+    def _apply_operational_hours(self, df: pd.DataFrame, records: List[Dict]) -> pd.DataFrame:
+        df = df.copy()
+        op_map = self._parse_operational_hours(records)
+        dates = pd.to_datetime(df["date"])
+        features = [self._operational_features_for_date(ts, op_map) for ts in dates]
+        op_df = pd.DataFrame(features)
+        for col in ["is_store_open", "open_duration_hours", "is_24_hours"]:
+            df[col] = pd.to_numeric(op_df[col], errors="coerce").fillna(0.0)
+        return df
+
+    def _complete_daily_range(self, df: pd.DataFrame) -> pd.DataFrame:
+        if df.empty:
+            return df
+        df = df.copy()
+        df['date'] = pd.to_datetime(df['date'])
+        start_date = df['date'].min()
+        end_date = df['date'].max()
+        full_dates = pd.DataFrame({'date': pd.date_range(start_date, end_date, freq='D')})
+        merged = full_dates.merge(df, on='date', how='left')
+        numeric_cols = [c for c in merged.columns if c != 'date']
+        for col in numeric_cols:
+            merged[col] = pd.to_numeric(merged[col], errors='coerce').fillna(0)
+        merged['date'] = merged['date'].dt.date
+        return merged
+
     def build_daily_dataframe(self, raw_data: Dict[str, List[Dict]]) -> pd.DataFrame:
         df = self._build_from_sales_daily(raw_data.get('sales_daily', []))
         if df.empty:
@@ -346,6 +439,8 @@ class SalesPreprocessor:
         if df.empty:
             logger.error('Tidak ada data historis yang bisa digunakan')
             return pd.DataFrame()
+        df = self._complete_daily_range(df)
+        df = self._apply_operational_hours(df, raw_data.get('operational_hours', []))
         df = df.sort_values('date').reset_index(drop=True)
         return df
 
@@ -378,8 +473,9 @@ class SalesPreprocessor:
         try:
             df = pd.DataFrame(records)
             df['date'] = pd.to_datetime(df['date']).dt.date
-            df['total_omzet'] = pd.to_numeric(df.get('total_omzet', df.get('totalOmzet', 0)), errors='coerce').fillna(0)
-            return df[['date', 'total_omzet']].rename(columns={'total_omzet': 'omzet'})
+            df['total_omzet'] = pd.to_numeric(df.get('total_omzet', df.get('totalOmzet', 0)), errors='coerce').fillna(0).clip(lower=0)
+            df['total_discount'] = pd.to_numeric(df.get('total_discount', df.get('totalDiscount', 0)), errors='coerce').fillna(0).clip(lower=0)
+            return df[['date', 'total_omzet', 'total_discount']].rename(columns={'total_omzet': 'omzet', 'total_discount': 'discount'})
         except Exception as e:
             logger.error(f'Error parsing sales_daily: {e}')
             return pd.DataFrame()
@@ -393,7 +489,12 @@ class SalesPreprocessor:
             if not date_col:
                 return pd.DataFrame()
             df['date'] = pd.to_datetime(df[date_col]).dt.date
-            daily = df.groupby('date').agg(omzet=('total_price', lambda x: pd.to_numeric(x, errors='coerce').sum())).reset_index()
+            df['total_price'] = pd.to_numeric(df.get('total_price', df.get('totalPrice', 0)), errors='coerce').fillna(0).clip(lower=0)
+            df['total_discount'] = pd.to_numeric(df.get('total_discount', df.get('totalDiscount', 0)), errors='coerce').fillna(0).clip(lower=0)
+            daily = df.groupby('date').agg(
+                omzet=('total_price', 'sum'),
+                discount=('total_discount', 'sum')
+            ).reset_index()
             return daily
         except Exception as e:
             logger.error(f'Error parsing orders: {e}')
@@ -414,6 +515,25 @@ class SalesPreprocessor:
         df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
         df['is_month_start'] = df['date'].dt.is_month_start.astype(int)
         df['is_month_end'] = df['date'].dt.is_month_end.astype(int)
+        
+        id_holidays = holidays.ID()
+        df['is_national_holiday'] = df['date'].apply(lambda d: 1.0 if d in id_holidays else 0.0)
+        
+        if 'discount' not in df.columns:
+            df['discount'] = 0.0
+        df['discount_ratio'] = np.where((df['omzet'] + df['discount']) > 0, df['discount'] / (df['omzet'] + df['discount']), 0.0)
+        
+        q3 = df['omzet'].quantile(0.75)
+        iqr = q3 - df['omzet'].quantile(0.25)
+        upper_bound = q3 + 3 * iqr
+        if upper_bound > 0:
+            df['omzet'] = df['omzet'].clip(upper=upper_bound)
+        if "is_store_open" not in df.columns:
+            df["is_store_open"] = 1.0
+        if "open_duration_hours" not in df.columns:
+            df["open_duration_hours"] = 24.0
+        if "is_24_hours" not in df.columns:
+            df["is_24_hours"] = (df["open_duration_hours"] >= 23.99).astype(float)
         df['sin_dow'] = np.sin(2 * np.pi * df['day_of_week'] / 7)
         df['cos_dow'] = np.cos(2 * np.pi * df['day_of_week'] / 7)
         df['sin_month'] = np.sin(2 * np.pi * df['month'] / 12)
@@ -430,10 +550,10 @@ class SalesPreprocessor:
         return df
 
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
-        exclude = {'date', 'omzet'}
+        exclude = {'date', 'omzet', 'discount'}
         return [c for c in df.columns if c not in exclude]
 
-    def _build_future_row(self, target_date: pd.Timestamp, history: pd.DataFrame, lags: List[int] | None=None, windows: List[int] | None=None) -> Dict[str, Any]:
+    def _build_future_row(self, target_date: pd.Timestamp, history: pd.DataFrame, lags: List[int] | None=None, windows: List[int] | None=None, operational_map: Optional[Dict[int, Dict[str, float]]] = None) -> Dict[str, Any]:
         row: Dict[str, Any] = {}
         lags = lags or [1, 2, 3, 7, 14, 21, 28]
         windows = windows or [7, 14, 28]
@@ -445,6 +565,12 @@ class SalesPreprocessor:
         row['is_weekend'] = int(target_date.dayofweek in [5, 6])
         row['is_month_start'] = int(target_date.is_month_start)
         row['is_month_end'] = int(target_date.is_month_end)
+        
+        id_holidays = holidays.ID()
+        row['is_national_holiday'] = 1.0 if target_date in id_holidays else 0.0
+        row['discount_ratio'] = 0.0
+        
+        row.update(self._operational_features_for_date(target_date, operational_map))
         row['sin_dow'] = np.sin(2 * np.pi * row['day_of_week'] / 7)
         row['cos_dow'] = np.cos(2 * np.pi * row['day_of_week'] / 7)
         row['sin_month'] = np.sin(2 * np.pi * row['month'] / 12)
@@ -511,10 +637,8 @@ class SalesForecastService:
                 start_date_source = 'auto_unknown_operational_hours_default_next_day'
                 business_cutoff_rule = 'unknown_operational_hours_default_next_day'
         if last_actual_date is not None:
-            next_after_actual = last_actual_date + timedelta(days=1)
-            if next_after_actual > candidate_start:
-                candidate_start = next_after_actual
-                start_date_source = 'auto_last_actual_date'
+            candidate_start = last_actual_date + timedelta(days=1)
+            start_date_source = 'auto_last_actual_date'
         return {'forecast_start_date': candidate_start, 'start_date_source': start_date_source, 'last_actual_date': last_actual_date, 'business_cutoff_rule': business_cutoff_rule}
 
     def _forecast_item_period_dates(self, item: Any, horizon_label: str) -> Tuple[date, date]:
@@ -576,9 +700,10 @@ class SalesForecastService:
         forecasts = []
         running_history = df_daily[['date', 'omzet']].copy()
         running_history['date'] = pd.to_datetime(running_history['date'])
+        op_map = self.preprocessor._parse_operational_hours(raw_data.get('operational_hours', []))
         for day_offset in range(forecast_days):
             target_date = pd.Timestamp(resolved_start_date) + timedelta(days=day_offset)
-            row = self.preprocessor._build_future_row(target_date, running_history)
+            row = self.preprocessor._build_future_row(target_date, running_history, operational_map=op_map)
             X_row = np.array([[row.get(col, 0.0) for col in feature_cols]])
             X_scaled = scaler.transform(X_row)
             tree_preds = np.array([tree.predict(X_scaled)[0] for tree in model.estimators_])

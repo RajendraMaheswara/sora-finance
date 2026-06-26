@@ -551,7 +551,7 @@ async def _run_sales_forecast_from_payload(payload):
         result = await sales_forecast_service.forecast(
             store_id=store_id,
             forecast_days=horizon_count,
-            start_date=start_date_val or date.today(),
+            start_date=start_date_val,
         )
     elif horizon_label == "weekly":
         result = await sales_forecast_service.forecast_weekly(
