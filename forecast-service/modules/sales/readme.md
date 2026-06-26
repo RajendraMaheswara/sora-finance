@@ -1,80 +1,117 @@
-# Modul Sales (Forecasting)
+# Modul Sales Forecasting
 
-Modul `sales` di `forecast-service` bertanggung jawab untuk menghasilkan prediksi omzet penjualan (Sales / Revenue) di masa depan untuk masing-masing *store*. Modul ini beroperasi menggunakan model *Machine Learning* yang memproses data historis (penjualan harian, penjualan bulanan, pesanan, dan jam operasional) dan mengekstraksi metrik pola transaksi untuk menghasilkan _forecast_.
+Modul ini bertanggung jawab untuk melakukan prediksi penjualan (*sales / omzet*) menggunakan algoritma *Random Forest* dengan *lag features* agregasi harian, mingguan, maupun bulanan. Modul ini terintegrasi langsung dengan PostgreSQL untuk menyimpan hasil prediksi.
 
-## Logika & Alur Modul Sales
+## 🛠 Panduan Instalasi (Setelah Clone)
 
-1. **Pengumpulan Data Historis (Data Fetching)**: 
-   API internal atau klien Golang menarik seluruh data dari backend utama untuk sebuah *store*, termasuk riwayat pesanan (*orders*), ringkasan penjualan, serta jadwal operasional toko (*operational hours*).
-2. **Preprocessing**: 
-   Data direkapitulasi menjadi frame data harian (atau periodik). Fitur tambahan atau _engineering_ diterapkan (seperti lag, _rolling window_, deteksi tren mingguan/bulanan, hari libur lokal).
-3. **Training & Model Generation**: 
-   Jika model belum ada atau data terindikasi lawas (_needs retrain_), modul secara otomatis (atau manual via API `/retrain`) memicu pelacakan metrik *omzet* untuk melatih (_train_) model *Gradient Boosting* atau *Tree-based model* lainnya (misalnya menggunakan fungsi di `trainer.py`).
-4. **Resolusi _Start Date_ (Business Cutoff)**:
-   Saat prediksi diminta, modul menggunakan `_resolve_forecast_start_meta` untuk menentukan _tanggal sebenarnya_ (Actual Start Date).
-   - Apabila toko buka 24 jam dan waktu sekarang sudah lewat tengah malam (misal 01:00 AM), itu masih dihitung sebagai *hari bisnis sebelumnya*. Modul ini memastikan bahwa prediksi baru benar-benar dipotong dengan rapi di akhir jam kerja sebenarnya.
-5. **Generasi _Forecast_ (Predict)**: 
-   Secara berurutan *(autoregressive)*, model menyimulasikan hasil dari hari ke hari ke masa depan selama _horizon_ yang diminta (misal: 7 hari). Setiap prediksi baru dikonversi dan diagregasi kembali jika _request_ meminta wujud data Mingguan (`weekly`) atau Bulanan (`monthly`).
-6. **Persistence**:
-   Hasil prediksi beserta model *metadata* pendukungnya dapat disimpan kembali ke PostgreSQL atau Database Golang Backend menggunakan *endpoint* `/save` atau `/run`.
+Untuk menjalankan modul ini secara lokal di komputermu, ikuti langkah-langkah berikut:
+
+### 1. Masuk ke direktori `forecast-service`
+Pastikan kamu berada di dalam direktori `forecast-service`.
+```bash
+cd sora-finance/forecast-service
+```
+
+### 2. Buat dan Aktifkan Virtual Environment
+Sangat disarankan untuk menggunakan *virtual environment* agar tidak terjadi konflik *package*.
+```bash
+python3 -m venv venv
+source venv/bin/activate  # Untuk Linux/MacOS
+# .\venv\Scripts\activate # Untuk Windows
+```
+
+### 3. Install Dependencies
+Install semua *library* Python yang dibutuhkan melalui `requirements.txt`.
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Konfigurasi Environment Variables (`.env`)
+Buat file bernama `.env` di dalam folder `forecast-service` (kamu bisa *copy* dari `.env.example` jika ada) dan isi dengan konfigurasi database kamu:
+```env
+# Database Configuration
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=your_db_username
+DB_PASSWORD=your_db_password
+DB_NAME=your_db_name
+DB_SSLMODE=disable
+
+# Backend URL (Opsional jika tidak dipakai untuk call API external)
+BACKEND_API_URL=http://localhost:8080/api/v1
+INTERNAL_SERVICE_KEY=your_secret_key
+```
+
+### 5. Jalankan Aplikasi (Flask Server)
+Jalankan file `app.py` untuk menyalakan server lokal.
+```bash
+python app.py
+```
+Server akan berjalan secara *default* pada `http://localhost:5000`.
 
 ---
 
-## Daftar API Endpoints
+## 🌐 Daftar API Modul Sales
 
-Semua endpoint untuk modul sales bersifat **POST** (kecuali health check secara umum) dan wajib mencantumkan `store_id` pada JSON _body_.
+Berikut adalah daftar API yang tersedia pada modul `sales` (Base URL: `http://localhost:5000`):
 
-### 1. Preview Forecast (Harian)
-**Endpoint**: `POST /api/forecast/sales/preview`
-**Deskripsi**: Digunakan untuk mendapatkan prediksi sementara (tidak disimpan ke _database_). Ideal untuk kebutuhan tampilan _dashboard_.
-**Contoh Body Request**:
-```json
-{
-  "store_id": "store-12345",
-  "forecast_days": 14,
-  "start_date": "2023-11-01" // Opsional
-}
-```
+### 1. **Run Forecast (Preview + Save)**
+*   **Method:** `POST`
+*   **Endpoint:** `/api/forecast/sales/run`
+*   **Deskripsi:** Menjalankan prediksi penjualan (*sales*) berdasarkan data *history* yang ada, mengembalikan hasil *response* prediksi, dan otomatis menyimpannya ke database (`forecast_runs` & `forecast_results`).
+*   **Payload (JSON):**
+    ```json
+    {
+      "store_id": "47dad341-...",
+      "horizon_label": "weekly",
+      "horizon_count": 4,
+      "start_date": "2026-07-02"
+    }
+    ```
 
-### 2. Save Forecast (Manual)
-**Endpoint**: `POST /api/forecast/sales/save`
-**Deskripsi**: Digunakan untuk secara paksa menyimpan data _forecast_ hasil `preview` yang telah dieksekusi secara terpisah.
-**Contoh Body Request**:
-```json
-{
-  "backend_token": "token-rahasia-backend",
-  "forecast": {
-    "store_id": "store-12345",
-    "forecast_horizon_days": 14,
-    "forecasts": [...],
-    "model_metadata": {...}
-  }
-}
-```
+### 2. **Preview Forecast (Tanpa Save)**
+*   **Method:** `POST`
+*   **Endpoint:** `/api/forecast/sales/preview`
+*   **Deskripsi:** Hanya menjalankan prediksi dan mengembalikan *response* tanpa menyimpannya ke database.
+*   **Payload (JSON):** *(Sama seperti endpoint /run)*
 
-### 3. Run Forecast (Generate & Save)
-**Endpoint**: `POST /api/forecast/sales/run`
-**Deskripsi**: Merupakan gabungan fungsi `preview` dan `save`. Men-generate forecast baru dan **langsung menyimpannya** ke dalam basis data backend.
-**Contoh Body Request**:
-```json
-{
-  "store_id": "store-12345",
-  "forecast_days": 7,
-  "backend_token": "token-rahasia-backend"
-}
-```
+### 3. **Save Forecast**
+*   **Method:** `POST`
+*   **Endpoint:** `/api/forecast/sales/save`
+*   **Deskripsi:** Menyimpan *response* hasil prediksi (dari endpoint preview) ke dalam database.
+*   **Payload (JSON):**
+    ```json
+    {
+      "forecast": {
+        "store_id": "...",
+        "forecasts": [...],
+        "model_metadata": {...}
+      }
+    }
+    ```
 
-### 4. Retrain Model (Latih Ulang)
-**Endpoint**: `POST /api/forecast/sales/retrain`
-**Deskripsi**: Memerintahkan modul untuk melatih ulang (retrain) model *machine learning* untuk toko tertentu berdasarkan histori *omzet* terbaru.
-**Contoh Body Request**:
-```json
-{
-  "store_id": "store-12345",
-  "force": true // Jika false, akan diskip jika model sudah 'fresh'
-}
-```
+### 4. **Retrain Model (Single Store)**
+*   **Method:** `POST`
+*   **Endpoint:** `/api/forecast/sales/retrain`
+*   **Deskripsi:** Memaksa modul untuk melatih ulang (*retrain*) model Machine Learning Random Forest untuk satu toko spesifik dengan mengambil data historis terbaru dari tabel database.
+*   **Payload (JSON):**
+    ```json
+    {
+      "store_id": "47dad341-..."
+    }
+    ```
 
-## Referensi Terkait Modul Sales
-* Semua tipe keluaran (response schema) didefinisikan secara _type-safe_ lewat Pydantic (`ForecastResponse`, `WeeklyForecastResponse`, dll) dalam `forecaster.py`.
-* Penyimpanan *state* model, *scaler*, dan *metadata* ditaruh secara lokal (atau bucket) untuk diload secara cepat oleh `trainer.py` tanpa *overhead* iterasi jaringan.
+### 5. **Batch Retrain Model (All Stores)**
+*   **Method:** `POST`
+*   **Endpoint:** `/api/forecast/sales/batch-retrain`
+*   **Deskripsi:** Melatih ulang (*retrain*) model untuk semua toko secara serentak yang ada di database. Berguna untuk *maintenance* berkala.
+
+### 6. **List Models**
+*   **Method:** `GET`
+*   **Endpoint:** `/api/forecast/sales/models`
+*   **Deskripsi:** Menampilkan daftar direktori model *sales* yang tersimpan di dalam sistem file *local* server.
+
+### 7. **Delete Model**
+*   **Method:** `DELETE`
+*   **Endpoint:** `/api/forecast/sales/models/<store_id>`
+*   **Deskripsi:** Menghapus model *sales* milik `store_id` spesifik yang tersimpan di *local storage*.

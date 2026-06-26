@@ -143,55 +143,39 @@ class GolangAPIClient:
 
     async def fetch_sales_daily_summaries(self, store_id: str) -> List[Dict]:
         logger.info(f'Fetching sales daily summaries for store {store_id}')
-        try:
-            data = await self._get('sales-daily-summaries', params={'store_id': store_id})
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get('data', data.get('items', []))
-            return []
-        except Exception as e:
-            logger.error(f'Failed to fetch sales daily summaries: {e}')
-            return []
+        data = await self._get('sales-daily-summaries', params={'store_id': store_id})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get('data', data.get('items', []))
+        return []
 
     async def fetch_sales_monthly_summaries(self, store_id: str) -> List[Dict]:
         logger.info(f'Fetching sales monthly summaries for store {store_id}')
-        try:
-            data = await self._get('sales-monthly-summaries', params={'store_id': store_id})
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get('data', data.get('items', []))
-            return []
-        except Exception as e:
-            logger.error(f'Failed to fetch sales monthly summaries: {e}')
-            return []
+        data = await self._get('sales-monthly-summaries', params={'store_id': store_id})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get('data', data.get('items', []))
+        return []
 
     async def fetch_orders(self, store_id: str) -> List[Dict]:
         logger.info(f'Fetching orders for store {store_id}')
-        try:
-            data = await self._get('orders', params={'store_id': store_id})
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get('data', data.get('items', []))
-            return []
-        except Exception as e:
-            logger.error(f'Failed to fetch orders: {e}')
-            return []
+        data = await self._get('orders', params={'store_id': store_id})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get('data', data.get('items', []))
+        return []
 
     async def fetch_store_operational_hours(self, store_id: str) -> List[Dict]:
         logger.info(f'Fetching operational hours for store {store_id}')
-        try:
-            data = await self._get('store-operational-hours', params={'store_id': store_id})
-            if isinstance(data, list):
-                return data
-            if isinstance(data, dict):
-                return data.get('data', data.get('items', []))
-            return []
-        except Exception as e:
-            logger.error(f'Failed to fetch operational hours: {e}')
-            return []
+        data = await self._get('store-operational-hours', params={'store_id': store_id})
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get('data', data.get('items', []))
+        return []
 
     async def fetch_all_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
         logger.info(f'Fetching all historical data for store {store_id}')
@@ -199,8 +183,8 @@ class GolangAPIClient:
         monthly_task = self.fetch_sales_monthly_summaries(store_id)
         orders_task = self.fetch_orders(store_id)
         ops_task = self.fetch_store_operational_hours(store_id)
-        daily, monthly, orders, ops = await asyncio.gather(daily_task, monthly_task, orders_task, ops_task, return_exceptions=True)
-        return {'sales_daily': daily if not isinstance(daily, Exception) else [], 'sales_monthly': monthly if not isinstance(monthly, Exception) else [], 'orders': orders if not isinstance(orders, Exception) else [], 'operational_hours': ops if not isinstance(ops, Exception) else []}
+        daily, monthly, orders, ops = await asyncio.gather(daily_task, monthly_task, orders_task, ops_task)
+        return {'sales_daily': daily, 'sales_monthly': monthly, 'orders': orders, 'operational_hours': ops}
 golang_client = GolangAPIClient()
 
 class PostgresClient:
@@ -556,10 +540,9 @@ class SalesForecastService:
 
     async def _fetch_historical_data(self, store_id: str) -> Dict[str, List[Dict]]:
         raw_data = await golang_client.fetch_all_historical_data(store_id)
-        if raw_data.get('sales_daily') or raw_data.get('orders'):
-            return raw_data
-        logger.warning(f'Backend Golang tidak mengembalikan data historis untuk store {store_id}. Mencoba fallback direct DB.')
-        return db_client.fetch_all_historical_data(store_id)
+        if not raw_data.get('sales_daily') and not raw_data.get('orders'):
+            logger.warning(f'Backend Golang tidak mengembalikan data historis untuk store {store_id}.')
+        return raw_data
 
     async def retrain(self, store_id: str, force: bool=False) -> RetrainResponse:
         logger.info(f'[RETRAIN] store={store_id}, force={force}')
