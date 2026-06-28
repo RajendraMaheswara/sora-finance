@@ -625,7 +625,12 @@ class SalesForecastService:
     def _last_actual_date_from_df(self, df_daily: pd.DataFrame) -> Optional[date]:
         if df_daily.empty:
             return None
-        return df_daily['date'].max()
+        max_date = df_daily['date'].max()
+        if pd.isnull(max_date):
+            return None
+        if hasattr(max_date, 'date'):
+            return max_date.date()
+        return max_date
 
 
     def _is_known_24h_store_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
@@ -1804,34 +1809,29 @@ class SalesForecastService:
             # Prepare payload for /forecast-results
             results_data = []
             for item in result_rows:
-                target_date = item.get("date") or item.get("period_start")
-                if hasattr(target_date, "isoformat"):
-                    target_date = target_date.isoformat()
-                elif hasattr(target_date, "strftime"):
-                    target_date = target_date.strftime('%Y-%m-%d')
-                else:
-                    target_date = str(target_date)
-                    
                 results_data.append({
-                    "date": target_date,
-                    "predicted_omzet": float(item.get("predicted_omzet", item.get("predicted", 0))),
-                    "lower_bound": float(item.get("lower_bound", 0)),
-                    "upper_bound": float(item.get("upper_bound", 0)),
-                    "metrics": json.dumps({"model_confidence": "high"}) 
+                    "target_date": item["target_date"],
+                    "predicted_value": item["predicted_value"],
+                    "lower_bound": item["lower_bound"],
+                    "upper_bound": item["upper_bound"],
+                    "item_type": "sales",
+                    "confidence_level": item.get("confidence_level", 90)
                 })
-                
+            
             resp2 = requests.post(
                 f"{Config.BACKEND_API_URL}/forecast-results",
                 json={"run_id": run_id, "results": results_data},
                 headers=headers,
                 timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS
             )
-            resp2.raise_for_status()
+            if not resp2.ok:
+                logger.error(f"Gagal save_sales_forecast ke API backend: {resp2.status_code} - {resp2.text}")
+                return (False, f'Gagal simpan ke API backend: {resp2.status_code} - {resp2.text}')
             
             return (True, f'Semua data forecast {granularity} berhasil disimpan ke backend via API!')
         except Exception as e:
-            logger.error(f"Gagal save_sales_forecast ke API backend: {e}")
-            return (False, f'Gagal simpan ke API backend: {e}')
+            logger.error(f"Gagal save_sales_forecast ke API backend exception: {e}")
+            return (False, f'Gagal simpan ke API backend exception: {e}')
 
 
     def _empty_metric_block(self, prefix: str) -> Dict[str, Any]:
