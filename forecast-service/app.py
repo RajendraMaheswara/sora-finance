@@ -180,6 +180,124 @@ def scheduled_visitors_forecast_check():
     except Exception:
         traceback.print_exc()
 
+# ============================================
+# SALES SCHEDULER
+# ============================================
+_SALES_SCHEDULER_RUN_KEYS = set()
+_SALES_SCHEDULER_RUNNING_KEYS = set()
+_SALES_SCHEDULER_LOCK = threading.Lock()
+
+
+def _sales_scheduler_key(job):
+    start_date = job.get("start_date")
+    if isinstance(start_date, date):
+        start_value = start_date.isoformat()
+    else:
+        start_value = str(start_date)
+    return (str(job.get("store_id")), str(job.get("horizon_label")), start_value)
+
+
+async def _run_sales_scheduler_once_async():
+    """Cek semua store dan jalankan sales forecast yang sudah due."""
+    store_ids = await golang_client.fetch_store_ids()
+    if not store_ids:
+        logger.warning("Sales scheduler: tidak ada store dari backend internal /stores")
+        return []
+
+    results = []
+    for store_id in store_ids:
+        try:
+            operational_hours = await golang_client.fetch_store_operational_hours(store_id)
+            jobs = sales_forecast_service.build_scheduler_jobs_for_store(
+                store_id=store_id,
+                operational_hours=operational_hours,
+            )
+
+            due_jobs = []
+            for job in jobs:
+                key = _sales_scheduler_key(job)
+                with _SALES_SCHEDULER_LOCK:
+                    if key in _SALES_SCHEDULER_RUN_KEYS or key in _SALES_SCHEDULER_RUNNING_KEYS:
+                        continue
+                    _SALES_SCHEDULER_RUNNING_KEYS.add(key)
+                due_jobs.append((key, job))
+
+            if not due_jobs:
+                continue
+
+            if Config.SCHEDULER_RETRAIN:
+                logger.info("Sales scheduler: retrain store=%s sebelum auto forecast", store_id)
+                await sales_forecast_service.retrain(store_id=store_id, force=True)
+
+            for key, job in due_jobs:
+                try:
+                    logger.info(
+                        "Sales scheduler: run store=%s horizon=%s start_date=%s",
+                        store_id,
+                        job["horizon_label"],
+                        job["start_date"],
+                    )
+                    
+                    if job["horizon_label"] == "daily":
+                        forecast_result = await sales_forecast_service.forecast(
+                            store_id=store_id,
+                            forecast_days=job.get("horizon_count", 30),
+                            start_date=job["start_date"],
+                        )
+                    elif job["horizon_label"] == "weekly":
+                        forecast_result = await sales_forecast_service.forecast_weekly(
+                            store_id=store_id,
+                            forecast_weeks=job.get("horizon_count", 12),
+                            start_date=job["start_date"],
+                        )
+                    else:
+                        forecast_result = await sales_forecast_service.forecast_monthly(
+                            store_id=store_id,
+                            forecast_months=job.get("horizon_count", 12),
+                            start_date=job["start_date"],
+                        )
+
+                    if hasattr(forecast_result, "start_date_source"):
+                        forecast_result.start_date_source = job.get("start_date_source")
+                    if hasattr(forecast_result, "business_cutoff_rule"):
+                        forecast_result.business_cutoff_rule = job.get("business_cutoff_rule")
+                    if hasattr(forecast_result, "last_actual_date"):
+                        forecast_result.last_actual_date = job.get("latest_complete_day")
+
+                    forecast_dict = forecast_result.model_dump()
+                    save_success, save_msg = await sales_forecast_service.save_forecast_to_db(
+                        store_id=store_id,
+                        forecast_response=forecast_dict
+                    )
+                    
+                    with _SALES_SCHEDULER_LOCK:
+                        _SALES_SCHEDULER_RUN_KEYS.add(key)
+                    results.append({
+                        "store_id": store_id,
+                        "horizon_label": job["horizon_label"],
+                        "start_date": job["start_date"].isoformat() if isinstance(job["start_date"], date) else job["start_date"],
+                        "saved": save_success,
+                        "message": save_msg
+                    })
+                except Exception:
+                    traceback.print_exc()
+                finally:
+                    with _SALES_SCHEDULER_LOCK:
+                        _SALES_SCHEDULER_RUNNING_KEYS.discard(key)
+        except Exception:
+            traceback.print_exc()
+
+    if results:
+        logger.info("Sales scheduler selesai: %s job tersimpan", len(results))
+    return results
+
+
+def scheduled_sales_forecast_check():
+    try:
+        asyncio.run(_run_sales_scheduler_once_async())
+    except Exception:
+        traceback.print_exc()
+
 
 scheduler = None
 if Config.FORECAST_MODE == "scheduler":
@@ -189,6 +307,15 @@ if Config.FORECAST_MODE == "scheduler":
         trigger="interval",
         minutes=Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
         id="visitors_auto_forecast_check",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        func=scheduled_sales_forecast_check,
+        trigger="interval",
+        minutes=Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
+        id="sales_auto_forecast_check",
         replace_existing=True,
         max_instances=1,
         coalesce=True,
