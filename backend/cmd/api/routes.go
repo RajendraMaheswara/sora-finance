@@ -25,15 +25,13 @@ func envBool(key string, defaultValue bool) bool {
 }
 
 type visitorsDailyHistoryRow struct {
-	Date                string  `json:"date"`
-	Visitors            int     `json:"visitors"`
-	ValidOrdersCount    int     `json:"valid_orders_count"`
-	PhysicalOrdersCount int     `json:"physical_orders_count"`
-	OnlineOrdersCount   int     `json:"online_orders_count"`
-	DineInOrdersCount   int     `json:"dine_in_orders_count"`
-	TakeawayOrdersCount int     `json:"takeaway_orders_count"`
-	PhysicalItemQty     float64 `json:"physical_item_qty"`
-	AvgPhysicalItemQty  float64 `json:"avg_physical_item_qty"`
+	Date                string `json:"date"`
+	Visitors            int    `json:"visitors"`
+	ValidOrdersCount    int    `json:"valid_orders_count"`
+	PhysicalOrdersCount int    `json:"physical_orders_count"`
+	OnlineOrdersCount   int    `json:"online_orders_count"`
+	DineInOrdersCount   int    `json:"dine_in_orders_count"`
+	TakeawayOrdersCount int    `json:"takeaway_orders_count"`
 }
 
 func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
@@ -47,46 +45,22 @@ func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
 		}
 
 		rows, err := db.Query(r.Context(), `
-			WITH order_item_totals AS (
-				SELECT
-					t_order_id,
-					COALESCE(SUM(GREATEST(COALESCE(qty, 0), 0)), 0)::numeric(15,2) AS total_item_qty
-				FROM t_order_items
-				WHERE m_store_id = $1
-				  AND deleted_at IS NULL
-				GROUP BY t_order_id
-			),
-			valid_orders AS (
+			WITH valid_orders AS (
 				SELECT
 					DATE(o.created_at AT TIME ZONE 'Asia/Jakarta') AS date,
 					o.id,
 					o.m_table_id,
-					o.m_menu_online_order_type_id,
-					COALESCE(oit.total_item_qty, 0)::numeric(15,2) AS total_item_qty
+					o.m_menu_online_order_type_id
 				FROM t_orders o
-				LEFT JOIN order_item_totals oit ON oit.t_order_id = o.id
-				WHERE o.m_store_id = $2
+				WHERE o.m_store_id = $1
 				  AND o.deleted_at IS NULL
 				  AND o.cancelled_at IS NULL
 				  AND COALESCE(o.m_order_status_id, 0) <> 3
 				  AND (o.m_order_status_id = 2 OR o.m_order_payment_status_id = 200)
-			),
-			order_estimates AS (
-				SELECT
-					*,
-					CASE
-						WHEN m_menu_online_order_type_id IS NOT NULL THEN 0
-						WHEN total_item_qty <= 0 THEN 1
-						WHEN total_item_qty <= 3 THEN 1
-						WHEN total_item_qty <= 5 THEN 2
-						WHEN total_item_qty <= 8 THEN 3
-						ELSE 4
-					END::integer AS estimated_visitors
-				FROM valid_orders
 			)
 			SELECT
 				date,
-				COALESCE(SUM(estimated_visitors), 0)::integer AS visitors,
+				COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NULL)::integer AS visitors,
 				COUNT(*)::integer AS valid_orders_count,
 				COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NULL)::integer AS physical_orders_count,
 				COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NOT NULL)::integer AS online_orders_count,
@@ -97,17 +71,15 @@ func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
 				COUNT(*) FILTER (
 					WHERE m_menu_online_order_type_id IS NULL
 					  AND m_table_id IS NULL
-				)::integer AS takeaway_orders_count,
-				COALESCE(SUM(total_item_qty) FILTER (WHERE m_menu_online_order_type_id IS NULL), 0)::double precision AS physical_item_qty,
-				COALESCE(AVG(total_item_qty) FILTER (WHERE m_menu_online_order_type_id IS NULL), 0)::double precision AS avg_physical_item_qty
-			FROM order_estimates
+				)::integer AS takeaway_orders_count
+			FROM valid_orders
 			GROUP BY date
 			ORDER BY date ASC
-		`, storeID, storeID)
+		`, storeID)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 		defer rows.Close()
@@ -124,12 +96,10 @@ func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
 				&row.OnlineOrdersCount,
 				&row.DineInOrdersCount,
 				&row.TakeawayOrdersCount,
-				&row.PhysicalItemQty,
-				&row.AvgPhysicalItemQty,
 			); err != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 				return
 			}
 			row.Date = targetDate.Format("2006-01-02")
@@ -138,7 +108,7 @@ func handleInternalVisitorsDailyHistory(db *pgxpool.Pool) http.HandlerFunc {
 		if err := rows.Err(); err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "internal server error"})
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
 			return
 		}
 
@@ -271,8 +241,12 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/", deps.SalesMonthlySummaryHandler.GetAll)
 			r.Get("/{id}", deps.SalesMonthlySummaryHandler.GetByID)
 		})
+		r.Route("/internal/forecast/forecast-predictions", func(r chi.Router) {
+			r.Get("/", deps.ForecastPredictionHandler.GetAll)
+			r.Get("/{id}", deps.ForecastPredictionHandler.GetByID)
+			r.Post("/", deps.ForecastPredictionHandler.Save)
+		})
 		r.Route("/internal/forecast/forecast-runs", func(r chi.Router) {
-			r.Get("/{id}", deps.ForecastRunHandler.GetByID)
 			r.Post("/", deps.ForecastRunHandler.Create)
 		})
 		r.Route("/internal/forecast/forecast-results", func(r chi.Router) {
@@ -285,7 +259,7 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 	r.Group(func(r chi.Router) {
 		r.Use(authpkg.Middleware(deps.JWTSecret))
 		r.Use(authpkg.StoreMiddleware)
-		r.Get("/api/forecast/latest", deps.ForecastResultHandler.GetLatestForecast)
+		r.Get("/api/dashboard/forecast", deps.ForecastPredictionHandler.GetMyStoreForecast)
 
 		r.Route("/api/stores", func(r chi.Router) {
 			r.Get("/", deps.StoreHandler.GetAll)
@@ -379,6 +353,12 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/{id}", deps.FinanceDailySummaryHandler.GetByID)
 		})
 
+		r.Route("/api/forecast-predictions", func(r chi.Router) {
+			r.Get("/", deps.ForecastPredictionHandler.GetAll)
+			r.Get("/{id}", deps.ForecastPredictionHandler.GetByID)
+			r.Post("/", deps.ForecastPredictionHandler.Save)
+		})
+
 		r.Get("/api/forecast/visitors/latest", deps.ForecastResultHandler.GetLatestVisitors)
 
 		r.Route("/api/forecast-results", func(r chi.Router) {
@@ -388,7 +368,6 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 		})
 
 		r.Route("/api/forecast-runs", func(r chi.Router) {
-			r.Get("/{id}", deps.ForecastRunHandler.GetByID)
 			r.Post("/", deps.ForecastRunHandler.Create)
 		})
 

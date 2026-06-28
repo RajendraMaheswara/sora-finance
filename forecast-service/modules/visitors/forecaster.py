@@ -150,9 +150,8 @@ class GolangAPIClient:
             "GOLANG_INTERNAL_API_BASE_URL",
             Config.GOLANG_API_BASE_URL,
         ).rstrip("/")
-        # Orders diambil paginated. Order-items di backend saat ini bisa lambat,
-        # jadi read timeout dibuat lebih panjang agar request tidak putus saat
-        # backend masih memproses.
+        # Visitors t_orders-only: order-items tidak dipakai untuk menghitung target.
+        # Timeout tetap panjang karena orders bisa dipanggil paginated saat fallback.
         self.timeout = httpx.Timeout(45.0, connect=10.0, read=45.0, write=10.0, pool=10.0)
         self.long_timeout = httpx.Timeout(120.0, connect=10.0, read=120.0, write=10.0, pool=10.0)
         self.page_limit = 200
@@ -266,7 +265,7 @@ class GolangAPIClient:
             "granularity": horizon_label,
             "model_name": "random forest",
             "model_version": model_version,
-            "feature_version": "visitors-backend-daily-history-v5",
+            "feature_version": "visitors-torders-only-v6",
             "train_start_date": train_start_date.isoformat(),
             "train_end_date": train_end_date.isoformat(),
             "predict_start_date": predict_start_date.isoformat(),
@@ -372,30 +371,6 @@ class GolangAPIClient:
         logger.info("Fetched total orders for visitors: %s", len(result))
         return result
 
-    async def fetch_order_items(self, store_id: str) -> List[Dict[str, Any]]:
-        logger.info(f"Fetching order items for store {store_id} via backend API")
-        try:
-            # Backend order-items saat ini belum punya pagination/filter khusus dan bisa
-            # lambat. Pakai timeout lebih panjang dan 1 attempt supaya tidak membuat
-            # tiga request berat bertumpuk. Jika gagal, visitors tetap jalan dengan
-            # fallback qty=0 per order.
-            data = await self._get(
-                "order-items",
-                params={"store_id": store_id},
-                timeout=self.long_timeout,
-                attempts=1,
-            )
-            items = self._extract_items(data)
-            filtered = [item for item in items if self._same_store(item, store_id)]
-            result = filtered or items
-            logger.info("Fetched order items for visitors: %s", len(result))
-            return result
-        except Exception as exc:
-            # Jika endpoint order-items belum siap/lambat, visitors tetap bisa jalan dengan
-            # fallback 1 non-online order = 1 visitor.
-            logger.warning(f"Failed to fetch order items via backend API, fallback qty=0: {exc}")
-            return []
-
     async def fetch_visitors_daily_history(self, store_id: str) -> List[Dict[str, Any]]:
         logger.info(f"Fetching visitors daily history for store {store_id} via backend API")
         try:
@@ -472,42 +447,20 @@ class GolangAPIClient:
     def _order_id(self, order: Dict[str, Any]) -> str:
         return str(order.get("id") or order.get("order_id") or order.get("orderId") or "")
 
-    def _order_item_order_id(self, item: Dict[str, Any]) -> str:
-        return str(item.get("t_order_id") or item.get("order_id") or item.get("orderId") or item.get("tOrderId") or "")
+    def _estimate_visitors(self, is_online: bool) -> int:
+        """Visitors t_orders-only.
 
-    def _aggregate_order_item_qty(self, order_items: List[Dict[str, Any]]) -> Dict[str, float]:
-        totals: Dict[str, float] = {}
-        for item in order_items:
-            if not self._is_blank(item.get("deleted_at") or item.get("deletedAt")):
-                continue
-            order_id = self._order_item_order_id(item)
-            if not order_id:
-                continue
-            qty = max(0.0, self._float_value(item.get("qty"), 0.0))
-            totals[order_id] = totals.get(order_id, 0.0) + qty
-        return totals
-
-    def _estimate_visitors(self, is_online: bool, total_item_qty: float) -> int:
-        if is_online:
-            return 0
-        if total_item_qty <= 0:
-            return 1
-        if total_item_qty <= 3:
-            return 1
-        if total_item_qty <= 5:
-            return 2
-        if total_item_qty <= 8:
-            return 3
-        return 4
+        Satu order fisik valid dihitung sebagai 1 visitor.
+        Order online tidak dihitung sebagai visitor fisik outlet.
+        """
+        return 0 if is_online else 1
 
     def _build_daily_orders_from_backend(
         self,
         *,
         store_id: str,
         orders: List[Dict[str, Any]],
-        order_items: List[Dict[str, Any]],
     ) -> List[Dict[str, Any]]:
-        item_qty_by_order = self._aggregate_order_item_qty(order_items)
         grouped: Dict[date, Dict[str, Any]] = {}
 
         for order in orders:
@@ -524,9 +477,7 @@ class GolangAPIClient:
             is_online = not self._is_blank(online_type)
             is_dine_in = (not is_online) and (not self._is_blank(table_id))
             is_takeaway = (not is_online) and (not is_dine_in)
-            order_id = self._order_id(order)
-            total_item_qty = max(0.0, item_qty_by_order.get(order_id, 0.0))
-            estimated_visitors = self._estimate_visitors(is_online, total_item_qty)
+            estimated_visitors = self._estimate_visitors(is_online)
 
             row = grouped.setdefault(order_date, {
                 "date": order_date,
@@ -536,8 +487,6 @@ class GolangAPIClient:
                 "online_orders_count": 0,
                 "dine_in_orders_count": 0,
                 "takeaway_orders_count": 0,
-                "physical_item_qty": 0.0,
-                "avg_physical_item_qty": 0.0,
             })
             row["visitors"] += estimated_visitors
             row["valid_orders_count"] += 1
@@ -545,21 +494,12 @@ class GolangAPIClient:
                 row["online_orders_count"] += 1
             else:
                 row["physical_orders_count"] += 1
-                row["physical_item_qty"] += total_item_qty
                 if is_dine_in:
                     row["dine_in_orders_count"] += 1
                 if is_takeaway:
                     row["takeaway_orders_count"] += 1
 
-        rows = []
-        for _, row in sorted(grouped.items(), key=lambda item: item[0]):
-            physical_orders = max(int(row.get("physical_orders_count", 0)), 0)
-            row["avg_physical_item_qty"] = (
-                float(row.get("physical_item_qty", 0.0)) / physical_orders
-                if physical_orders > 0 else 0.0
-            )
-            rows.append(row)
-        return rows
+        return [row for _, row in sorted(grouped.items(), key=lambda item: item[0])]
 
     async def fetch_all_historical_data(self, store_id: str) -> Dict[str, List[Dict[str, Any]]]:
         """
@@ -571,8 +511,8 @@ class GolangAPIClient:
         operational_hours = await self.fetch_store_operational_hours(store_id)
 
         # Fast path untuk forecast: backend mengembalikan data harian yang sudah
-        # diagregasi dari t_orders + t_order_items. Ini menghindari 50+ request
-        # pagination raw orders dan endpoint order-items yang berat.
+        # diagregasi dari t_orders saja. Order-items sengaja tidak dipakai agar
+        # hasil visitors bisa dibandingkan dengan definisi lama t_orders-only.
         daily_orders = await self.fetch_visitors_daily_history(store_id)
         if daily_orders:
             dates = [row.get("date") for row in daily_orders if row.get("date") is not None]
@@ -588,24 +528,22 @@ class GolangAPIClient:
         # Fallback untuk backend lama: tetap bisa jalan dengan pagination raw orders,
         # tetapi ini lebih lambat dan hanya dipakai kalau endpoint agregasi belum ada.
         orders = await self.fetch_orders(store_id)
-        order_items = await self.fetch_order_items(store_id)
 
         daily_orders = self._build_daily_orders_from_backend(
             store_id=store_id,
             orders=orders,
-            order_items=order_items,
         )
         if daily_orders:
             dates = [row.get("date") for row in daily_orders if row.get("date") is not None]
             logger.info(
-                "Built visitors daily history fallback: raw_orders=%s order_items=%s daily_rows=%s range=%s..%s",
-                len(orders), len(order_items), len(daily_orders),
+                "Built visitors daily history fallback: raw_orders=%s daily_rows=%s range=%s..%s",
+                len(orders), len(daily_orders),
                 min(dates) if dates else None, max(dates) if dates else None,
             )
         else:
             logger.warning(
-                "Visitors daily history kosong setelah parsing backend API: raw_orders=%s order_items=%s",
-                len(orders), len(order_items),
+                "Visitors daily history kosong setelah parsing backend API: raw_orders=%s",
+                len(orders),
             )
         return {
             "orders": daily_orders,
@@ -661,60 +599,32 @@ class PostgresClient:
 
     def fetch_orders(self, store_id: str, conn=None) -> List[Dict[str, Any]]:
         """
-        Ambil dataset harian visitors dari t_orders + t_order_items.
+        Ambil dataset harian visitors dari t_orders saja.
 
-        Definisi visitors memakai mode items_capped:
+        Definisi visitors t_orders-only:
         - order online = 0 pengunjung fisik outlet
-        - order fisik dengan 0-3 item = 1 visitor
-        - order fisik dengan 4-5 item = 2 visitors
-        - order fisik dengan 6-8 item = 3 visitors
-        - order fisik dengan >8 item = 4 visitors
+        - order fisik valid = 1 visitor
 
-        Rule ini tidak bergantung pada kategori menu sehingga tetap cocok untuk cafe
-        yang hanya menjual kopi/minuman, warmindo, resto, atau F&B lain tanpa perlu
-        menambah tabel/kolom konfigurasi baru.
+        Tabel item sengaja tidak dipakai agar hasil bisa dibandingkan
+        dengan definisi visitors lama berbasis jumlah order.
         """
         sql = """
-            WITH order_item_totals AS (
-                SELECT
-                    t_order_id,
-                    COALESCE(SUM(GREATEST(COALESCE(qty, 0), 0)), 0)::numeric(15,2) AS total_item_qty
-                FROM t_order_items
-                WHERE m_store_id = %s
-                  AND deleted_at IS NULL
-                GROUP BY t_order_id
-            ),
-            valid_orders AS (
+            WITH valid_orders AS (
                 SELECT
                     DATE(o.created_at AT TIME ZONE 'Asia/Jakarta') AS date,
                     o.id,
                     o.m_table_id,
-                    o.m_menu_online_order_type_id,
-                    COALESCE(oit.total_item_qty, 0)::numeric(15,2) AS total_item_qty
+                    o.m_menu_online_order_type_id
                 FROM t_orders o
-                LEFT JOIN order_item_totals oit ON oit.t_order_id = o.id
                 WHERE o.m_store_id = %s
                   AND o.deleted_at IS NULL
                   AND o.cancelled_at IS NULL
                   AND COALESCE(o.m_order_status_id, 0) <> 3
                   AND (o.m_order_status_id = 2 OR o.m_order_payment_status_id = 200)
-            ),
-            order_estimates AS (
-                SELECT
-                    *,
-                    CASE
-                        WHEN m_menu_online_order_type_id IS NOT NULL THEN 0
-                        WHEN total_item_qty <= 0 THEN 1
-                        WHEN total_item_qty <= 3 THEN 1
-                        WHEN total_item_qty <= 5 THEN 2
-                        WHEN total_item_qty <= 8 THEN 3
-                        ELSE 4
-                    END::integer AS estimated_visitors
-                FROM valid_orders
             )
             SELECT
                 date,
-                COALESCE(SUM(estimated_visitors), 0)::integer AS visitors,
+                COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NULL)::integer AS visitors,
                 COUNT(*)::integer AS valid_orders_count,
                 COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NULL)::integer AS physical_orders_count,
                 COUNT(*) FILTER (WHERE m_menu_online_order_type_id IS NOT NULL)::integer AS online_orders_count,
@@ -725,25 +635,23 @@ class PostgresClient:
                 COUNT(*) FILTER (
                     WHERE m_menu_online_order_type_id IS NULL
                       AND m_table_id IS NULL
-                )::integer AS takeaway_orders_count,
-                COALESCE(SUM(total_item_qty) FILTER (WHERE m_menu_online_order_type_id IS NULL), 0)::numeric(15,2) AS physical_item_qty,
-                COALESCE(AVG(total_item_qty) FILTER (WHERE m_menu_online_order_type_id IS NULL), 0)::numeric(15,2) AS avg_physical_item_qty
-            FROM order_estimates
+                )::integer AS takeaway_orders_count
+            FROM valid_orders
             GROUP BY date
             ORDER BY date ASC
         """
         try:
             if conn is not None:
                 with conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                    cur.execute(sql, (store_id, store_id))
+                    cur.execute(sql, (store_id,))
                     return [dict(row) for row in cur.fetchall()]
             with self._connection() as owned_conn:
                 with owned_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cur:
-                    cur.execute(sql, (store_id, store_id))
+                    cur.execute(sql, (store_id,))
                     return [dict(row) for row in cur.fetchall()]
         except Exception as exc:
             logger.error(f"DB error fetch_orders: {exc}")
-            raise RuntimeError(f"Gagal mengambil t_orders/t_order_items dari database: {exc}") from exc
+            raise RuntimeError(f"Gagal mengambil t_orders dari database: {exc}") from exc
 
     def fetch_store_operational_hours(self, store_id: str, conn=None) -> List[Dict[str, Any]]:
         sql = """
@@ -831,7 +739,7 @@ class PostgresClient:
                         started_at, finished_at
                     ) VALUES (
                         %s, 'visitors', %s, %s,
-                        %s, 'random forest', %s, 'visitors-backend-daily-history-v5',
+                        %s, 'random forest', %s, 'visitors-torders-only-v6',
                         %s, %s, %s, %s,
                         %s, %s, %s, 'success', true,
                         %s, %s
@@ -903,12 +811,13 @@ HARI_INDONESIA = {
 
 class VisitorPreprocessor:
     """
-    Preprocessor visitors versi orders + items_capped.
+    Preprocessor visitors versi t_orders-only.
 
-    Target dibuat dari t_orders valid non-online, lalu t_order_items.qty dipakai
-    secara konservatif dengan cap per order:
-    0-3 item = 1 visitor, 4-5 item = 2 visitors, 6-8 item = 3 visitors,
-    >8 item = 4 visitors. Order online tetap 0 visitors fisik.
+    Target dibuat dari t_orders valid:
+    - order fisik/non-online = 1 visitor
+    - order online = 0 visitor fisik outlet
+
+    Tabel item sengaja tidak dipakai untuk kebutuhan perbandingan.
     """
 
     UNKNOWN_NUMERIC_COLUMNS = {
@@ -917,9 +826,6 @@ class VisitorPreprocessor:
         "online_orders_count",
         "dine_in_orders_count",
         "takeaway_orders_count",
-        "physical_item_qty",
-        "avg_physical_item_qty",
-        "avg_items_per_physical_order",
         "online_ratio",
         "dine_in_ratio",
         "takeaway_ratio",
@@ -982,8 +888,6 @@ class VisitorPreprocessor:
                     "online_orders_count": 0,
                     "dine_in_orders_count": 0,
                     "takeaway_orders_count": 0,
-                    "physical_item_qty": 0.0,
-                    "avg_physical_item_qty": 0.0,
                 }
                 for col, default in numeric_defaults.items():
                     if col not in df.columns:
@@ -996,8 +900,6 @@ class VisitorPreprocessor:
                 df["online_orders_count"] = df["online_orders_count"].clip(lower=0).round().astype(int)
                 df["dine_in_orders_count"] = df["dine_in_orders_count"].clip(lower=0).round().astype(int)
                 df["takeaway_orders_count"] = df["takeaway_orders_count"].clip(lower=0).round().astype(int)
-                df["physical_item_qty"] = pd.to_numeric(df["physical_item_qty"], errors="coerce").fillna(0.0).clip(lower=0)
-                df["avg_physical_item_qty"] = pd.to_numeric(df["avg_physical_item_qty"], errors="coerce").fillna(0.0).clip(lower=0)
                 df = self._add_order_ratios(df)
                 return df[[
                     "date",
@@ -1007,9 +909,6 @@ class VisitorPreprocessor:
                     "online_orders_count",
                     "dine_in_orders_count",
                     "takeaway_orders_count",
-                    "physical_item_qty",
-                    "avg_physical_item_qty",
-                    "avg_items_per_physical_order",
                     "online_ratio",
                     "dine_in_ratio",
                     "takeaway_ratio",
@@ -1023,8 +922,6 @@ class VisitorPreprocessor:
             df["date"] = pd.to_datetime(df[date_col]).dt.date
             online_col = next((c for c in ["m_menu_online_order_type_id", "mMenuOnlineOrderTypeId"] if c in df.columns), None)
             table_col = next((c for c in ["m_table_id", "mTableId"] if c in df.columns), None)
-            item_qty_col = next((c for c in ["total_item_qty", "totalItemQty", "item_qty", "itemQty", "qty"] if c in df.columns), None)
-
             if online_col:
                 df["is_online"] = df[online_col].notna()
             else:
@@ -1036,32 +933,8 @@ class VisitorPreprocessor:
                 df["is_dine_in"] = False
 
             df["is_takeaway"] = (~df["is_online"]) & (~df["is_dine_in"])
-            if item_qty_col:
-                df["total_item_qty"] = pd.to_numeric(df[item_qty_col], errors="coerce").fillna(0.0).clip(lower=0)
-            else:
-                df["total_item_qty"] = 0.0
-
-            def _estimate_visitors_from_item_qty(row: pd.Series) -> int:
-                if bool(row.get("is_online", False)):
-                    return 0
-                qty = float(row.get("total_item_qty", 0.0) or 0.0)
-                if qty <= 0:
-                    return 1
-                if qty <= 3:
-                    return 1
-                if qty <= 5:
-                    return 2
-                if qty <= 8:
-                    return 3
-                return 4
-
-            df["estimated_visitors"] = df.apply(_estimate_visitors_from_item_qty, axis=1)
+            df["estimated_visitors"] = (~df["is_online"]).astype(int)
             df["physical_order_unit"] = (~df["is_online"]).astype(int)
-            df["physical_item_qty_for_order"] = np.where(
-                df["is_online"],
-                0.0,
-                pd.to_numeric(df["total_item_qty"], errors="coerce").fillna(0.0).clip(lower=0),
-            )
             daily = df.groupby("date").agg(
                 visitors=("estimated_visitors", "sum"),
                 valid_orders_count=("estimated_visitors", "count"),
@@ -1069,8 +942,6 @@ class VisitorPreprocessor:
                 online_orders_count=("is_online", "sum"),
                 dine_in_orders_count=("is_dine_in", "sum"),
                 takeaway_orders_count=("is_takeaway", "sum"),
-                physical_item_qty=("physical_item_qty_for_order", "sum"),
-                avg_physical_item_qty=("physical_item_qty_for_order", lambda x: float(pd.to_numeric(x, errors="coerce").fillna(0.0).sum() / max((x > 0).sum(), 1))),
             ).reset_index()
             daily = self._add_order_ratios(daily)
             return daily
@@ -1084,11 +955,6 @@ class VisitorPreprocessor:
         df["online_ratio"] = (df["online_orders_count"] / denominator).fillna(0.0)
         df["dine_in_ratio"] = (df["dine_in_orders_count"] / denominator).fillna(0.0)
         df["takeaway_ratio"] = (df["takeaway_orders_count"] / denominator).fillna(0.0)
-        physical_denominator = df["physical_orders_count"].replace(0, np.nan)
-        if "physical_item_qty" in df.columns:
-            df["avg_items_per_physical_order"] = (df["physical_item_qty"] / physical_denominator).fillna(0.0)
-        else:
-            df["avg_items_per_physical_order"] = 0.0
         return df
 
     def _complete_daily_range(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -1231,12 +1097,6 @@ class VisitorPreprocessor:
         df["expanding_mean"] = df["visitors"].shift(1).expanding(min_periods=expanding_min_periods).mean()
 
 
-        # Lag/rolling untuk item/order-derived metrics aman karena hanya memakai histori masa lalu.
-        for item_col in ["physical_item_qty", "avg_physical_item_qty", "avg_items_per_physical_order"]:
-            if item_col in df.columns:
-                df[f"lag_{item_col}_7"] = df[item_col].shift(7)
-                df[f"rolling_{item_col}_7"] = df[item_col].shift(1).rolling(7, min_periods=1).mean()
-
         # Lag/rolling untuk rasio channel aman karena hanya memakai histori masa lalu.
         for channel_col in ["online_ratio", "dine_in_ratio", "takeaway_ratio"]:
             if channel_col in df.columns:
@@ -1257,9 +1117,6 @@ class VisitorPreprocessor:
             "online_orders_count",
             "dine_in_orders_count",
             "takeaway_orders_count",
-            "physical_item_qty",
-            "avg_physical_item_qty",
-            "avg_items_per_physical_order",
             "online_ratio",
             "dine_in_ratio",
             "takeaway_ratio",
@@ -1308,17 +1165,6 @@ class VisitorPreprocessor:
 
         row["expanding_mean"] = float(np.mean(hist_visitors)) if len(hist_visitors) > 0 else 0.0
 
-
-        for item_col in ["physical_item_qty", "avg_physical_item_qty", "avg_items_per_physical_order"]:
-            if item_col in history.columns:
-                hist_item = pd.to_numeric(history[item_col], errors="coerce").fillna(0).values
-                row[f"lag_{item_col}_7"] = float(hist_item[-7]) if len(hist_item) >= 7 else 0.0
-                recent_item = hist_item[-7:] if len(hist_item) >= 7 else hist_item
-                row[f"rolling_{item_col}_7"] = float(np.mean(recent_item)) if len(recent_item) > 0 else 0.0
-            else:
-                row[f"lag_{item_col}_7"] = 0.0
-                row[f"rolling_{item_col}_7"] = 0.0
-
         for channel_col in ["online_ratio", "dine_in_ratio", "takeaway_ratio"]:
             if channel_col in history.columns:
                 hist_channel = pd.to_numeric(history[channel_col], errors="coerce").fillna(0).values
@@ -1352,8 +1198,8 @@ class ForecastService:
                 "expanding_min_periods": 3,
             },
         }
-        self.feature_version = "visitors-backend-daily-history-v5"
-        self.data_source = "backend_visitors_daily_history_aggregated_from_t_orders_t_order_items_operational_hours"
+        self.feature_version = "visitors-torders-only-v6"
+        self.data_source = "backend_visitors_daily_history_aggregated_from_t_orders_only_operational_hours"
 
     def _now_jakarta(self) -> datetime:
         return datetime.now(ZoneInfo("Asia/Jakarta"))
@@ -1432,7 +1278,7 @@ class ForecastService:
         meta = dict(meta or {})
         meta["feature_version"] = self.feature_version
         meta["data_source"] = self.data_source
-        meta["target_definition"] = "SUM(items_capped visitors for valid non-online t_orders; online orders = 0)"
+        meta["target_definition"] = "COUNT(valid non-online t_orders); online orders = 0"
         try:
             meta_path = trainer._meta_path(store_id, granularity)
             with open(meta_path, "w") as f:
@@ -1986,7 +1832,7 @@ class ForecastService:
         mae = float(mae_value or 0.0)
         rmse = float(rmse_value or 0.0)
         mape = None
-        model_version = "visitors-rf-v3-items-capped"
+        model_version = "visitors-rf-v4-torders-only"
 
         avg_prediction = max(
             1.0,
