@@ -14,7 +14,9 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 
 from config import Config
-from datetime import datetime, timezone
+from datetime import datetime, date, timedelta, timezone
+from zoneinfo import ZoneInfo
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class InventoryForecaster:
@@ -52,22 +54,230 @@ class InventoryForecaster:
         )
 
     # =========================================================================
+    # BACKEND + PERIOD HELPERS
+    # =========================================================================
+    def _backend_base_url(self) -> str:
+        return getattr(Config, 'GOLANG_INTERNAL_API_BASE_URL', Config.GOLANG_API_BASE_URL).rstrip('/')
+
+    def _extract_items(self, data: Any) -> List[Dict[str, Any]]:
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in ('data', 'items', 'results'):
+                value = data.get(key)
+                if isinstance(value, list):
+                    return [item for item in value if isinstance(item, dict)]
+        return []
+
+    def _same_store(self, item: Dict[str, Any]) -> bool:
+        value = item.get('m_store_id') or item.get('store_id') or item.get('storeId') or item.get('mStoreId')
+        return str(value) == str(self.store_id)
+
+    def _backend_get(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
+        url = f"{self._backend_base_url()}/{endpoint.lstrip('/')}"
+        resp = requests.get(
+            url,
+            params=params,
+            headers=Config.backend_headers(),
+            timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _backend_post(self, endpoint: str, payload: Dict[str, Any]) -> Any:
+        url = f"{self._backend_base_url()}/{endpoint.lstrip('/')}"
+        resp = requests.post(
+            url,
+            json=payload,
+            headers=Config.backend_headers(),
+            timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def _fetch_store_operational_hours(self) -> List[Dict[str, Any]]:
+        try:
+            data = self._backend_get('store-operational-hours', params={'store_id': self.store_id})
+            items = self._extract_items(data)
+            filtered = [item for item in items if self._same_store(item)]
+            return filtered or items
+        except Exception as exc:
+            print(f"[WARN] operational hours gagal diambil, fallback open 24h: {exc}")
+            return []
+
+    def _now_jakarta(self) -> datetime:
+        return datetime.now(ZoneInfo(getattr(Config, 'FORECAST_SCHEDULER_TIMEZONE', 'Asia/Jakarta')))
+
+    def _bool_value(self, value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {'true', 't', '1', 'yes', 'y', 'on'}:
+            return True
+        if text in {'false', 'f', '0', 'no', 'n', 'off'}:
+            return False
+        return default
+
+    def _seconds_from_time_like(self, value: Any) -> Optional[int]:
+        if value is None or pd.isna(value):
+            return None
+        ts = pd.to_datetime(value, errors='coerce')
+        if pd.isna(ts):
+            return None
+        return int(ts.hour) * 3600 + int(ts.minute) * 60 + int(ts.second)
+
+    def _calculate_open_duration_hours(self, is_active: bool, open_time: Any, close_time: Any) -> float:
+        if not is_active:
+            return 0.0
+        open_seconds = self._seconds_from_time_like(open_time)
+        close_seconds = self._seconds_from_time_like(close_time)
+        if open_seconds is None or close_seconds is None:
+            return 24.0
+        if close_seconds == open_seconds:
+            return 24.0
+        if close_seconds > open_seconds:
+            duration_seconds = close_seconds - open_seconds
+        else:
+            duration_seconds = (24 * 3600 - open_seconds) + close_seconds
+        return round(max(0.0, min(24.0, duration_seconds / 3600.0)), 2)
+
+    def _operational_record_for_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        if not operational_hours:
+            return None
+        ts = pd.Timestamp(target_date)
+        candidates = {int(ts.dayofweek), int(ts.isoweekday()), int(ts.isoweekday()) % 7}
+        for record in operational_hours or []:
+            try:
+                day_key = int(record.get('day_of_week', record.get('dayOfWeek')))
+            except Exception:
+                continue
+            if day_key in candidates:
+                return record
+        return None
+
+    def _store_is_open_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
+        if not operational_hours:
+            return True
+        record = self._operational_record_for_date(target_date, operational_hours)
+        if record is None:
+            return True
+        if not self._bool_value(record.get('is_active', record.get('isActive')), default=False):
+            return False
+        duration = self._calculate_open_duration_hours(
+            is_active=True,
+            open_time=record.get('open_time', record.get('openTime')),
+            close_time=record.get('close_time', record.get('closeTime')),
+        )
+        return duration > 0
+
+    def _operational_cutoff_datetime(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> datetime:
+        jakarta = ZoneInfo(getattr(Config, 'FORECAST_SCHEDULER_TIMEZONE', 'Asia/Jakarta'))
+        record = self._operational_record_for_date(target_date, operational_hours)
+        if not operational_hours or record is None:
+            return (
+                datetime.combine(target_date + timedelta(days=1), datetime.min.time(), tzinfo=jakarta)
+                + timedelta(minutes=getattr(Config, 'FORECAST_24H_RUN_SCHEDULER_MINUTES', 120))
+            )
+        is_active = self._bool_value(record.get('is_active', record.get('isActive')), default=False)
+        if not is_active:
+            return datetime.combine(target_date, datetime.min.time(), tzinfo=jakarta)
+        open_seconds = self._seconds_from_time_like(record.get('open_time', record.get('openTime')))
+        close_seconds = self._seconds_from_time_like(record.get('close_time', record.get('closeTime')))
+        if open_seconds is None or close_seconds is None or open_seconds == close_seconds:
+            return (
+                datetime.combine(target_date + timedelta(days=1), datetime.min.time(), tzinfo=jakarta)
+                + timedelta(minutes=getattr(Config, 'FORECAST_24H_RUN_SCHEDULER_MINUTES', 120))
+            )
+        close_day = target_date + timedelta(days=1) if close_seconds <= open_seconds else target_date
+        close_dt = datetime.combine(close_day, datetime.min.time(), tzinfo=jakarta) + timedelta(seconds=close_seconds)
+        return close_dt + timedelta(minutes=getattr(Config, 'FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES', 60))
+
+    def _latest_complete_day_by_operational_hours(
+        self,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> date:
+        now = now_jakarta or self._now_jakarta()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=ZoneInfo(getattr(Config, 'FORECAST_SCHEDULER_TIMEZONE', 'Asia/Jakarta')))
+        for offset in range(0, 14):
+            candidate = now.date() - timedelta(days=offset)
+            if not self._store_is_open_on_date(candidate, operational_hours):
+                continue
+            if now >= self._operational_cutoff_datetime(candidate, operational_hours):
+                return candidate
+        return now.date() - timedelta(days=1)
+
+    def _next_monday_after(self, value: date) -> date:
+        days = (7 - value.weekday()) % 7
+        if days == 0:
+            days = 7
+        return value + timedelta(days=days)
+
+    def _first_day_next_month_after(self, value: date) -> date:
+        return (pd.Timestamp(value.replace(day=1)) + pd.DateOffset(months=1)).date()
+
+    def _resolve_forecast_start_meta(
+        self,
+        *,
+        last_actual_date: Optional[date],
+        operational_hours: List[Dict[str, Any]],
+        requested_start_date: Optional[date],
+        horizon_label: str,
+    ) -> Dict[str, Any]:
+        if requested_start_date is not None:
+            return {
+                'forecast_start_date': requested_start_date,
+                'start_date_source': 'manual_body',
+                'last_actual_date': last_actual_date,
+                'business_cutoff_rule': 'manual_start_date',
+            }
+
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours)
+        next_after_complete_day = latest_complete_day + timedelta(days=1)
+        next_after_actual = last_actual_date + timedelta(days=1) if last_actual_date is not None else None
+        candidate_start = max([d for d in [next_after_complete_day, next_after_actual] if d is not None])
+
+        if horizon_label == 'weekly':
+            forecast_start = self._next_monday_after(latest_complete_day)
+            if forecast_start < candidate_start:
+                forecast_start = self._next_monday_after(candidate_start - timedelta(days=1))
+            start_date_source = 'auto_weekly_complete_period'
+            business_cutoff_rule = 'weekly_after_complete_operational_sunday_start_monday'
+        elif horizon_label == 'monthly':
+            forecast_start = self._first_day_next_month_after(latest_complete_day)
+            if forecast_start < candidate_start:
+                forecast_start = self._first_day_next_month_after(candidate_start)
+            start_date_source = 'auto_monthly_complete_period'
+            business_cutoff_rule = 'monthly_after_complete_operational_month_start_first_day'
+        else:
+            forecast_start = candidate_start
+            start_date_source = 'auto_daily_complete_period'
+            business_cutoff_rule = 'daily_after_close_or_24h_cutoff'
+
+        return {
+            'forecast_start_date': forecast_start,
+            'start_date_source': start_date_source,
+            'last_actual_date': last_actual_date,
+            'latest_complete_day': latest_complete_day,
+            'business_cutoff_rule': business_cutoff_rule,
+        }
+
+    # =========================================================================
     # DATA RETRIEVAL
     # =========================================================================
     def _get_historical_data(self, start_date='2020-01-01', end_date=None):
         if end_date is None:
             end_date = pd.Timestamp.now().strftime('%Y-%m-%d')
 
-        url = f"{Config.BACKEND_API_URL}/ingredient-stock-histories"
         try:
-            resp = requests.get(url, headers=Config.backend_headers(),
-                                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
-            resp.raise_for_status()
+            data = self._backend_get('ingredient-stock-histories', params={'store_id': self.store_id})
         except requests.RequestException as e:
-            raise ValueError(f"Gagal mengambil data dari API: {e}")
+            raise ValueError(f"Gagal mengambil data dari API backend internal: {e}")
 
-        data    = resp.json()
-        records = data['data'] if isinstance(data, dict) and 'data' in data else data
+        records = self._extract_items(data)
         if not records:
             raise ValueError("Data kosong dari API")
 
@@ -89,6 +299,11 @@ class InventoryForecaster:
         daily['ds'] = pd.to_datetime(daily['ds'])
 
         max_actual_date = daily['ds'].max()
+
+        # Samakan dengan visitors: hanya pakai operational day yang sudah complete.
+        operational_hours = self._fetch_store_operational_hours()
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours)
+        max_actual_date = min(max_actual_date, pd.Timestamp(latest_complete_day))
 
         # Pemotongan Period Complete sesuai freq
         if self.freq == 'W':
@@ -367,18 +582,19 @@ class InventoryForecaster:
             raise ValueError("freq harus 'D', 'W', atau 'M'")
 
         import pandas as pd
-        last_hist_date = self.model.history['ds'].max()
-        
-        if start_date:
-            target_start = pd.to_datetime(start_date)
-            days_diff = (target_start - last_hist_date).days
-            if days_diff > 0:
-                total_periods = days_diff + future_periods
-            else:
-                total_periods = future_periods
-        else:
-            target_start = last_hist_date + pd.Timedelta(days=1)
-            total_periods = future_periods
+        horizon_label = {'D': 'daily', 'W': 'weekly', 'M': 'monthly'}[freq]
+        last_hist_date = pd.to_datetime(self.model.history['ds'].max())
+        requested_start_date = pd.to_datetime(start_date).date() if start_date else None
+        operational_hours = self._fetch_store_operational_hours()
+        start_meta = self._resolve_forecast_start_meta(
+            last_actual_date=last_hist_date.date(),
+            operational_hours=operational_hours,
+            requested_start_date=requested_start_date,
+            horizon_label=horizon_label,
+        )
+        target_start = pd.Timestamp(start_meta['forecast_start_date'])
+        days_diff = (target_start - last_hist_date).days
+        total_periods = (days_diff + future_periods) if days_diff > 0 else future_periods
 
         future = self.model.make_future_dataframe(periods=total_periods)
         future = self._add_regressors(future)
@@ -392,7 +608,6 @@ class InventoryForecaster:
 
         # Nama hari Indonesia
         _day_names = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
-        horizon_label = {'D': 'daily', 'W': 'weekly', 'M': 'monthly'}[freq]
 
         if freq == 'D':
             forecast_array = [
@@ -504,7 +719,8 @@ class InventoryForecaster:
             "forecast_end_date": fc_end,
             "last_actual_date": last_hist_date.strftime('%Y-%m-%d'),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "start_date_source": "custom_start_date" if start_date else "auto_last_actual_date",
+            "start_date_source": start_meta.get('start_date_source'),
+            "business_cutoff_rule": start_meta.get('business_cutoff_rule'),
             "horizon": {
                 "count": periods,
                 "days": future_periods,
@@ -538,112 +754,162 @@ class InventoryForecaster:
     # =========================================================================
     # SAVE TO DATABASE
     # =========================================================================
-    def save_all_forecasts(self, periods=4, freq='W', start_date=None):
+    def _parse_run_id(self, response: Any) -> Optional[int]:
+        if not isinstance(response, dict):
+            return None
+        raw = (
+            response.get('run_id')
+            or (response.get('data') or {}).get('run_id')
+            or (response.get('data') or {}).get('id')
+            or response.get('id')
+        )
+        if raw is None:
+            return None
         try:
-            result = self.predict(periods=periods, freq=freq, start_date=start_date)
-        except Exception as e:
-            print(f"[ERROR] Gagal prediksi: {e}")
-            return False
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
-        model_meta = result.get('model_metadata', {})
-        metrics = {}
-        if model_meta:
-            metrics = {
-                'mae': model_meta.get('cv_mae'),
-                'rmse': model_meta.get('cv_rmse'),
-                'mape': model_meta.get('mape'),
-            }
-        summary = result.get('summary', {})
-
-        forecast_array = result.get('forecasts', [])
-        horizon_label = result.get('horizon', {}).get('label', 'daily')
-        horizon_days  = result.get('horizon', {}).get('days', periods)
-
-        if freq == 'D':
-            date_key = 'date'
-        else:
-            date_key = 'period_start'
-
-        if not forecast_array:
-            return False
-
+    def _history_training_range(self) -> Tuple[date, date, int]:
+        if not self.model:
+            self.load_model()
         if self.model and hasattr(self.model, 'history') and not self.model.history.empty:
-            hist = self.model.history
-            train_start = hist['ds'].min().strftime('%Y-%m-%d')
-            train_end   = hist['ds'].max().strftime('%Y-%m-%d')
-        else:
-            train_start = train_end = 'unknown'
+            hist = self.model.history.copy()
+            dates = pd.to_datetime(hist['ds'], errors='coerce').dropna()
+            if not dates.empty:
+                return dates.min().date(), dates.max().date(), int(len(hist))
+        today = datetime.now(timezone.utc).date()
+        return today, today, 0
 
-        model_version = "1.0.0"
+    def _forecast_item_target_date(self, item: Dict[str, Any], horizon_label: str) -> str:
+        if horizon_label == 'daily':
+            return str(item.get('date'))
+        return str(item.get('period_start'))
 
-        predict_start = forecast_array[0][date_key]
-        predict_end   = forecast_array[-1][date_key]
+    def save_forecast_result(self, forecast_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Simpan output predict() ke backend internal forecast_runs/forecast_results.
+
+        Method ini sengaja hanya mengubah jalur save/orchestration. Perhitungan
+        Prophet, cleaning stockout/outlier, dan agregasi daily/weekly/monthly
+        tetap mengikuti logic inventory yang sudah ada.
+        """
+        forecast_array = forecast_result.get('forecasts') or []
+        if not forecast_array:
+            raise ValueError('Forecast kosong, tidak ada data untuk disimpan.')
+
+        horizon = forecast_result.get('horizon') or {}
+        horizon_label = str(horizon.get('label') or 'daily').lower()
+        horizon_count = int(horizon.get('count') or len(forecast_array))
+        predict_start = str(forecast_result.get('forecast_start_date'))
+        predict_end = str(forecast_result.get('forecast_end_date'))
+        horizon_days = _days = None
+        try:
+            horizon_days = (date.fromisoformat(predict_end[:10]) - date.fromisoformat(predict_start[:10])).days + 1
+        except Exception:
+            horizon_days = int(horizon.get('days') or len(forecast_array))
+
+        train_start, train_end, training_rows = self._history_training_range()
+        model_meta = forecast_result.get('model_metadata') or {}
+        summary = dict(forecast_result.get('summary') or {})
+        summary.update({
+            'module': 'inventory',
+            'horizon_label': horizon_label,
+            'horizon_count': horizon_count,
+            'horizon_days': horizon_days,
+            'forecast_start_date': predict_start,
+            'forecast_end_date': predict_end,
+            'start_date_source': forecast_result.get('start_date_source'),
+            'last_actual_date': forecast_result.get('last_actual_date'),
+            'business_cutoff_rule': forecast_result.get('business_cutoff_rule'),
+            'ingredient_id': self.ingredient_id,
+            'prediction_count': len(forecast_array),
+            'generated_at': forecast_result.get('generated_at'),
+        })
+        metrics = {
+            'metric_horizon': horizon_label,
+            'mae': model_meta.get('cv_mae'),
+            'rmse': model_meta.get('cv_rmse'),
+            'mape': model_meta.get('mape'),
+            'smape': model_meta.get('smape'),
+            'error_percentage': model_meta.get('error_percentage'),
+            'confidence_level': model_meta.get('confidence_level'),
+            'r2_score': model_meta.get('r2_score'),
+            'explained_variance': model_meta.get('explained_variance'),
+            'bias_ratio': model_meta.get('bias_ratio'),
+            'zero_ratio': model_meta.get('zero_ratio'),
+            'outliers_nullified': model_meta.get('outliers_nullified'),
+            'stockout_days_nullified': model_meta.get('stockout_days_nullified'),
+        }
+        data_quality = {
+            'training_rows': training_rows,
+            'date_range': {'start': train_start.isoformat(), 'end': train_end.isoformat()},
+            'last_actual_date': forecast_result.get('last_actual_date') or train_end.isoformat(),
+            'data_days': model_meta.get('data_days'),
+            'zero_ratio': model_meta.get('zero_ratio'),
+            'outliers_nullified': model_meta.get('outliers_nullified'),
+            'stockout_days_nullified': model_meta.get('stockout_days_nullified'),
+        }
 
         now = datetime.now(timezone.utc).isoformat()
-        metrics_str = json.dumps(metrics) if metrics else "{}"
-        summary_str = json.dumps(summary) if summary else "{}"
-        data_quality = {
-            "date_range": {"start": train_start, "end": train_end},
-            "training_rows": len(self.model.history) if self.model and hasattr(self.model, 'history') else 0,
-            "missing_dates_filled": 0
-        }
-        data_quality_str = json.dumps(data_quality)
-
         run_payload = {
-            "store_id": self.store_id,
-            "forecast_type": "inventory",
-            "horizon_label": horizon_label,
-            "horizon_days": horizon_days,
-            "granularity": "daily",
-            "model_name": "prophet",
-            "model_version": model_version,
-            "feature_version": "v1",
-            "train_start_date": train_start,
-            "train_end_date": train_end,
-            "predict_start_date": predict_start,
-            "predict_end_date": predict_end,
-            "metrics": metrics_str,
-            "summary": summary_str,
-            "data_quality": data_quality_str,
-            "status": "success",
-            "started_at": now,
-            "finished_at": now
+            'store_id': self.store_id,
+            'forecast_type': 'inventory',
+            'horizon_label': horizon_label,
+            'horizon_days': horizon_days,
+            'granularity': horizon_label,
+            'model_name': 'prophet',
+            'model_version': 'inventory-prophet-v1',
+            'feature_version': 'inventory-prophet-backend-v2',
+            'train_start_date': train_start.isoformat(),
+            'train_end_date': train_end.isoformat(),
+            'predict_start_date': predict_start,
+            'predict_end_date': predict_end,
+            'metrics': json.dumps(metrics),
+            'summary': json.dumps(summary),
+            'data_quality': json.dumps(data_quality),
+            'status': 'success',
+            'started_at': now,
+            'finished_at': now,
         }
+        run_response = self._backend_post('forecast-runs', run_payload)
+        run_id = self._parse_run_id(run_response)
+        if not run_id:
+            raise RuntimeError(f'Backend Golang berhasil dipanggil tapi run_id tidak ditemukan: {run_response}')
 
-        url_runs = f"{Config.BACKEND_API_URL}/forecast-runs"
-        run_id = None
-        try:
-            resp = requests.post(url_runs, json=run_payload,
-                                 headers=Config.backend_headers(),
-                                 timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
-            resp.raise_for_status()
-            run_id = resp.json().get('run_id')
-            print(f"[SAVED] forecast_runs run_id={run_id}")
-        except Exception as e:
-            print(f"[ERROR] forecast_runs: {e}")
-            return False
-
+        confidence_level = model_meta.get('confidence_level', 0)
         results = []
-        conf_level = result.get('model_metadata', {}).get('confidence_level', 0)
         for item in forecast_array:
+            target_date = self._forecast_item_target_date(item, horizon_label)
             results.append({
-                "target_date": item[date_key],
-                "predicted_value": item.get('predicted_usage', 0.0),
-                "lower_bound": item.get('lower_bound'),
-                "upper_bound": item.get('upper_bound'),
-                "confidence_level": conf_level,
-                "item_id": self.ingredient_id,
-                "item_type": "ingredient"
+                'target_date': target_date,
+                'predicted_value': float(item.get('predicted_usage') or 0.0),
+                'lower_bound': float(item['lower_bound']) if item.get('lower_bound') is not None else None,
+                'upper_bound': float(item['upper_bound']) if item.get('upper_bound') is not None else None,
+                'confidence_level': int(confidence_level or 0),
+                'item_id': self.ingredient_id,
+                'item_type': 'ingredient',
             })
 
-        url_results = f"{Config.BACKEND_API_URL}/forecast-results"
+        results_response = self._backend_post('forecast-results', {'run_id': run_id, 'results': results})
+        return {
+            'run_id': run_id,
+            'saved_results': len(results),
+            'horizon_label': horizon_label,
+            'horizon_days': horizon_days,
+            'predict_start_date': predict_start,
+            'predict_end_date': predict_end,
+            'metrics': metrics,
+            'summary': summary,
+            'backend_run_response': run_response,
+            'backend_results_response': results_response,
+        }
+
+    def save_all_forecasts(self, periods=4, freq='W', start_date=None):
+        """Legacy wrapper untuk kompatibilitas route lama."""
         try:
-            resp = requests.post(url_results, json={"run_id": run_id, "results": results},
-                                 headers=Config.backend_headers(),
-                                 timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
-            resp.raise_for_status()
-            print(f"[SAVED] {len(results)} baris → forecast_results run_id={run_id}")
+            result = self.predict(periods=periods, freq=freq, start_date=start_date)
+            self.save_forecast_result(result)
             return True
         except Exception as e:
-            print(f"[ERROR] forecast_results: {e}")
+            print(f"[ERROR] Gagal save forecast inventory: {e}")
             return False

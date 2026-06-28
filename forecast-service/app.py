@@ -293,6 +293,9 @@ def _parse_visitors_standard_body():
 def _json_model(result):
     if hasattr(result, "model_dump"):
         return result.model_dump(mode="json")
+    if hasattr(result, "json"):
+        import json as _json
+        return _json.loads(result.json())
     if hasattr(result, "dict"):
         return result.dict()
     return result
@@ -579,120 +582,342 @@ def _parse_horizon_count(payload, horizon_label):
 
 
 # ============================================
-# ROUTE MODUL SALES (NEW STANDARD ROUTES)
+# ROUTE MODUL SALES (STANDARD LIKE VISITORS)
 # ============================================
+VALID_FORECAST_HORIZONS = {"daily", "weekly", "monthly"}
 
-async def _run_sales_forecast_from_payload(payload):
-    store_id = _get_store_id(payload)
+
+def _parse_sales_standard_body():
+    req = request.get_json(silent=True) or {}
+    store_id = req.get("store_id") or req.get("m_store_id")
     if not store_id:
-        raise ValueError("store_id wajib diisi")
+        return None, ({"detail": "store_id wajib diisi"}, 400)
 
-    horizon_label = _parse_horizon_label(payload)
-    horizon_count = _parse_horizon_count(payload, horizon_label)
-    start_date_val = _parse_start_date(payload)
+    horizon_label = req.get("horizon_label")
+    if horizon_label not in VALID_FORECAST_HORIZONS:
+        return None, ({"detail": "horizon_label harus daily, weekly, atau monthly"}, 400)
 
-    if horizon_label == "daily":
-        result = await sales_forecast_service.forecast(
-            store_id=store_id,
-            forecast_days=horizon_count,
-            start_date=start_date_val,
-        )
-    elif horizon_label == "weekly":
-        result = await sales_forecast_service.forecast_weekly(
-            store_id=store_id,
-            forecast_weeks=horizon_count,
-            start_date=start_date_val,
-        )
-    else:
-        result = await sales_forecast_service.forecast_monthly(
-            store_id=store_id,
-            forecast_months=horizon_count,
-            start_date=start_date_val,
-        )
+    try:
+        horizon_count = int(req.get("horizon_count"))
+    except (TypeError, ValueError):
+        return None, ({"detail": "horizon_count wajib berupa angka"}, 400)
+    if horizon_count <= 0:
+        return None, ({"detail": "horizon_count harus lebih besar dari 0"}, 400)
 
-    response = result.model_dump() if hasattr(result, "model_dump") else result.dict()
-    response["request_meta"] = {
-        "module": "sales",
-        "horizon_label": horizon_label,
+    start_date = None
+    start_date_str = req.get("start_date")
+    if start_date_str:
+        try:
+            start_date = date.fromisoformat(str(start_date_str)[:10])
+        except ValueError:
+            return None, ({"detail": "start_date harus format YYYY-MM-DD"}, 400)
+
+    return {
+        "store_id": str(store_id),
+        "horizon_label": str(horizon_label),
         "horizon_count": horizon_count,
-        "mode": "preview",
-        "saved_to_database": False,
+        "start_date": start_date,
+    }, None
+
+
+def _parse_inventory_standard_body():
+    req = request.get_json(silent=True) or {}
+    store_id = req.get("store_id") or req.get("m_store_id")
+    ingredient_id = req.get("ingredient_id") or req.get("m_food_ingredient_id")
+    if not store_id or not ingredient_id:
+        return None, ({"detail": "store_id dan ingredient_id wajib diisi"}, 400)
+
+    horizon_label = req.get("horizon_label")
+    if horizon_label not in VALID_FORECAST_HORIZONS:
+        return None, ({"detail": "horizon_label harus daily, weekly, atau monthly"}, 400)
+
+    try:
+        horizon_count = int(req.get("horizon_count"))
+    except (TypeError, ValueError):
+        return None, ({"detail": "horizon_count wajib berupa angka"}, 400)
+    if horizon_count <= 0:
+        return None, ({"detail": "horizon_count harus lebih besar dari 0"}, 400)
+
+    start_date = None
+    start_date_str = req.get("start_date")
+    if start_date_str:
+        try:
+            start_date = date.fromisoformat(str(start_date_str)[:10])
+        except ValueError:
+            return None, ({"detail": "start_date harus format YYYY-MM-DD"}, 400)
+
+    return {
+        "store_id": str(store_id),
+        "ingredient_id": str(ingredient_id),
+        "horizon_label": str(horizon_label),
+        "horizon_count": horizon_count,
+        "start_date": start_date,
+    }, None
+
+
+def _forecast_request_meta(payload):
+    result = {
+        "store_id": payload["store_id"],
+        "horizon_label": payload["horizon_label"],
+        "horizon_count": payload["horizon_count"],
+        "start_date": _date_or_none(payload.get("start_date")),
+        "start_date_mode": "manual" if payload.get("start_date") else "auto",
     }
-    return response
+    if payload.get("ingredient_id"):
+        result["ingredient_id"] = payload["ingredient_id"]
+    return result
+
+
+def _clean_sales_forecast_item(item, horizon_label):
+    if horizon_label == "daily":
+        cleaned = {
+            "date": item.get("date"),
+            "predicted_omzet": item.get("predicted_omzet"),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+            "day_of_week": item.get("day_of_week"),
+            "is_weekend": item.get("is_weekend"),
+        }
+    else:
+        cleaned = {
+            "period_start": item.get("period_start"),
+            "period_end": item.get("period_end"),
+            "predicted_omzet": item.get("predicted_omzet"),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+        }
+        if horizon_label == "weekly" and item.get("week_of_year") is not None:
+            cleaned["week_of_year"] = item.get("week_of_year")
+        if horizon_label == "monthly" and item.get("month") is not None:
+            cleaned["month"] = item.get("month")
+    return {key: value for key, value in cleaned.items() if value is not None}
+
+
+def _sales_model_metadata_public(raw_metadata, horizon_label, save_result=None):
+    raw_metadata = raw_metadata or {}
+    model_metrics = raw_metadata.get("metrics") or {}
+    save_metrics = (save_result or {}).get("metrics") or {}
+    metadata = {
+        "trained_at": raw_metadata.get("trained_at"),
+        "training_data_points": raw_metadata.get("training_data_points"),
+        "metric_horizon": raw_metadata.get("metric_horizon") or horizon_label,
+        "horizon_method": raw_metadata.get("horizon_method"),
+        "cv_mae": raw_metadata.get("cv_mae"),
+        "cv_rmse": raw_metadata.get("cv_rmse"),
+        "error_ratio": model_metrics.get(f"{horizon_label}_error_ratio"),
+        "wape": model_metrics.get(f"{horizon_label}_wape"),
+        "error_percentage": model_metrics.get(f"{horizon_label}_error_percentage") or model_metrics.get(f"{horizon_label}_mae_percentage"),
+        "bias": model_metrics.get(f"{horizon_label}_bias"),
+        "mean_error": model_metrics.get(f"{horizon_label}_mean_error"),
+        "bias_percentage": model_metrics.get(f"{horizon_label}_bias_percentage"),
+        "interval_coverage": model_metrics.get(f"{horizon_label}_interval_coverage"),
+        "avg_interval_width": model_metrics.get(f"{horizon_label}_avg_interval_width"),
+        "relative_interval_width": model_metrics.get(f"{horizon_label}_relative_interval_width"),
+        "reliability": model_metrics.get(f"{horizon_label}_reliability"),
+        "confidence_level": save_metrics.get("confidence_level"),
+        "metrics_version": model_metrics.get("metrics_version"),
+        "metric_source": model_metrics.get("metric_source"),
+        "feature_importance": raw_metadata.get("feature_importance") or {},
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def _standard_save_result_public(save_result):
+    if not save_result:
+        return None
+    return {
+        "run_id": save_result.get("run_id"),
+        "saved_results": save_result.get("saved_results"),
+        "status": "saved",
+    }
+
+
+def _sales_response_data_public(forecast_result, payload, save_result=None):
+    raw = _json_model(forecast_result)
+    horizon_label = payload["horizon_label"]
+    horizon_count = payload["horizon_count"]
+    forecasts = [_clean_sales_forecast_item(item, horizon_label) for item in raw.get("forecasts", [])]
+    total_predicted = int(sum(float(item.get("predicted_omzet") or 0) for item in forecasts))
+    forecast_count = len(forecasts)
+    avg_predicted = round(total_predicted / forecast_count, 2) if forecast_count else 0
+    forecast_start = raw.get("forecast_start_date")
+    forecast_end = raw.get("forecast_end_date")
+    horizon_days = _days_between(forecast_start, forecast_end)
+    if horizon_days is None and save_result:
+        horizon_days = save_result.get("horizon_days")
+
+    return {
+        "store_id": raw.get("store_id"),
+        "generated_at": raw.get("generated_at"),
+        "forecast_start_date": forecast_start,
+        "forecast_end_date": forecast_end,
+        "horizon": {"label": horizon_label, "count": horizon_count, "days": horizon_days},
+        "start_date_source": raw.get("start_date_source"),
+        "last_actual_date": raw.get("last_actual_date"),
+        "business_cutoff_rule": raw.get("business_cutoff_rule"),
+        "summary": {
+            "total_predicted_omzet": total_predicted,
+            "average_predicted_omzet": avg_predicted,
+            "forecast_count": forecast_count,
+        },
+        "forecasts": forecasts,
+        "model_metadata": _sales_model_metadata_public(raw.get("model_metadata"), horizon_label, save_result=save_result),
+    }
+
+
+def _inventory_model_metadata_public(raw_metadata, save_result=None):
+    raw_metadata = raw_metadata or {}
+    save_metrics = (save_result or {}).get("metrics") or {}
+    metadata = {
+        "confidence_level": raw_metadata.get("confidence_level") or save_metrics.get("confidence_level"),
+        "cv_mae": raw_metadata.get("cv_mae"),
+        "cv_rmse": raw_metadata.get("cv_rmse"),
+        "error_percentage": raw_metadata.get("error_percentage"),
+        "smape": raw_metadata.get("smape"),
+        "mape": raw_metadata.get("mape"),
+        "r2_score": raw_metadata.get("r2_score"),
+        "explained_variance": raw_metadata.get("explained_variance"),
+        "bias_ratio": raw_metadata.get("bias_ratio"),
+        "data_days": raw_metadata.get("data_days"),
+        "cv_initial": raw_metadata.get("cv_initial"),
+        "zero_ratio": raw_metadata.get("zero_ratio"),
+        "outliers_nullified": raw_metadata.get("outliers_nullified"),
+        "stockout_days_nullified": raw_metadata.get("stockout_days_nullified"),
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
+
+
+def _inventory_response_data_public(forecast_result, payload, save_result=None):
+    raw = forecast_result or {}
+    horizon_label = payload["horizon_label"]
+    horizon_count = payload["horizon_count"]
+    forecasts = raw.get("forecasts", [])
+    forecast_start = raw.get("forecast_start_date")
+    forecast_end = raw.get("forecast_end_date")
+    horizon_days = _days_between(forecast_start, forecast_end)
+    if horizon_days is None:
+        horizon_days = (raw.get("horizon") or {}).get("days")
+    if horizon_days is None and save_result:
+        horizon_days = save_result.get("horizon_days")
+
+    return {
+        "store_id": raw.get("store_id"),
+        "ingredient_id": raw.get("ingredient_id"),
+        "generated_at": raw.get("generated_at"),
+        "forecast_start_date": forecast_start,
+        "forecast_end_date": forecast_end,
+        "horizon": {"label": horizon_label, "count": horizon_count, "days": horizon_days},
+        "start_date_source": raw.get("start_date_source"),
+        "last_actual_date": raw.get("last_actual_date"),
+        "business_cutoff_rule": raw.get("business_cutoff_rule"),
+        "summary": raw.get("summary") or {},
+        "forecasts": forecasts,
+        "model_metadata": _inventory_model_metadata_public(raw.get("model_metadata"), save_result=save_result),
+    }
+
+
+def _run_sales_preview(payload):
+    return asyncio.run(sales_forecast_service.forecast_by_horizon(
+        store_id=payload["store_id"],
+        horizon_label=payload["horizon_label"],
+        horizon_count=payload["horizon_count"],
+        start_date=payload["start_date"],
+    ))
+
+
+def _run_inventory_preview(payload):
+    freq = _map_horizon_to_freq(payload["horizon_label"])
+    forecaster = InventoryForecaster(payload["store_id"], payload["ingredient_id"], freq)
+    result = forecaster.predict(
+        periods=payload["horizon_count"],
+        freq=freq,
+        start_date=_date_or_none(payload.get("start_date")),
+    )
+    return forecaster, result
+
+
+def _handle_standard_error(exc, prefix="Internal server error"):
+    if isinstance(exc, FileNotFoundError):
+        return jsonify({"detail": str(exc) or "Model belum di-training"}), 404
+    if isinstance(exc, ValueError):
+        return jsonify({"detail": str(exc)}), 400
+    traceback.print_exc()
+    return jsonify({"detail": f"{prefix}: {str(exc)}"}), 500
+
 
 @app.route('/api/forecast/sales/preview', methods=['POST'])
 def sales_preview():
-    payload = _get_request_json()
+    payload, error = _parse_sales_standard_body()
+    if error:
+        body, status = error
+        return jsonify(body), status
     try:
-        result = asyncio.run(_run_sales_forecast_from_payload(payload))
-        return jsonify(result), 200
-    except FileNotFoundError as e:
-        return jsonify({"detail": str(e)}), 404
-    except ValueError as e:
-        return jsonify({"detail": str(e)}), 400
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
+        result = _run_sales_preview(payload)
+        return jsonify({
+            "status": "success",
+            "message": "Forecast sales berhasil dibuat tanpa disimpan.",
+            "request": _forecast_request_meta(payload),
+            "data": _sales_response_data_public(result, payload),
+        }), 200
+    except Exception as exc:
+        return _handle_standard_error(exc)
+
 
 @app.route('/api/forecast/sales/save', methods=['POST'])
 def sales_save():
-    payload = _get_request_json()
-    backend_token = payload.get("backend_token", "")
-    forecast_data = payload.get("forecast")
-    if not forecast_data:
-        return jsonify({"detail": "field 'forecast' wajib diisi untuk save"}), 400
-    
-    store_id = forecast_data.get("store_id")
-    if not store_id:
-        return jsonify({"detail": "store_id wajib diisi"}), 400
-
+    payload, error = _parse_sales_standard_body()
+    if error:
+        body, status = error
+        return jsonify(body), status
     try:
-        success, message = asyncio.run(sales_forecast_service.save_forecast_to_db(store_id, forecast_data, backend_token))
-        if success:
-            return jsonify({"success": True, "message": message}), 200
-        else:
-            return jsonify({"success": False, "detail": message}), 500
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
+        forecast_result = _run_sales_preview(payload)
+        save_result = asyncio.run(sales_forecast_service.save_forecast_result(
+            forecast_response=forecast_result,
+            horizon_label=payload["horizon_label"],
+            horizon_count=payload["horizon_count"],
+        ))
+        return jsonify({
+            "status": "success",
+            "message": "Forecast sales berhasil disimpan ke database.",
+            "request": _forecast_request_meta(payload),
+            "save_result": _standard_save_result_public(save_result),
+            "data": _sales_response_data_public(forecast_result, payload, save_result),
+        }), 201
+    except Exception as exc:
+        return _handle_standard_error(exc, prefix="Save forecast gagal")
+
 
 @app.route('/api/forecast/sales/run', methods=['POST'])
 def sales_run():
-    payload = _get_request_json()
-    backend_token = payload.get("backend_token", "")
-    
+    payload, error = _parse_sales_standard_body()
+    if error:
+        body, status = error
+        return jsonify(body), status
     try:
-        result = asyncio.run(_run_sales_forecast_from_payload(payload))
-        
-        # Override mode for saving
-        result["request_meta"]["mode"] = "run"
-        result["request_meta"]["saved_to_database"] = True
-        
-        store_id = _get_store_id(payload)
-        success, message = asyncio.run(sales_forecast_service.save_forecast_to_db(store_id, result, backend_token))
-        
-        if success:
-            return jsonify(result), 200
-        else:
-            return jsonify({"detail": message}), 500
-            
-    except FileNotFoundError as e:
-        return jsonify({"detail": str(e)}), 404
-    except ValueError as e:
-        return jsonify({"detail": str(e)}), 400
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
+        forecast_result = _run_sales_preview(payload)
+        save_result = asyncio.run(sales_forecast_service.save_forecast_result(
+            forecast_response=forecast_result,
+            horizon_label=payload["horizon_label"],
+            horizon_count=payload["horizon_count"],
+        ))
+        return jsonify({
+            "status": "success",
+            "message": "Forecast sales berhasil dijalankan dan disimpan.",
+            "request": _forecast_request_meta(payload),
+            "save_result": _standard_save_result_public(save_result),
+            "data": _sales_response_data_public(forecast_result, payload, save_result),
+        }), 201
+    except Exception as exc:
+        return _handle_standard_error(exc, prefix="Run forecast gagal")
+
 
 @app.route('/api/forecast/sales/retrain', methods=['POST'])
 def sales_retrain():
-    req = request.get_json()
-    if not req or 'store_id' not in req:
+    req = request.get_json(silent=True) or {}
+    if 'store_id' not in req:
         return jsonify({"detail": "store_id wajib diisi"}), 400
-    
     store_id = req['store_id']
     force = req.get('force', False)
-
     try:
         result = asyncio.run(sales_forecast_service.retrain(store_id=store_id, force=force))
         return jsonify(_json_model(result)), 200
@@ -701,6 +926,7 @@ def sales_retrain():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"detail": f"Retrain gagal: {str(e)}"}), 500
+
 
 # ============================================
 # ROUTE INVENTORY
@@ -730,135 +956,67 @@ def get_training_status(task_id):
     """Mengembalikan status training berdasarkan task_id."""
     task = training_tasks.get(task_id)
     if not task:
-        return jsonify({"error": "Task tidak ditemukan"}), 404
+        return jsonify({"detail": "Task tidak ditemukan"}), 404
     return jsonify(task)
+
 
 @app.route('/api/forecast/inventory/preview', methods=['POST'])
 def inventory_preview():
-    """Preview forecast tanpa menyimpan ke database."""
+    payload, error = _parse_inventory_standard_body()
+    if error:
+        body, status = error
+        return jsonify(body), status
     try:
-        data = request.get_json()
-        store_id = data.get('store_id')
-        ingredient_id = data.get('ingredient_id')
-        horizon_label = data.get('horizon_label', 'weekly').lower()
-        horizon_count = int(data.get('horizon_count', 4))
-        start_date = data.get('start_date')
-
-        if not store_id or not ingredient_id:
-            return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
-
-        freq = _map_horizon_to_freq(horizon_label)
-        periods = horizon_count
-
-        forecaster = InventoryForecaster(store_id, ingredient_id, freq)
-        result = forecaster.predict(periods=periods, freq=freq, start_date=start_date)
-
+        _, result = _run_inventory_preview(payload)
         return jsonify({
             "status": "success",
-            "message": f"Preview forecast {horizon_label} berhasil",
-            "data": result,
-            "request": {
-                "store_id": store_id,
-                "ingredient_id": ingredient_id,
-                "horizon_label": horizon_label,
-                "horizon_count": horizon_count,
-                "start_date": start_date,
-                "start_date_mode": "custom" if start_date else "auto"
-            }
-        })
-    except FileNotFoundError:
-        return jsonify({"error": "Model belum di-training"}), 404
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+            "message": "Forecast inventory berhasil dibuat tanpa disimpan.",
+            "request": _forecast_request_meta(payload),
+            "data": _inventory_response_data_public(result, payload),
+        }), 200
+    except Exception as exc:
+        return _handle_standard_error(exc)
 
 
 @app.route('/api/forecast/inventory/save', methods=['POST'])
 def inventory_save():
-    """Simpan hasil forecast ke database."""
+    payload, error = _parse_inventory_standard_body()
+    if error:
+        body, status = error
+        return jsonify(body), status
     try:
-        data = request.get_json()
-        store_id = data.get('store_id')
-        ingredient_id = data.get('ingredient_id')
-        horizon_label = data.get('horizon_label', 'weekly').lower()
-        horizon_count = int(data.get('horizon_count', 4))
-        start_date = data.get('start_date')
-
-        if not store_id or not ingredient_id:
-            return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
-
-        freq = _map_horizon_to_freq(horizon_label)
-        periods = horizon_count
-
-        forecaster = InventoryForecaster(store_id, ingredient_id, freq)
-        success = forecaster.save_all_forecasts(periods=periods, freq=freq, start_date=start_date)
-
-        if success:
-            return jsonify({
-                "status": "success",
-                "message": f"Forecast {horizon_label} berhasil disimpan ke database"
-            })
-        else:
-            return jsonify({"error": "Gagal menyimpan forecast"}), 500
-    except FileNotFoundError:
-        return jsonify({"error": "Model belum di-training"}), 404
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
+        forecaster, forecast_result = _run_inventory_preview(payload)
+        save_result = forecaster.save_forecast_result(forecast_result)
+        return jsonify({
+            "status": "success",
+            "message": "Forecast inventory berhasil disimpan ke database.",
+            "request": _forecast_request_meta(payload),
+            "save_result": _standard_save_result_public(save_result),
+            "data": _inventory_response_data_public(forecast_result, payload, save_result),
+        }), 201
+    except Exception as exc:
+        return _handle_standard_error(exc, prefix="Save forecast gagal")
 
 
 @app.route('/api/forecast/inventory/run', methods=['POST'])
 def inventory_run():
-    """Preview + simpan ke database."""
+    payload, error = _parse_inventory_standard_body()
+    if error:
+        body, status = error
+        return jsonify(body), status
     try:
-        data = request.get_json()
-        store_id = data.get('store_id')
-        ingredient_id = data.get('ingredient_id')
-        horizon_label = data.get('horizon_label', 'weekly').lower()
-        horizon_count = int(data.get('horizon_count', 4))
-        start_date = data.get('start_date')
-
-        if not store_id or not ingredient_id:
-            return jsonify({"error": "store_id dan ingredient_id wajib"}), 400
-
-        freq = _map_horizon_to_freq(horizon_label)
-        periods = horizon_count
-
-        forecaster = InventoryForecaster(store_id, ingredient_id, freq)
-        # Dapatkan prediksi dulu
-        result = forecaster.predict(periods=periods, freq=freq, start_date=start_date)
-        # Simpan ke database
-        success = forecaster.save_all_forecasts(periods=periods, freq=freq, start_date=start_date)
-
+        forecaster, forecast_result = _run_inventory_preview(payload)
+        save_result = forecaster.save_forecast_result(forecast_result)
         return jsonify({
-            "status": "success" if success else "error",
-            "message": f"Forecast {horizon_label} {'berhasil dijalankan dan disimpan.' if success else 'gagal disimpan.'}",
-            "data": result,
-            "request": {
-                "store_id": store_id,
-                "ingredient_id": ingredient_id,
-                "horizon_label": horizon_label,
-                "horizon_count": horizon_count,
-                "start_date": start_date,
-                "start_date_mode": "custom" if start_date else "auto"
-            },
-            "save_result": {
-                "status": "saved" if success else "failed",
-                "saved_results": len(result.get('forecasts', []))
-            } if success else None
-        })
-    except FileNotFoundError:
-        return jsonify({"error": "Model belum di-training"}), 404
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except Exception as e:
-        traceback.print_exc()
-        return jsonify({"error": str(e)}), 500
-    
+            "status": "success",
+            "message": "Forecast inventory berhasil dijalankan dan disimpan.",
+            "request": _forecast_request_meta(payload),
+            "save_result": _standard_save_result_public(save_result),
+            "data": _inventory_response_data_public(forecast_result, payload, save_result),
+        }), 201
+    except Exception as exc:
+        return _handle_standard_error(exc, prefix="Run forecast gagal")
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
