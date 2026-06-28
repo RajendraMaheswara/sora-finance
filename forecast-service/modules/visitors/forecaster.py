@@ -143,7 +143,13 @@ class RetrainResponse(BaseModel):
 
 class GolangAPIClient:
     def __init__(self):
-        self.base_url = Config.GOLANG_API_BASE_URL.rstrip("/")
+        # Visitors forecast-service memakai backend internal API yang dilindungi
+        # INTERNAL_SERVICE_KEY melalui header X-Service-Key.
+        self.base_url = getattr(
+            Config,
+            "GOLANG_INTERNAL_API_BASE_URL",
+            Config.GOLANG_API_BASE_URL,
+        ).rstrip("/")
         # Orders diambil paginated. Order-items di backend saat ini bisa lambat,
         # jadi read timeout dibuat lebih panjang agar request tidak putus saat
         # backend masih memproses.
@@ -187,6 +193,138 @@ class GolangAPIClient:
                     await asyncio.sleep(2 ** attempt)
                 else:
                     raise
+
+    def _headers(self) -> Dict[str, str]:
+        # Service-to-service auth. Jangan pakai JWT user/backend_token dari request.
+        return Config.backend_headers()
+
+    async def _post(
+        self,
+        endpoint: str,
+        payload: Dict[str, Any],
+        *,
+        timeout: Optional[httpx.Timeout] = None,
+        attempts: int = 2,
+    ) -> Any:
+        url = f"{self.base_url}/{endpoint.lstrip('/')}"
+        attempts = max(1, attempts)
+        for attempt in range(attempts):
+            try:
+                async with httpx.AsyncClient(timeout=timeout or self.long_timeout) as client:
+                    response = await client.post(
+                        url,
+                        json=payload,
+                        headers=self._headers(),
+                    )
+                    response.raise_for_status()
+                    return response.json()
+            except httpx.HTTPStatusError as e:
+                body = e.response.text
+                logger.error(f"HTTP error {e.response.status_code} on POST {url}: {body}")
+                raise RuntimeError(
+                    f"Backend Golang menolak save forecast visitors "
+                    f"({e.response.status_code}): {body}"
+                ) from e
+            except httpx.RequestError as e:
+                logger.warning(f"Request error attempt {attempt + 1}/{attempts} on POST {url}: {e}")
+                if attempt < attempts - 1:
+                    await asyncio.sleep(2 ** attempt)
+                else:
+                    raise RuntimeError(f"Gagal menghubungi backend Golang saat save forecast visitors: {e}") from e
+
+    async def save_visitors_forecast(
+        self,
+        *,
+        store_id: str,
+        horizon_label: str,
+        horizon_days: int,
+        result_rows: List[Dict[str, Any]],
+        metrics: Dict[str, Any],
+        summary: Dict[str, Any],
+        data_quality: Dict[str, Any],
+        train_start_date: date,
+        train_end_date: date,
+        predict_start_date: date,
+        predict_end_date: date,
+        model_version: str,
+    ) -> Dict[str, Any]:
+        """Simpan forecast visitors melalui backend Golang, bukan direct DB.
+
+        Alur:
+        1. POST backend internal /internal/forecast/forecast-runs untuk membuat run.
+        2. POST backend internal /internal/forecast/forecast-results untuk bulk insert result berdasarkan run_id.
+        """
+        if not result_rows:
+            raise ValueError("result_rows kosong, tidak ada data forecast untuk disimpan.")
+
+        now = datetime.now(timezone.utc).isoformat()
+        run_payload = {
+            "store_id": store_id,
+            "forecast_type": "visitors",
+            "horizon_label": horizon_label,
+            "horizon_days": horizon_days,
+            "granularity": horizon_label,
+            "model_name": "random forest",
+            "model_version": model_version,
+            "feature_version": "visitors-backend-daily-history-v5",
+            "train_start_date": train_start_date.isoformat(),
+            "train_end_date": train_end_date.isoformat(),
+            "predict_start_date": predict_start_date.isoformat(),
+            "predict_end_date": predict_end_date.isoformat(),
+            "metrics": json.dumps(metrics),
+            "summary": json.dumps(summary),
+            "data_quality": json.dumps(data_quality),
+            "status": "success",
+            "started_at": now,
+            "finished_at": now,
+        }
+
+        run_response = await self._post(
+            "forecast-runs",
+            run_payload,
+            timeout=self.long_timeout,
+        )
+        run_id = (
+            run_response.get("run_id")
+            or (run_response.get("data") or {}).get("run_id")
+            or (run_response.get("data") or {}).get("id")
+            or run_response.get("id")
+        )
+        if not run_id:
+            raise RuntimeError(f"Backend Golang berhasil dipanggil tapi run_id tidak ditemukan: {run_response}")
+
+        results_payload = {
+            "run_id": run_id,
+            "results": [
+                {
+                    "target_date": row["target_date"].isoformat() if hasattr(row["target_date"], "isoformat") else row["target_date"],
+                    "predicted_value": float(row["predicted_value"]),
+                    "lower_bound": float(row["lower_bound"]) if row.get("lower_bound") is not None else None,
+                    "upper_bound": float(row["upper_bound"]) if row.get("upper_bound") is not None else None,
+                    "confidence_level": row.get("confidence_level"),
+                    "item_id": None,
+                    "item_type": "visitors",
+                }
+                for row in result_rows
+            ],
+        }
+
+        results_response = await self._post(
+            "forecast-results",
+            results_payload,
+            timeout=self.long_timeout,
+        )
+
+        return {
+            "run_id": int(run_id),
+            "saved_results": len(result_rows),
+            "horizon_label": horizon_label,
+            "horizon_days": horizon_days,
+            "predict_start_date": predict_start_date.isoformat(),
+            "predict_end_date": predict_end_date.isoformat(),
+            "backend_run_response": run_response,
+            "backend_results_response": results_response,
+        }
 
     async def is_reachable(self) -> bool:
         try:
@@ -1952,11 +2090,10 @@ class ForecastService:
             },
         }
 
-        save_result = db_client.save_visitors_forecast(
+        save_result = asyncio.run(golang_client.save_visitors_forecast(
             store_id=forecast_response.store_id,
             horizon_label=horizon_label,
             horizon_days=horizon_days,
-            prediction_rows=prediction_rows,
             result_rows=result_rows,
             metrics=metrics,
             summary=summary,
@@ -1966,7 +2103,7 @@ class ForecastService:
             predict_start_date=predict_start,
             predict_end_date=predict_end,
             model_version=model_version,
-        )
+        ))
         save_result["metrics"] = metrics
         save_result["summary"] = summary
         return save_result
