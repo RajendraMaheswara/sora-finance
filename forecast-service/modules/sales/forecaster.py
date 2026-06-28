@@ -450,6 +450,17 @@ class SalesPreprocessor:
             return pd.DataFrame()
         df_daily = df_daily.copy()
         df_daily['date'] = pd.to_datetime(df_daily['date'])
+        
+        first_date = df_daily['date'].min()
+        last_date = df_daily['date'].max()
+        first_monday = first_date + pd.offsets.Day((0 - first_date.weekday()) % 7)
+        if first_monday < first_date:
+            first_monday += pd.offsets.Day(7)
+        last_sunday = last_date - pd.offsets.Day((last_date.weekday() - 6) % 7)
+        if first_monday > last_sunday:
+            return pd.DataFrame()
+        df_daily = df_daily[(df_daily['date'] >= first_monday) & (df_daily['date'] <= last_sunday)]
+        
         df_daily = df_daily.set_index('date').sort_index()
         weekly = df_daily.resample('W-SUN').sum(numeric_only=True)
         weekly = weekly.reset_index().rename(columns={'date': 'period_end'})
@@ -462,6 +473,19 @@ class SalesPreprocessor:
             return pd.DataFrame()
         df_daily = df_daily.copy()
         df_daily['date'] = pd.to_datetime(df_daily['date'])
+        
+        first_date = df_daily['date'].min()
+        last_date = df_daily['date'].max()
+        first_month_start = first_date
+        if first_date.day != 1:
+            first_month_start = (first_date + pd.offsets.MonthBegin(1)).normalize()
+        last_month_end = last_date
+        if not last_date.is_month_end:
+            last_month_end = (last_date - pd.offsets.MonthBegin(1)).normalize() - pd.offsets.Day(1)
+        if first_month_start > last_month_end:
+            return pd.DataFrame()
+        df_daily = df_daily[(df_daily['date'] >= first_month_start) & (df_daily['date'] <= last_month_end)]
+        
         df_daily = df_daily.set_index('date').sort_index()
         monthly = df_daily.resample('MS').sum(numeric_only=True)
         monthly = monthly.reset_index()
@@ -603,48 +627,790 @@ class SalesForecastService:
             return None
         return df_daily['date'].max()
 
+
     def _is_known_24h_store_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
         if not operational_hours:
-            return False
-        day_mapping = {0: 'monday', 1: 'tuesday', 2: 'wednesday', 3: 'thursday', 4: 'friday', 5: 'saturday', 6: 'sunday'}
-        dow_str = day_mapping.get(target_date.weekday(), '')
-        for row in operational_hours:
-            if str(row.get('day_of_week')).lower() == dow_str:
-                if row.get('is_active'):
-                    open_time = str(row.get('open_time', '')).lower()
-                    close_time = str(row.get('close_time', '')).lower()
-                    if '00:00' in open_time and '23:59' in close_time or ('00:00:00' in open_time and '23:59:00' in close_time):
-                        return True
-                break
-        return False
+            return True
+        op_map = self.preprocessor._parse_operational_hours(operational_hours)
+        features = self.preprocessor._operational_features_for_date(pd.Timestamp(target_date), op_map)
+        return float(features.get("is_store_open", 0.0)) > 0 and float(features.get("is_24_hours", 0.0)) >= 1.0
 
-    def _resolve_forecast_start_meta(self, *, df_daily: pd.DataFrame, operational_hours: List[Dict[str, Any]], requested_start_date: Optional[date]) -> Dict[str, Any]:
-        last_actual_date = self._last_actual_date_from_df(df_daily)
-        if requested_start_date is not None:
-            return {'forecast_start_date': requested_start_date, 'start_date_source': 'manual_body', 'last_actual_date': last_actual_date, 'business_cutoff_rule': 'manual_start_date'}
-        today_jakarta = self._now_jakarta().date()
-        is_24h = self._is_known_24h_store_on_date(today_jakarta, operational_hours)
-        if is_24h:
-            candidate_start = today_jakarta
-            start_date_source = 'auto_24h_cutoff_02:00'
-            business_cutoff_rule = '24h_store_02:00'
-        else:
-            candidate_start = today_jakarta + timedelta(days=1)
-            if operational_hours:
-                start_date_source = 'auto_after_close_plus_1_hour'
-                business_cutoff_rule = 'after_close_plus_1_hour'
-            else:
-                start_date_source = 'auto_unknown_operational_hours_default_next_day'
-                business_cutoff_rule = 'unknown_operational_hours_default_next_day'
-        if last_actual_date is not None:
-            candidate_start = last_actual_date + timedelta(days=1)
-            start_date_source = 'auto_last_actual_date'
-        return {'forecast_start_date': candidate_start, 'start_date_source': start_date_source, 'last_actual_date': last_actual_date, 'business_cutoff_rule': business_cutoff_rule}
+    def _bool_value(self, value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"true", "t", "1", "yes", "y", "on"}:
+            return True
+        if text in {"false", "f", "0", "no", "n", "off"}:
+            return False
+        return default
+
+    def _operational_record_for_date(
+        self,
+        target_date: date,
+        operational_hours: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not operational_hours:
+            return None
+
+        ts = pd.Timestamp(target_date)
+        # Support beberapa konvensi:
+        # - Python: Senin=0..Minggu=6
+        # - ISO/DB umum: Senin=1..Minggu=7
+        # - Sunday-zero: Minggu=0..Sabtu=6
+        candidates = {
+            int(ts.dayofweek),
+            int(ts.isoweekday()),
+            int(ts.isoweekday()) % 7,
+        }
+        for record in operational_hours or []:
+            try:
+                day_key = int(record.get("day_of_week", record.get("dayOfWeek")))
+            except Exception:
+                continue
+            if day_key in candidates:
+                return record
+        return None
+
+    def _store_is_open_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
+        # Jika operational hours kosong, default 24 jam agar forecast tetap jalan.
+        if not operational_hours:
+            return True
+        record = self._operational_record_for_date(target_date, operational_hours)
+        if record is None:
+            return True
+        if not self._bool_value(record.get("is_active", record.get("isActive")), default=False):
+            return False
+        op_map = self.preprocessor._parse_operational_hours([record])
+        features = self.preprocessor._operational_features_for_date(pd.Timestamp(target_date), op_map)
+        return float(features.get("is_store_open", 0.0)) > 0
+
+    def _operational_cutoff_datetime(
+        self,
+        target_date: date,
+        operational_hours: List[Dict[str, Any]],
+    ) -> datetime:
+        """Waktu data actual untuk operational date dianggap complete.
+
+        - Non-24h: close_time + FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES.
+        - Overnight, misalnya Minggu 17:00-Senin 04:00: target_date tetap Minggu,
+          cutoff jatuh Senin 04:00 + delay.
+        - 24h: 00:00 hari berikutnya + FORECAST_24H_RUN_SCHEDULER_MINUTES.
+        """
+        jakarta = ZoneInfo(getattr(Config, "FORECAST_SCHEDULER_TIMEZONE", "Asia/Jakarta"))
+        record = self._operational_record_for_date(target_date, operational_hours)
+
+        if not operational_hours or record is None:
+            return (
+                datetime.combine(target_date + timedelta(days=1), datetime.min.time(), tzinfo=jakarta)
+                + timedelta(minutes=getattr(Config, "FORECAST_24H_RUN_SCHEDULER_MINUTES", 120))
+            )
+
+        is_active = self._bool_value(record.get("is_active", record.get("isActive")), default=False)
+        if not is_active:
+            return datetime.combine(target_date, datetime.min.time(), tzinfo=jakarta)
+
+        open_seconds = self.preprocessor._seconds_from_time_like(record.get("open_time", record.get("openTime")))
+        close_seconds = self.preprocessor._seconds_from_time_like(record.get("close_time", record.get("closeTime")))
+
+        if open_seconds is None or close_seconds is None or open_seconds == close_seconds:
+            return (
+                datetime.combine(target_date + timedelta(days=1), datetime.min.time(), tzinfo=jakarta)
+                + timedelta(minutes=getattr(Config, "FORECAST_24H_RUN_SCHEDULER_MINUTES", 120))
+            )
+
+        close_day = target_date
+        if close_seconds <= open_seconds:
+            close_day = target_date + timedelta(days=1)
+
+        close_dt = datetime.combine(close_day, datetime.min.time(), tzinfo=jakarta) + timedelta(seconds=close_seconds)
+        return close_dt + timedelta(minutes=getattr(Config, "FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES", 60))
+
+    def _latest_complete_day_by_operational_hours(
+        self,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> date:
+        now = now_jakarta or self._now_jakarta()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=ZoneInfo(getattr(Config, "FORECAST_SCHEDULER_TIMEZONE", "Asia/Jakarta")))
+
+        # Cek mundur untuk handle toko tutup, overnight, dan 24 jam.
+        for offset in range(0, 14):
+            candidate = now.date() - timedelta(days=offset)
+            if not self._store_is_open_on_date(candidate, operational_hours):
+                continue
+            if now >= self._operational_cutoff_datetime(candidate, operational_hours):
+                return candidate
+
+        return now.date() - timedelta(days=1)
+
+    def _filter_daily_to_complete_period(
+        self,
+        df_daily: pd.DataFrame,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> Tuple[pd.DataFrame, date]:
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours, now_jakarta)
+        if df_daily is None or df_daily.empty or "date" not in df_daily.columns:
+            return df_daily, latest_complete_day
+        filtered = df_daily.copy()
+        filtered["date"] = pd.to_datetime(filtered["date"], errors="coerce")
+        filtered = filtered[filtered["date"].dt.date <= latest_complete_day]
+        return filtered, latest_complete_day
+
+    def _next_monday_after(self, value: date) -> date:
+        days = (7 - value.weekday()) % 7
+        if days == 0:
+            days = 7
+        return value + timedelta(days=days)
+
+    def _first_day_next_month_after(self, value: date) -> date:
+        return (pd.Timestamp(value.replace(day=1)) + pd.DateOffset(months=1)).date()
+
 
     def _forecast_item_period_dates(self, item: Any, horizon_label: str) -> Tuple[date, date]:
         if horizon_label == 'daily':
             return (item.date, item.date)
         return (item.period_start, item.period_end)
+
+    def _resolve_forecast_start_meta(
+        self,
+        *,
+        df_daily: pd.DataFrame,
+        operational_hours: List[Dict[str, Any]],
+        requested_start_date: Optional[date],
+        horizon_label: str = "daily",
+    ) -> Dict[str, Any]:
+        last_actual_date = self._last_actual_date_from_df(df_daily)
+
+        if requested_start_date is not None:
+            return {
+                "forecast_start_date": requested_start_date,
+                "start_date_source": "manual_body",
+                "last_actual_date": last_actual_date,
+                "business_cutoff_rule": "manual_start_date",
+            }
+
+        horizon_label = (horizon_label or "daily").lower()
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours)
+        next_after_complete_day = latest_complete_day + timedelta(days=1)
+        next_after_actual = last_actual_date + timedelta(days=1) if last_actual_date is not None else None
+
+        # Guard: jangan mulai forecast pada tanggal yang sudah punya actual complete.
+        candidate_start = max([d for d in [next_after_complete_day, next_after_actual] if d is not None])
+
+        if horizon_label == "weekly":
+            forecast_start = self._next_monday_after(latest_complete_day)
+            if forecast_start < candidate_start:
+                forecast_start = self._next_monday_after(candidate_start - timedelta(days=1))
+            start_date_source = "auto_weekly_complete_period"
+            business_cutoff_rule = "weekly_after_complete_operational_sunday_start_monday"
+        elif horizon_label == "monthly":
+            forecast_start = self._first_day_next_month_after(latest_complete_day)
+            if forecast_start < candidate_start:
+                forecast_start = self._first_day_next_month_after(candidate_start)
+            start_date_source = "auto_monthly_complete_period"
+            business_cutoff_rule = "monthly_after_complete_operational_month_start_first_day"
+        else:
+            # Daily bebas: tidak skip weekend otomatis. Kalau toko tutup, model akan
+            # memberi 0 karena fitur operational hours.
+            forecast_start = candidate_start
+            start_date_source = "auto_daily_complete_period"
+            business_cutoff_rule = "daily_after_close_or_24h_cutoff"
+
+        return {
+            "forecast_start_date": forecast_start,
+            "start_date_source": start_date_source,
+            "last_actual_date": last_actual_date,
+            "latest_complete_day": latest_complete_day,
+            "business_cutoff_rule": business_cutoff_rule,
+        }
+
+    def build_scheduler_jobs_for_store(
+        self,
+        store_id: str,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """Tentukan auto forecast visitors yang due untuk satu store.
+
+        Scheduler memanggil ini setiap FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES.
+        - Daily due setiap operational day complete.
+        - Weekly due hanya saat complete day adalah Minggu; forecast mulai Senin.
+        - Monthly due hanya saat complete day adalah tanggal terakhir bulan; forecast mulai tanggal 1 bulan berikutnya.
+        """
+        now = now_jakarta or self._now_jakarta()
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours, now)
+        jobs: List[Dict[str, Any]] = []
+
+        daily_start = latest_complete_day + timedelta(days=1)
+        jobs.append({
+            "store_id": store_id,
+            "horizon_label": "daily",
+            "horizon_count": 1,
+            "start_date": daily_start,
+            "latest_complete_day": latest_complete_day,
+            "start_date_source": "scheduler_daily_after_complete_operational_day",
+            "business_cutoff_rule": "scheduler_daily_after_close_or_24h_cutoff",
+        })
+
+        if latest_complete_day.weekday() == 6:
+            jobs.append({
+                "store_id": store_id,
+                "horizon_label": "weekly",
+                "horizon_count": 1,
+                "start_date": latest_complete_day + timedelta(days=1),
+                "latest_complete_day": latest_complete_day,
+                "start_date_source": "scheduler_weekly_after_complete_operational_sunday",
+                "business_cutoff_rule": "scheduler_weekly_start_monday_after_sunday_complete",
+            })
+
+        month_end = (pd.Timestamp(latest_complete_day) + pd.offsets.MonthEnd(0)).date()
+        if latest_complete_day == month_end:
+            jobs.append({
+                "store_id": store_id,
+                "horizon_label": "monthly",
+                "horizon_count": 1,
+                "start_date": latest_complete_day + timedelta(days=1),
+                "latest_complete_day": latest_complete_day,
+                "start_date_source": "scheduler_monthly_after_complete_operational_month_end",
+                "business_cutoff_rule": "scheduler_monthly_start_first_day_after_month_end_complete",
+            })
+
+        return jobs
+
+    def _response_date_bounds(self, forecasts: List[Any], horizon_label: str) -> Tuple[Optional[date], Optional[date]]:
+        if not forecasts:
+            return None, None
+        period_dates = [self._forecast_item_period_dates(item, horizon_label) for item in forecasts]
+        return min(start for start, _ in period_dates), max(end for _, end in period_dates)
+
+    def _tag_model_metadata(self, store_id: str, meta: Dict[str, Any], granularity: str = "daily") -> Dict[str, Any]:
+        meta = dict(meta or {})
+        meta["feature_version"] = self.feature_version
+        meta["data_source"] = self.data_source
+        meta["target_definition"] = "SUM(items_capped visitors for valid non-online t_orders; online orders = 0)"
+        try:
+            meta_path = trainer._meta_path(store_id, granularity)
+            with open(meta_path, "w") as f:
+                json.dump(meta, f, indent=2)
+        except Exception as exc:
+            logger.warning(f"Gagal menulis metadata model visitors: {exc}")
+        return meta
+
+    def _daily_model_needs_retrain(self, store_id: str) -> bool:
+        if not trainer.model_exists(store_id):
+            return True
+        try:
+            _, _, _, meta = trainer.load_model(store_id)
+            return meta.get("feature_version") != self.feature_version
+        except Exception as exc:
+            logger.warning(f"Model visitors lama/tidak valid, akan retrain: {exc}")
+            return True
+
+
+    def _round_metric(self, value: Any, digits: int = 4) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            val = float(value)
+            if not np.isfinite(val):
+                return None
+            return round(val, digits)
+        except Exception:
+            return None
+
+    def _classify_reliability(self, error_ratio: Optional[float]) -> Optional[str]:
+        """
+        error_ratio disimpan sebagai rasio 0..1.
+        Batas ini sengaja sederhana agar mudah ditampilkan di frontend.
+        """
+        if error_ratio is None:
+            return None
+        if error_ratio <= 0.10:
+            return "high"
+        if error_ratio <= 0.20:
+            return "medium"
+        if error_ratio <= 0.30:
+            return "low_medium"
+        return "low"
+
+    def _empty_metric_block(self, prefix: str) -> Dict[str, Any]:
+        return {
+            f"{prefix}_metric_available": False,
+            f"{prefix}_mae": None,
+            f"{prefix}_rmse": None,
+            f"{prefix}_mae_percentage": None,
+            f"{prefix}_error_ratio": None,
+            f"{prefix}_wape": None,
+            f"{prefix}_error_percentage": None,
+            f"{prefix}_bias": None,
+            f"{prefix}_mean_error": None,
+            f"{prefix}_bias_percentage": None,
+            f"{prefix}_interval_coverage": None,
+            f"{prefix}_avg_interval_width": None,
+            f"{prefix}_relative_interval_width": None,
+            f"{prefix}_reliability": None,
+        }
+
+    def _metric_block(
+        self,
+        prefix: str,
+        actual: np.ndarray,
+        predicted: np.ndarray,
+        lower_bound: Optional[np.ndarray] = None,
+        upper_bound: Optional[np.ndarray] = None,
+    ) -> Dict[str, Any]:
+        actual = np.asarray(actual, dtype=float)
+        predicted = np.asarray(predicted, dtype=float)
+        if len(actual) == 0 or len(predicted) == 0:
+            return self._empty_metric_block(prefix)
+
+        mae = float(mean_absolute_error(actual, predicted))
+        rmse = float(np.sqrt(mean_squared_error(actual, predicted)))
+
+        # WAPE/error_percentage: error absolut dibandingkan total actual.
+        # Untuk actual visitors yang non-negatif, ini stabil dan aman untuk daily yang mungkin bernilai 0.
+        total_actual = float(np.sum(np.abs(actual)))
+        if total_actual <= 0:
+            wape = None
+            error_percentage = None
+        else:
+            wape = float(np.sum(np.abs(actual - predicted)) / total_actual)
+            error_percentage = wape * 100.0
+
+        # Legacy alias: error_ratio/mae_percentage sekarang mengikuti WAPE agar tetap
+        # kompatibel dengan response lama tetapi maknanya lebih tepat secara agregat.
+        error_ratio = wape
+        mae_percentage = error_percentage
+
+        # Bias/mean_error: positif berarti model cenderung overestimate, negatif berarti underestimate.
+        mean_error = float(np.mean(predicted - actual))
+        avg_actual = float(np.mean(np.abs(actual)))
+        if avg_actual <= 0:
+            bias_percentage = None
+        else:
+            bias_percentage = mean_error / avg_actual * 100.0
+
+        interval_coverage = None
+        avg_interval_width = None
+        relative_interval_width = None
+        if lower_bound is not None and upper_bound is not None:
+            lower = np.asarray(lower_bound, dtype=float)
+            upper = np.asarray(upper_bound, dtype=float)
+            if len(lower) == len(actual) and len(upper) == len(actual) and len(lower) > 0:
+                interval_coverage = float(np.mean((actual >= lower) & (actual <= upper)))
+                widths = np.maximum(0.0, upper - lower)
+                avg_interval_width = float(np.mean(widths))
+                avg_predicted = float(np.mean(np.abs(predicted)))
+                if avg_predicted > 0:
+                    relative_interval_width = avg_interval_width / avg_predicted
+
+        return {
+            f"{prefix}_metric_available": True,
+            f"{prefix}_mae": self._round_metric(mae),
+            f"{prefix}_rmse": self._round_metric(rmse),
+            f"{prefix}_mae_percentage": self._round_metric(mae_percentage, 2),
+            f"{prefix}_error_ratio": self._round_metric(error_ratio, 4),
+            f"{prefix}_wape": self._round_metric(wape, 4),
+            f"{prefix}_error_percentage": self._round_metric(error_percentage, 2),
+            f"{prefix}_bias": self._round_metric(mean_error),
+            f"{prefix}_mean_error": self._round_metric(mean_error),
+            f"{prefix}_bias_percentage": self._round_metric(bias_percentage, 2),
+            f"{prefix}_interval_coverage": self._round_metric(interval_coverage, 4),
+            f"{prefix}_avg_interval_width": self._round_metric(avg_interval_width),
+            f"{prefix}_relative_interval_width": self._round_metric(relative_interval_width, 4),
+            f"{prefix}_reliability": self._classify_reliability(error_ratio),
+        }
+
+    def _aggregate_oos_metric(self, oos_df: pd.DataFrame, horizon: str) -> Dict[str, Any]:
+        if oos_df.empty:
+            return self._metric_block(horizon, np.array([]), np.array([]))
+
+        df = oos_df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+
+        if horizon == "weekly":
+            df["period_start"] = df["date"].dt.to_period("W-SUN").apply(lambda p: p.start_time.date())
+            agg_spec = {
+                "actual": ("actual", "sum"),
+                "predicted": ("predicted", "sum"),
+                "days": ("date", "count"),
+            }
+            if "lower_bound" in df.columns and "upper_bound" in df.columns:
+                agg_spec["lower_bound"] = ("lower_bound", "sum")
+                agg_spec["upper_bound"] = ("upper_bound", "sum")
+            grouped = df.groupby("period_start").agg(**agg_spec).reset_index()
+            # Hanya nilai minggu penuh agar metric weekly tidak tercampur minggu parsial.
+            grouped = grouped[grouped["days"] >= 7]
+            return self._metric_block(
+                "weekly",
+                grouped["actual"].values,
+                grouped["predicted"].values,
+                grouped["lower_bound"].values if "lower_bound" in grouped.columns else None,
+                grouped["upper_bound"].values if "upper_bound" in grouped.columns else None,
+            )
+
+        if horizon == "monthly":
+            df["period"] = df["date"].dt.to_period("M")
+            agg_spec = {
+                "actual": ("actual", "sum"),
+                "predicted": ("predicted", "sum"),
+                "days": ("date", "count"),
+            }
+            if "lower_bound" in df.columns and "upper_bound" in df.columns:
+                agg_spec["lower_bound"] = ("lower_bound", "sum")
+                agg_spec["upper_bound"] = ("upper_bound", "sum")
+            grouped = df.groupby("period").agg(**agg_spec).reset_index()
+            grouped["expected_days"] = grouped["period"].apply(lambda p: int(p.days_in_month))
+            # Hanya bulan penuh agar monthly MAE/RMSE benar-benar metric bulanan.
+            grouped = grouped[grouped["days"] >= grouped["expected_days"]]
+            return self._metric_block(
+                "monthly",
+                grouped["actual"].values,
+                grouped["predicted"].values,
+                grouped["lower_bound"].values if "lower_bound" in grouped.columns else None,
+                grouped["upper_bound"].values if "upper_bound" in grouped.columns else None,
+            )
+
+        return self._metric_block(horizon, np.array([]), np.array([]))
+
+    def _build_oos_daily_predictions(
+        self,
+        df_features: pd.DataFrame,
+        feature_cols: List[str],
+    ) -> pd.DataFrame:
+        """
+        Membuat out-of-sample prediction dari TimeSeriesSplit.
+        Ini dipakai supaya weekly/monthly metrics dihitung dari prediksi daily historis
+        yang diagregasi, bukan sekadar menyalin metric daily model.
+        """
+        if df_features.empty or len(df_features) < 40:
+            return pd.DataFrame(columns=["date", "actual", "predicted", "lower_bound", "upper_bound"])
+
+        X = df_features[feature_cols].values
+        y = df_features["visitors"].values.astype(float)
+        dates = pd.to_datetime(df_features["date"])
+
+        n_splits = min(5, max(2, len(df_features) // 30))
+        try:
+            tscv = TimeSeriesSplit(n_splits=n_splits)
+        except Exception:
+            return pd.DataFrame(columns=["date", "actual", "predicted", "lower_bound", "upper_bound"])
+
+        rows: List[Dict[str, Any]] = []
+        for train_idx, val_idx in tscv.split(X):
+            if len(train_idx) < 20 or len(val_idx) == 0:
+                continue
+
+            scaler = StandardScaler()
+            X_train = scaler.fit_transform(X[train_idx])
+            X_val = scaler.transform(X[val_idx])
+            y_train = y[train_idx]
+            y_val = y[val_idx]
+
+            fold_model = RandomForestRegressor(
+                n_estimators=200,
+                max_depth=12,
+                min_samples_split=5,
+                min_samples_leaf=2,
+                max_features="sqrt",
+                bootstrap=True,
+                random_state=42,
+                n_jobs=-1,
+            )
+            fold_model.fit(X_train, y_train)
+
+            tree_pred_matrix = np.array([tree.predict(X_val) for tree in fold_model.estimators_])
+            pred_means = np.mean(tree_pred_matrix, axis=0)
+            pred_stds = np.std(tree_pred_matrix, axis=0)
+            y_pred = np.maximum(pred_means, 0)
+
+            hist_std = float(np.std(y_train, ddof=1)) if len(y_train) > 1 else 5.0
+            if not np.isfinite(hist_std):
+                hist_std = 5.0
+            ci_multiplier = 1.28
+
+            open_flags = None
+            if "is_store_open" in df_features.columns:
+                open_flags = df_features["is_store_open"].iloc[val_idx].values
+
+            for idx, (dt, actual, predicted, pred_mean, pred_std) in enumerate(
+                zip(dates.iloc[val_idx], y_val, y_pred, pred_means, pred_stds)
+            ):
+                if open_flags is not None and float(open_flags[idx]) <= 0.0:
+                    predicted_value = 0.0
+                    lower = 0.0
+                    upper = 0.0
+                else:
+                    predicted_value = float(max(0.0, predicted))
+                    interval_radius = ci_multiplier * (float(pred_std) + hist_std * 0.3)
+                    lower = float(max(0.0, pred_mean - interval_radius))
+                    upper = float(max(predicted_value, pred_mean + interval_radius))
+
+                rows.append({
+                    "date": dt,
+                    "actual": float(actual),
+                    "predicted": predicted_value,
+                    "lower_bound": lower,
+                    "upper_bound": upper,
+                })
+
+        if not rows:
+            return pd.DataFrame(columns=["date", "actual", "predicted", "lower_bound", "upper_bound"])
+        return pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+
+    def _calculate_horizon_metrics(
+        self,
+        *,
+        store_id: str,
+        meta: Dict[str, Any],
+        raw_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> Dict[str, Any]:
+        """Hitung metric daily, weekly, monthly berbasis out-of-sample backtest."""
+        if raw_data is None:
+            # Jangan buka koneksi PostgreSQL langsung dari path metadata.
+            # Weekly/monthly biasanya sudah memakai horizon_metrics yang tersimpan
+            # dari daily forecast sebelumnya. Jika belum ada, kembalikan kosong.
+            return dict(meta.get("horizon_metrics") or {})
+        df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+        if df_daily.empty:
+            return {}
+
+        df_features = self.preprocessor.engineer_features(df_daily)
+        feature_cols = self.preprocessor.get_feature_columns(df_features)
+        oos_df = self._build_oos_daily_predictions(df_features, feature_cols)
+
+        metrics: Dict[str, Any] = {
+            "metrics_version": "horizon-aware-oos-v2",
+            "metric_source": "time_series_split_oos_daily_predictions",
+            "metric_note": (
+                "weekly/monthly metrics are calculated by aggregating out-of-sample daily "
+                "predictions into complete weekly/monthly periods."
+            ),
+            "daily_training_rows_before_features": int(len(df_daily)),
+            "daily_training_data_points": int(len(df_features)),
+            "oos_daily_prediction_points": int(len(oos_df)),
+        }
+
+        if not oos_df.empty:
+            metrics.update(self._metric_block(
+                "daily",
+                oos_df["actual"].values,
+                oos_df["predicted"].values,
+                oos_df["lower_bound"].values if "lower_bound" in oos_df.columns else None,
+                oos_df["upper_bound"].values if "upper_bound" in oos_df.columns else None,
+            ))
+            metrics.update(self._aggregate_oos_metric(oos_df, "weekly"))
+            metrics.update(self._aggregate_oos_metric(oos_df, "monthly"))
+        else:
+            metrics.update(self._metric_block("daily", np.array([]), np.array([])))
+            metrics.update(self._metric_block("weekly", np.array([]), np.array([])))
+            metrics.update(self._metric_block("monthly", np.array([]), np.array([])))
+
+        # Fallback: kalau OOS daily tidak tersedia, tetap isi daily dari meta lama.
+        if not metrics.get("daily_metric_available") and meta.get("cv_mae") is not None:
+            avg_actual = float(df_features["visitors"].mean()) if not df_features.empty else 0.0
+            mae = float(meta.get("cv_mae", 0.0))
+            rmse = float(meta.get("cv_rmse", 0.0))
+            ratio = mae / avg_actual if avg_actual > 0 else None
+            metrics.update({
+                "daily_metric_available": True,
+                "daily_mae": self._round_metric(mae),
+                "daily_rmse": self._round_metric(rmse),
+                "daily_mae_percentage": self._round_metric(ratio * 100 if ratio is not None else None, 2),
+                "daily_error_ratio": self._round_metric(ratio, 4),
+                "daily_wape": self._round_metric(ratio, 4),
+                "daily_error_percentage": self._round_metric(ratio * 100 if ratio is not None else None, 2),
+                "daily_bias": None,
+                "daily_mean_error": None,
+                "daily_bias_percentage": None,
+                "daily_interval_coverage": None,
+                "daily_avg_interval_width": None,
+                "daily_relative_interval_width": None,
+                "daily_reliability": self._classify_reliability(ratio),
+                "metric_source": "trainer_cv_fallback",
+            })
+
+        return metrics
+
+    def _horizon_method(self, horizon_label: str) -> str:
+        if horizon_label == "daily":
+            return "direct_daily_model"
+        if horizon_label == "weekly":
+            return "aggregated_from_daily_forecast_weekly_backtest_metric"
+        if horizon_label == "monthly":
+            return "aggregated_from_daily_forecast_monthly_backtest_metric"
+        return "unknown"
+
+    def _metadata_for_response(
+        self,
+        *,
+        store_id: str,
+        meta: Dict[str, Any],
+        horizon_label: str,
+        raw_data: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+    ) -> ModelMetadata:
+        metrics = dict(meta.get("horizon_metrics") or {})
+        if metrics.get("metrics_version") != "horizon-aware-oos-v2":
+            metrics = self._calculate_horizon_metrics(store_id=store_id, meta=meta, raw_data=raw_data)
+            meta["horizon_metrics"] = metrics
+            try:
+                meta_path = trainer._meta_path(store_id, "daily")
+                with open(meta_path, "w") as f:
+                    json.dump(meta, f, indent=2)
+            except Exception as exc:
+                logger.warning(f"Gagal menyimpan horizon-aware metrics visitors: {exc}")
+
+        selected_mae = metrics.get(f"{horizon_label}_mae")
+        selected_rmse = metrics.get(f"{horizon_label}_rmse")
+        if selected_mae is None:
+            selected_mae = metrics.get("daily_mae", meta.get("cv_mae"))
+        if selected_rmse is None:
+            selected_rmse = metrics.get("daily_rmse", meta.get("cv_rmse"))
+
+        selected_metrics: Dict[str, Any] = {
+            "metrics_version": metrics.get("metrics_version"),
+            "metric_source": metrics.get("metric_source"),
+            "training_rows_before_features": metrics.get("daily_training_rows_before_features"),
+            "training_data_points": metrics.get("daily_training_data_points"),
+            "oos_prediction_points": metrics.get("oos_daily_prediction_points"),
+            f"{horizon_label}_metric_available": bool(metrics.get(f"{horizon_label}_metric_available", False)),
+            f"{horizon_label}_mae": metrics.get(f"{horizon_label}_mae"),
+            f"{horizon_label}_rmse": metrics.get(f"{horizon_label}_rmse"),
+            f"{horizon_label}_mae_percentage": metrics.get(f"{horizon_label}_mae_percentage"),
+            f"{horizon_label}_error_ratio": metrics.get(f"{horizon_label}_error_ratio"),
+            f"{horizon_label}_wape": metrics.get(f"{horizon_label}_wape"),
+            f"{horizon_label}_error_percentage": metrics.get(f"{horizon_label}_error_percentage"),
+            f"{horizon_label}_bias": metrics.get(f"{horizon_label}_bias"),
+            f"{horizon_label}_mean_error": metrics.get(f"{horizon_label}_mean_error"),
+            f"{horizon_label}_bias_percentage": metrics.get(f"{horizon_label}_bias_percentage"),
+            f"{horizon_label}_interval_coverage": metrics.get(f"{horizon_label}_interval_coverage"),
+            f"{horizon_label}_avg_interval_width": metrics.get(f"{horizon_label}_avg_interval_width"),
+            f"{horizon_label}_relative_interval_width": metrics.get(f"{horizon_label}_relative_interval_width"),
+            f"{horizon_label}_reliability": metrics.get(f"{horizon_label}_reliability"),
+        }
+        selected_metrics = {k: v for k, v in selected_metrics.items() if v is not None}
+
+        # Metric horizon aktif hanya ditaruh di model_metadata.metrics.
+        # Jangan duplikasi ke top-level model_metadata agar response lebih bersih.
+        return ModelMetadata(
+            trained_at=datetime.fromisoformat(meta["trained_at"]) if meta.get("trained_at") else None,
+            training_data_points=int(meta.get("training_data_points", 0)),
+            feature_importance=meta.get("top_features", meta.get("feature_importance", {})),
+            cv_mae=self._round_metric(selected_mae),
+            cv_rmse=self._round_metric(selected_rmse),
+            horizon_method=self._horizon_method(horizon_label),
+            metric_horizon=horizon_label,
+            metrics=selected_metrics,
+        )
+
+    def _horizon_days(self, horizon_label: str, horizon_count: int) -> int:
+        if horizon_label == "daily":
+            return horizon_count
+        if horizon_label == "weekly":
+            return horizon_count * 7
+        if horizon_label == "monthly":
+            return horizon_count * 30
+        raise ValueError("horizon_label harus daily, weekly, atau monthly")
+
+    async def forecast_by_horizon(
+        self,
+        *,
+        store_id: str,
+        horizon_label: str,
+        horizon_count: int,
+        start_date: date | None = None,
+    ):
+        """Jalankan forecast visitors berdasarkan body standar route baru."""
+        if horizon_count <= 0:
+            raise ValueError("horizon_count harus lebih besar dari 0")
+
+        if horizon_label == "daily":
+            return await self.forecast(
+                store_id=store_id,
+                forecast_days=horizon_count,
+                start_date=start_date,
+            )
+        if horizon_label == "weekly":
+            return await self.forecast_weekly(
+                store_id=store_id,
+                forecast_weeks=horizon_count,
+                start_date=start_date,
+            )
+        if horizon_label == "monthly":
+            return await self.forecast_monthly(
+                store_id=store_id,
+                forecast_months=horizon_count,
+                start_date=start_date,
+            )
+        raise ValueError("horizon_label harus daily, weekly, atau monthly")
+
+    def _date_to_iso(self, value: Any) -> str:
+        if isinstance(value, pd.Timestamp):
+            return value.date().isoformat()
+        if isinstance(value, datetime):
+            return value.date().isoformat()
+        if isinstance(value, date):
+            return value.isoformat()
+        return str(value)
+
+    def build_scheduler_jobs_for_store(
+        self,
+        store_id: str,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """Tentukan auto forecast visitors yang due untuk satu store.
+
+        Scheduler memanggil ini setiap FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES.
+        - Daily due setiap operational day complete.
+        - Weekly due hanya saat complete day adalah Minggu; forecast mulai Senin.
+        - Monthly due hanya saat complete day adalah tanggal terakhir bulan; forecast mulai tanggal 1 bulan berikutnya.
+        """
+        now = now_jakarta or self._now_jakarta()
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours, now)
+        jobs: List[Dict[str, Any]] = []
+
+        daily_start = latest_complete_day + timedelta(days=1)
+        jobs.append({
+            "store_id": store_id,
+            "horizon_label": "daily",
+            "horizon_count": 1,
+            "start_date": daily_start,
+            "latest_complete_day": latest_complete_day,
+            "start_date_source": "scheduler_daily_after_complete_operational_day",
+            "business_cutoff_rule": "scheduler_daily_after_close_or_24h_cutoff",
+        })
+
+        if latest_complete_day.weekday() == 6:
+            jobs.append({
+                "store_id": store_id,
+                "horizon_label": "weekly",
+                "horizon_count": 1,
+                "start_date": latest_complete_day + timedelta(days=1),
+                "latest_complete_day": latest_complete_day,
+                "start_date_source": "scheduler_weekly_after_complete_operational_sunday",
+                "business_cutoff_rule": "scheduler_weekly_start_monday_after_sunday_complete",
+            })
+
+        month_end = (pd.Timestamp(latest_complete_day) + pd.offsets.MonthEnd(0)).date()
+        if latest_complete_day == month_end:
+            jobs.append({
+                "store_id": store_id,
+                "horizon_label": "monthly",
+                "horizon_count": 1,
+                "start_date": latest_complete_day + timedelta(days=1),
+                "latest_complete_day": latest_complete_day,
+                "start_date_source": "scheduler_monthly_after_complete_operational_month_end",
+                "business_cutoff_rule": "scheduler_monthly_start_first_day_after_month_end_complete",
+            })
+
+        return jobs
+
 
     def _response_date_bounds(self, forecasts: List[Any], horizon_label: str) -> Tuple[Optional[date], Optional[date]]:
         if not forecasts:
@@ -691,9 +1457,13 @@ class SalesForecastService:
         model, scaler, feature_cols, meta = trainer.load_model(store_id)
         raw_data = await self._fetch_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+        df_daily, _ = self._filter_daily_to_complete_period(
+            df_daily,
+            raw_data.get('operational_hours', [])
+        )
         if df_daily.empty:
             raise ValueError(f'Tidak ada data historis untuk store {store_id}')
-        start_meta = self._resolve_forecast_start_meta(df_daily=df_daily, operational_hours=raw_data.get('operational_hours', []), requested_start_date=start_date)
+        start_meta = self._resolve_forecast_start_meta(df_daily=df_daily, operational_hours=raw_data.get('operational_hours', []), requested_start_date=start_date, horizon_label="daily")
         resolved_start_date = start_meta['forecast_start_date']
         hist_std = float(df_daily['omzet'].std()) if len(df_daily) > 1 else 100000.0
         ci_multiplier = 1.28
@@ -852,10 +1622,41 @@ class SalesForecastService:
     async def forecast_weekly(self, store_id: str, forecast_weeks: int, start_date: date | None=None) -> WeeklyForecastResponse:
         if forecast_weeks <= 0:
             raise ValueError('forecast_weeks harus lebih besar dari 0')
-        daily_response = await self.forecast(store_id=store_id, forecast_days=forecast_weeks * 7, start_date=start_date)
+            
+        weekly_start_meta = None
+        resolved_start_date = start_date
+        if resolved_start_date is None:
+            raw_data = await self._fetch_historical_data(store_id)
+            df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+            df_daily, _ = self._filter_daily_to_complete_period(df_daily, raw_data.get("operational_hours", []))
+            if df_daily.empty:
+                raise ValueError(f"Tidak ada data historis complete untuk store {store_id}")
+            weekly_start_meta = self._resolve_forecast_start_meta(
+                df_daily=df_daily,
+                operational_hours=raw_data.get("operational_hours", []),
+                requested_start_date=None,
+                horizon_label="weekly",
+            )
+            resolved_start_date = weekly_start_meta["forecast_start_date"]
+            
+        daily_response = await self.forecast(store_id=store_id, forecast_days=forecast_weeks * 7, start_date=resolved_start_date)
         forecasts = self._build_weekly_from_daily_response(daily_response=daily_response, forecast_weeks=forecast_weeks)
         forecast_start, forecast_end = self._response_date_bounds(forecasts, 'weekly')
-        return WeeklyForecastResponse(store_id=store_id, generated_at=datetime.utcnow(), forecast_horizon_weeks=forecast_weeks, forecast_start_date=forecast_start, forecast_end_date=forecast_end, start_date_source=daily_response.start_date_source, last_actual_date=daily_response.last_actual_date, business_cutoff_rule=daily_response.business_cutoff_rule, forecasts=forecasts, model_metadata=self._metadata_for_response(store_id=store_id, meta=trainer.load_model(store_id)[3], horizon_label='weekly'), status='success', message=f'Berhasil memprediksi {forecast_weeks} minggu ke depan dari agregasi daily forecast')
+        
+        return WeeklyForecastResponse(
+            store_id=store_id, 
+            generated_at=datetime.utcnow(), 
+            forecast_horizon_weeks=forecast_weeks, 
+            forecast_start_date=forecast_start, 
+            forecast_end_date=forecast_end, 
+            start_date_source=(weekly_start_meta["start_date_source"] if weekly_start_meta else daily_response.start_date_source), 
+            last_actual_date=(weekly_start_meta["last_actual_date"] if weekly_start_meta else daily_response.last_actual_date), 
+            business_cutoff_rule=(weekly_start_meta["business_cutoff_rule"] if weekly_start_meta else daily_response.business_cutoff_rule), 
+            forecasts=forecasts, 
+            model_metadata=self._metadata_for_response(store_id=store_id, meta=trainer.load_model(store_id)[3], horizon_label='weekly'), 
+            status='success', 
+            message=f'Berhasil memprediksi {forecast_weeks} minggu ke depan dari agregasi daily forecast'
+        )
 
     async def forecast_monthly(self, store_id: str, forecast_months: int, start_date: date | None=None) -> MonthlyForecastResponse:
         if forecast_months <= 0:
@@ -865,9 +1666,10 @@ class SalesForecastService:
         if resolved_start_date is None:
             raw_data = await self._fetch_historical_data(store_id)
             df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+            df_daily, _ = self._filter_daily_to_complete_period(df_daily, raw_data.get("operational_hours", []))
             if df_daily.empty:
                 raise ValueError(f'Tidak ada data historis untuk store {store_id}')
-            start_meta = self._resolve_forecast_start_meta(df_daily=df_daily, operational_hours=raw_data.get('operational_hours', []), requested_start_date=None)
+            start_meta = self._resolve_forecast_start_meta(df_daily=df_daily, operational_hours=raw_data.get('operational_hours', []), requested_start_date=None, horizon_label="monthly")
             monthly_start_meta = start_meta
             resolved_start_date = start_meta['forecast_start_date']
         periods = self._monthly_periods(forecast_months=forecast_months, start_date=resolved_start_date)
@@ -979,6 +1781,8 @@ class SalesForecastService:
             }
             
             headers = {"Content-Type": "application/json"}
+            if Config.INTERNAL_SERVICE_KEY:
+                headers["X-Service-Key"] = Config.INTERNAL_SERVICE_KEY
             if backend_token:
                 headers["Authorization"] = f"Bearer {backend_token}"
             elif Config.INTERNAL_SERVICE_KEY:
