@@ -41,47 +41,154 @@ def _map_horizon_to_freq(horizon_label):
         raise ValueError("horizon_label harus daily/weekly/monthly")
     return freq
 
-# Scheduler untuk retrain otomatis
+# Scheduler visitors otomatis
 from apscheduler.schedulers.background import BackgroundScheduler
 import atexit
+import logging
+
+logger = logging.getLogger("forecast_service")
+logger.setLevel(getattr(logging, str(getattr(Config, "LOG_LEVEL", "INFO")).upper(), logging.INFO))
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"))
+    logger.addHandler(handler)
 
 app = Flask(__name__)
 
 # ============================================
-# SCHEDULER: Retrain otomatis tiap Minggu 02:00
+# VISITORS SCHEDULER
 # ============================================
-def scheduled_train():
-    """Wrapper untuk scheduler, tanpa task_id."""
-    train_all_inventory_models(task_id=None)
+# In-memory guard agar job yang sama tidak dieksekusi berkali-kali dalam satu
+# process karena scheduler check berjalan tiap N menit. Persistensi idempotency
+# tetap sebaiknya ditambahkan di backend jika nanti service berjalan multi-process.
+_VISITORS_SCHEDULER_RUN_KEYS = set()
+_VISITORS_SCHEDULER_RUNNING_KEYS = set()
+_VISITORS_SCHEDULER_LOCK = threading.Lock()
 
-scheduler = BackgroundScheduler()
-scheduler.add_job(
-    func=scheduled_train,
-    trigger="cron",
-    day_of_week="sun",
-    hour=2,
-    minute=0
-)
 
-def scheduled_visitors_retrain():
-    """Retrain periodic untuk visitors."""
-    store_ids = visitors_trainer.list_trained_stores()
+def _visitors_scheduler_key(job):
+    start_date = job.get("start_date")
+    if isinstance(start_date, date):
+        start_value = start_date.isoformat()
+    else:
+        start_value = str(start_date)
+    return (str(job.get("store_id")), str(job.get("horizon_label")), start_value)
+
+
+async def _run_visitors_scheduler_once_async():
+    """Cek semua store dan jalankan visitors forecast yang sudah due."""
+    store_ids = await golang_client.fetch_store_ids()
+    if not store_ids:
+        logger.warning("Visitors scheduler: tidak ada store dari backend internal /stores")
+        return []
+
+    results = []
     for store_id in store_ids:
         try:
-            asyncio.run(visitors_forecast_service.retrain(store_id=store_id, force=True))
-        except Exception as e:
+            operational_hours = await golang_client.fetch_store_operational_hours(store_id)
+            jobs = visitors_forecast_service.build_scheduler_jobs_for_store(
+                store_id=store_id,
+                operational_hours=operational_hours,
+            )
+
+            due_jobs = []
+            for job in jobs:
+                key = _visitors_scheduler_key(job)
+                with _VISITORS_SCHEDULER_LOCK:
+                    if key in _VISITORS_SCHEDULER_RUN_KEYS or key in _VISITORS_SCHEDULER_RUNNING_KEYS:
+                        continue
+                    _VISITORS_SCHEDULER_RUNNING_KEYS.add(key)
+                due_jobs.append((key, job))
+
+            if not due_jobs:
+                continue
+
+            if Config.SCHEDULER_RETRAIN:
+                logger.info("Visitors scheduler: retrain store=%s sebelum auto forecast", store_id)
+                await visitors_forecast_service.retrain(store_id=store_id, force=True)
+
+            for key, job in due_jobs:
+                try:
+                    logger.info(
+                        "Visitors scheduler: run store=%s horizon=%s start_date=%s",
+                        store_id,
+                        job["horizon_label"],
+                        job["start_date"],
+                    )
+                    forecast_result = await visitors_forecast_service.forecast_by_horizon(
+                        store_id=store_id,
+                        horizon_label=job["horizon_label"],
+                        horizon_count=job["horizon_count"],
+                        start_date=job["start_date"],
+                    )
+
+                    # Preserve scheduler metadata di response/save summary. Forecast dipanggil
+                    # dengan explicit start_date agar period boundary pasti, tapi source-nya
+                    # tetap scheduler, bukan manual user body.
+                    if hasattr(forecast_result, "start_date_source"):
+                        forecast_result.start_date_source = job.get("start_date_source")
+                    if hasattr(forecast_result, "business_cutoff_rule"):
+                        forecast_result.business_cutoff_rule = job.get("business_cutoff_rule")
+                    if hasattr(forecast_result, "last_actual_date"):
+                        forecast_result.last_actual_date = job.get("latest_complete_day")
+
+                    save_result = visitors_forecast_service.save_forecast_result(
+                        forecast_response=forecast_result,
+                        horizon_label=job["horizon_label"],
+                        horizon_count=job["horizon_count"],
+                    )
+                    with _VISITORS_SCHEDULER_LOCK:
+                        _VISITORS_SCHEDULER_RUN_KEYS.add(key)
+                    results.append({
+                        "store_id": store_id,
+                        "horizon_label": job["horizon_label"],
+                        "start_date": job["start_date"].isoformat() if isinstance(job["start_date"], date) else job["start_date"],
+                        "run_id": save_result.get("run_id"),
+                        "saved_results": save_result.get("saved_results"),
+                    })
+                except Exception:
+                    traceback.print_exc()
+                finally:
+                    with _VISITORS_SCHEDULER_LOCK:
+                        _VISITORS_SCHEDULER_RUNNING_KEYS.discard(key)
+        except Exception:
             traceback.print_exc()
 
-scheduler.add_job(
-    func=scheduled_visitors_retrain,
-    trigger="interval",
-    days=Config.VISITORS_RETRAIN_INTERVAL_DAYS,
-    id="visitors_auto_retrain",
-    replace_existing=True
-)
+    if results:
+        logger.info("Visitors scheduler selesai: %s job tersimpan", len(results))
+    return results
 
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
+
+def scheduled_visitors_forecast_check():
+    try:
+        asyncio.run(_run_visitors_scheduler_once_async())
+    except Exception:
+        traceback.print_exc()
+
+
+scheduler = None
+if Config.FORECAST_MODE == "scheduler":
+    scheduler = BackgroundScheduler(timezone=Config.FORECAST_SCHEDULER_TIMEZONE)
+    scheduler.add_job(
+        func=scheduled_visitors_forecast_check,
+        trigger="interval",
+        minutes=Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
+        id="visitors_auto_forecast_check",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.start()
+    atexit.register(lambda: scheduler.shutdown(wait=False))
+    logger.info(
+        "Visitors scheduler enabled: interval=%s minutes, after_close=%s minutes, 24h_cutoff=%s minutes, retrain=%s",
+        Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
+        Config.FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES,
+        Config.FORECAST_24H_RUN_SCHEDULER_MINUTES,
+        Config.SCHEDULER_RETRAIN,
+    )
+else:
+    logger.info("Visitors scheduler disabled because FORECAST_MODE=%s", Config.FORECAST_MODE)
 
 # ============================================
 # ROUTE MODUL VISITORS
