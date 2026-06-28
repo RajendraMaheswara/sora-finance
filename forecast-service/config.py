@@ -3,10 +3,35 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return int(str(value).strip())
+    except ValueError:
+        return default
+
 class Config:
     BACKEND_API_URL = os.getenv('BACKEND_API_URL', 'http://localhost:8080/api')
     INTERNAL_SERVICE_KEY = os.getenv('INTERNAL_SERVICE_KEY', '')
     BACKEND_REQUEST_TIMEOUT_SECONDS = float(os.getenv('BACKEND_REQUEST_TIMEOUT_SECONDS', '30'))
+
+    # Forecast runtime / scheduler. Satu mode saja:
+    # - manual: scheduler mati, endpoint manual tetap aktif
+    # - scheduler: visitors scheduler aktif dan mengecek operational hours store
+    FORECAST_MODE = os.getenv('FORECAST_MODE', 'manual').strip().lower()
+    FORECAST_SCHEDULER_TIMEZONE = os.getenv('FORECAST_SCHEDULER_TIMEZONE', 'Asia/Jakarta')
+    FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES = _env_int('FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES', 60)
+    FORECAST_24H_RUN_SCHEDULER_MINUTES = _env_int('FORECAST_24H_RUN_SCHEDULER_MINUTES', 120)
+    FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES = max(1, _env_int('FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES', 15))
+    SCHEDULER_RETRAIN = _env_bool('SCHEDULER_RETRAIN', True)
     
     # Inventory Configs
     MODEL_DIR = os.path.join(os.path.dirname(__file__), 'models')

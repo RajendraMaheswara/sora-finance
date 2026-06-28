@@ -334,6 +334,29 @@ class GolangAPIClient:
         except Exception:
             return False
 
+    def _store_id_from_item(self, item: Dict[str, Any]) -> Optional[str]:
+        value = (
+            item.get("id")
+            or item.get("store_id")
+            or item.get("m_store_id")
+            or item.get("storeId")
+            or item.get("mStoreId")
+        )
+        return str(value) if value else None
+
+    async def fetch_store_ids(self) -> List[str]:
+        """Ambil daftar store dari backend internal untuk scheduler visitors."""
+        data = await self._get("stores", timeout=self.long_timeout, attempts=2)
+        items = self._extract_items(data)
+        store_ids: List[str] = []
+        seen = set()
+        for item in items:
+            store_id = self._store_id_from_item(item)
+            if store_id and store_id not in seen:
+                store_ids.append(store_id)
+                seen.add(store_id)
+        return store_ids
+
     def _same_store(self, item: Dict[str, Any], store_id: str) -> bool:
         value = item.get("m_store_id") or item.get("store_id") or item.get("storeId") or item.get("mStoreId")
         return str(value) == str(store_id)
@@ -1367,14 +1390,146 @@ class ForecastService:
         return dates.max().date()
 
     def _is_known_24h_store_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
-        # Jangan anggap 24 jam jika data jam operasional kosong.
-        # Untuk default start_date, prediksi besok lebih aman daripada memprediksi hari berjalan
-        # dengan data aktual yang mungkin masih parsial.
         if not operational_hours:
-            return False
+            return True
         op_map = self.preprocessor._parse_operational_hours(operational_hours)
         features = self.preprocessor._operational_features_for_date(pd.Timestamp(target_date), op_map)
         return float(features.get("is_store_open", 0.0)) > 0 and float(features.get("is_24_hours", 0.0)) >= 1.0
+
+    def _bool_value(self, value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"true", "t", "1", "yes", "y", "on"}:
+            return True
+        if text in {"false", "f", "0", "no", "n", "off"}:
+            return False
+        return default
+
+    def _operational_record_for_date(
+        self,
+        target_date: date,
+        operational_hours: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        if not operational_hours:
+            return None
+
+        ts = pd.Timestamp(target_date)
+        # Support beberapa konvensi:
+        # - Python: Senin=0..Minggu=6
+        # - ISO/DB umum: Senin=1..Minggu=7
+        # - Sunday-zero: Minggu=0..Sabtu=6
+        candidates = {
+            int(ts.dayofweek),
+            int(ts.isoweekday()),
+            int(ts.isoweekday()) % 7,
+        }
+        for record in operational_hours or []:
+            try:
+                day_key = int(record.get("day_of_week", record.get("dayOfWeek")))
+            except Exception:
+                continue
+            if day_key in candidates:
+                return record
+        return None
+
+    def _store_is_open_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
+        # Jika operational hours kosong, default 24 jam agar forecast tetap jalan.
+        if not operational_hours:
+            return True
+        record = self._operational_record_for_date(target_date, operational_hours)
+        if record is None:
+            return True
+        if not self._bool_value(record.get("is_active", record.get("isActive")), default=False):
+            return False
+        op_map = self.preprocessor._parse_operational_hours([record])
+        features = self.preprocessor._operational_features_for_date(pd.Timestamp(target_date), op_map)
+        return float(features.get("is_store_open", 0.0)) > 0
+
+    def _operational_cutoff_datetime(
+        self,
+        target_date: date,
+        operational_hours: List[Dict[str, Any]],
+    ) -> datetime:
+        """Waktu data actual untuk operational date dianggap complete.
+
+        - Non-24h: close_time + FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES.
+        - Overnight, misalnya Minggu 17:00-Senin 04:00: target_date tetap Minggu,
+          cutoff jatuh Senin 04:00 + delay.
+        - 24h: 00:00 hari berikutnya + FORECAST_24H_RUN_SCHEDULER_MINUTES.
+        """
+        jakarta = ZoneInfo(getattr(Config, "FORECAST_SCHEDULER_TIMEZONE", "Asia/Jakarta"))
+        record = self._operational_record_for_date(target_date, operational_hours)
+
+        if not operational_hours or record is None:
+            return (
+                datetime.combine(target_date + timedelta(days=1), datetime.min.time(), tzinfo=jakarta)
+                + timedelta(minutes=getattr(Config, "FORECAST_24H_RUN_SCHEDULER_MINUTES", 120))
+            )
+
+        is_active = self._bool_value(record.get("is_active", record.get("isActive")), default=False)
+        if not is_active:
+            return datetime.combine(target_date, datetime.min.time(), tzinfo=jakarta)
+
+        open_seconds = self.preprocessor._seconds_from_time_like(record.get("open_time", record.get("openTime")))
+        close_seconds = self.preprocessor._seconds_from_time_like(record.get("close_time", record.get("closeTime")))
+
+        if open_seconds is None or close_seconds is None or open_seconds == close_seconds:
+            return (
+                datetime.combine(target_date + timedelta(days=1), datetime.min.time(), tzinfo=jakarta)
+                + timedelta(minutes=getattr(Config, "FORECAST_24H_RUN_SCHEDULER_MINUTES", 120))
+            )
+
+        close_day = target_date
+        if close_seconds <= open_seconds:
+            close_day = target_date + timedelta(days=1)
+
+        close_dt = datetime.combine(close_day, datetime.min.time(), tzinfo=jakarta) + timedelta(seconds=close_seconds)
+        return close_dt + timedelta(minutes=getattr(Config, "FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES", 60))
+
+    def _latest_complete_day_by_operational_hours(
+        self,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> date:
+        now = now_jakarta or self._now_jakarta()
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=ZoneInfo(getattr(Config, "FORECAST_SCHEDULER_TIMEZONE", "Asia/Jakarta")))
+
+        # Cek mundur untuk handle toko tutup, overnight, dan 24 jam.
+        for offset in range(0, 14):
+            candidate = now.date() - timedelta(days=offset)
+            if not self._store_is_open_on_date(candidate, operational_hours):
+                continue
+            if now >= self._operational_cutoff_datetime(candidate, operational_hours):
+                return candidate
+
+        return now.date() - timedelta(days=1)
+
+    def _filter_daily_to_complete_period(
+        self,
+        df_daily: pd.DataFrame,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> Tuple[pd.DataFrame, date]:
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours, now_jakarta)
+        if df_daily is None or df_daily.empty or "date" not in df_daily.columns:
+            return df_daily, latest_complete_day
+        filtered = df_daily.copy()
+        filtered["date"] = pd.to_datetime(filtered["date"], errors="coerce")
+        filtered = filtered[filtered["date"].dt.date <= latest_complete_day]
+        return filtered, latest_complete_day
+
+    def _next_monday_after(self, value: date) -> date:
+        days = (7 - value.weekday()) % 7
+        if days == 0:
+            days = 7
+        return value + timedelta(days=days)
+
+    def _first_day_next_month_after(self, value: date) -> date:
+        return (pd.Timestamp(value.replace(day=1)) + pd.DateOffset(months=1)).date()
 
     def _resolve_forecast_start_meta(
         self,
@@ -1382,6 +1537,7 @@ class ForecastService:
         df_daily: pd.DataFrame,
         operational_hours: List[Dict[str, Any]],
         requested_start_date: Optional[date],
+        horizon_label: str = "daily",
     ) -> Dict[str, Any]:
         last_actual_date = self._last_actual_date_from_df(df_daily)
 
@@ -1393,34 +1549,93 @@ class ForecastService:
                 "business_cutoff_rule": "manual_start_date",
             }
 
-        today_jakarta = self._now_jakarta().date()
-        is_24h = self._is_known_24h_store_on_date(today_jakarta, operational_hours)
+        horizon_label = (horizon_label or "daily").lower()
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours)
+        next_after_complete_day = latest_complete_day + timedelta(days=1)
+        next_after_actual = last_actual_date + timedelta(days=1) if last_actual_date is not None else None
 
-        if is_24h:
-            candidate_start = today_jakarta
-            start_date_source = "auto_24h_cutoff_02:00"
-            business_cutoff_rule = "24h_store_02:00"
+        # Guard: jangan mulai forecast pada tanggal yang sudah punya actual complete.
+        candidate_start = max([d for d in [next_after_complete_day, next_after_actual] if d is not None])
+
+        if horizon_label == "weekly":
+            forecast_start = self._next_monday_after(latest_complete_day)
+            if forecast_start < candidate_start:
+                forecast_start = self._next_monday_after(candidate_start - timedelta(days=1))
+            start_date_source = "auto_weekly_complete_period"
+            business_cutoff_rule = "weekly_after_complete_operational_sunday_start_monday"
+        elif horizon_label == "monthly":
+            forecast_start = self._first_day_next_month_after(latest_complete_day)
+            if forecast_start < candidate_start:
+                forecast_start = self._first_day_next_month_after(candidate_start)
+            start_date_source = "auto_monthly_complete_period"
+            business_cutoff_rule = "monthly_after_complete_operational_month_start_first_day"
         else:
-            candidate_start = today_jakarta + timedelta(days=1)
-            if operational_hours:
-                start_date_source = "auto_after_close_plus_1_hour"
-                business_cutoff_rule = "after_close_plus_1_hour"
-            else:
-                start_date_source = "auto_unknown_operational_hours_default_next_day"
-                business_cutoff_rule = "unknown_operational_hours_default_next_day"
-
-        if last_actual_date is not None:
-            next_after_actual = last_actual_date + timedelta(days=1)
-            if next_after_actual > candidate_start:
-                candidate_start = next_after_actual
-                start_date_source = "auto_last_actual_date"
+            # Daily bebas: tidak skip weekend otomatis. Kalau toko tutup, model akan
+            # memberi 0 karena fitur operational hours.
+            forecast_start = candidate_start
+            start_date_source = "auto_daily_complete_period"
+            business_cutoff_rule = "daily_after_close_or_24h_cutoff"
 
         return {
-            "forecast_start_date": candidate_start,
+            "forecast_start_date": forecast_start,
             "start_date_source": start_date_source,
             "last_actual_date": last_actual_date,
+            "latest_complete_day": latest_complete_day,
             "business_cutoff_rule": business_cutoff_rule,
         }
+
+    def build_scheduler_jobs_for_store(
+        self,
+        store_id: str,
+        operational_hours: List[Dict[str, Any]],
+        now_jakarta: Optional[datetime] = None,
+    ) -> List[Dict[str, Any]]:
+        """Tentukan auto forecast visitors yang due untuk satu store.
+
+        Scheduler memanggil ini setiap FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES.
+        - Daily due setiap operational day complete.
+        - Weekly due hanya saat complete day adalah Minggu; forecast mulai Senin.
+        - Monthly due hanya saat complete day adalah tanggal terakhir bulan; forecast mulai tanggal 1 bulan berikutnya.
+        """
+        now = now_jakarta or self._now_jakarta()
+        latest_complete_day = self._latest_complete_day_by_operational_hours(operational_hours, now)
+        jobs: List[Dict[str, Any]] = []
+
+        daily_start = latest_complete_day + timedelta(days=1)
+        jobs.append({
+            "store_id": store_id,
+            "horizon_label": "daily",
+            "horizon_count": 1,
+            "start_date": daily_start,
+            "latest_complete_day": latest_complete_day,
+            "start_date_source": "scheduler_daily_after_complete_operational_day",
+            "business_cutoff_rule": "scheduler_daily_after_close_or_24h_cutoff",
+        })
+
+        if latest_complete_day.weekday() == 6:
+            jobs.append({
+                "store_id": store_id,
+                "horizon_label": "weekly",
+                "horizon_count": 1,
+                "start_date": latest_complete_day + timedelta(days=1),
+                "latest_complete_day": latest_complete_day,
+                "start_date_source": "scheduler_weekly_after_complete_operational_sunday",
+                "business_cutoff_rule": "scheduler_weekly_start_monday_after_sunday_complete",
+            })
+
+        month_end = (pd.Timestamp(latest_complete_day) + pd.offsets.MonthEnd(0)).date()
+        if latest_complete_day == month_end:
+            jobs.append({
+                "store_id": store_id,
+                "horizon_label": "monthly",
+                "horizon_count": 1,
+                "start_date": latest_complete_day + timedelta(days=1),
+                "latest_complete_day": latest_complete_day,
+                "start_date_source": "scheduler_monthly_after_complete_operational_month_end",
+                "business_cutoff_rule": "scheduler_monthly_start_first_day_after_month_end_complete",
+            })
+
+        return jobs
 
     def _response_date_bounds(self, forecasts: List[Any], horizon_label: str) -> Tuple[Optional[date], Optional[date]]:
         if not forecasts:
@@ -1952,6 +2167,10 @@ class ForecastService:
     def _training_range(self, store_id: str) -> Tuple[date, date, int]:
         raw_data = asyncio.run(golang_client.fetch_all_historical_data(store_id))
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+        df_daily, _ = self._filter_daily_to_complete_period(
+            df_daily,
+            raw_data.get("operational_hours", []),
+        )
         if df_daily.empty:
             today = date.today()
             return today, today, 0
@@ -2112,9 +2331,18 @@ class ForecastService:
         logger.info(f"[RETRAIN] store={store_id}, force={force}")
         raw_data = await golang_client.fetch_all_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+        df_daily, latest_complete_day = self._filter_daily_to_complete_period(
+            df_daily,
+            raw_data.get("operational_hours", []),
+        )
+        logger.info(
+            "[RETRAIN] store=%s menggunakan data complete sampai operational_day=%s",
+            store_id,
+            latest_complete_day,
+        )
         
         if df_daily.empty:
-            raise ValueError(f"Tidak ada data historis untuk store {store_id}.")
+            raise ValueError(f"Tidak ada data historis complete untuk store {store_id}.")
 
         if len(df_daily) < 30:
             raise ValueError(f"Data historis terlalu sedikit: {len(df_daily)} hari. Minimal 30 hari data.")
@@ -2152,14 +2380,19 @@ class ForecastService:
         model, scaler, feature_cols, meta = trainer.load_model(store_id)
         raw_data = await golang_client.fetch_all_historical_data(store_id)
         df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+        df_daily, latest_complete_day = self._filter_daily_to_complete_period(
+            df_daily,
+            raw_data.get("operational_hours", []),
+        )
 
         if df_daily.empty:
-            raise ValueError(f"Tidak ada data historis untuk store {store_id}")
+            raise ValueError(f"Tidak ada data historis complete untuk store {store_id}")
 
         start_meta = self._resolve_forecast_start_meta(
             df_daily=df_daily,
             operational_hours=raw_data.get("operational_hours", []),
             requested_start_date=start_date,
+            horizon_label="daily",
         )
         resolved_start_date = start_meta["forecast_start_date"]
 
@@ -2486,10 +2719,29 @@ class ForecastService:
         if forecast_weeks <= 0:
             raise ValueError("forecast_weeks harus lebih besar dari 0")
 
+        weekly_start_meta = None
+        resolved_start_date = start_date
+        if resolved_start_date is None:
+            raw_data = await golang_client.fetch_all_historical_data(store_id)
+            df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+            df_daily, _ = self._filter_daily_to_complete_period(
+                df_daily,
+                raw_data.get("operational_hours", []),
+            )
+            if df_daily.empty:
+                raise ValueError(f"Tidak ada data historis complete untuk store {store_id}")
+            weekly_start_meta = self._resolve_forecast_start_meta(
+                df_daily=df_daily,
+                operational_hours=raw_data.get("operational_hours", []),
+                requested_start_date=None,
+                horizon_label="weekly",
+            )
+            resolved_start_date = weekly_start_meta["forecast_start_date"]
+
         daily_response = await self.forecast(
             store_id=store_id,
             forecast_days=forecast_weeks * 7,
-            start_date=start_date,
+            start_date=resolved_start_date,
         )
         forecasts = self._build_weekly_from_daily_response(
             daily_response=daily_response,
@@ -2503,9 +2755,9 @@ class ForecastService:
             forecast_horizon_weeks=forecast_weeks,
             forecast_start_date=forecast_start,
             forecast_end_date=forecast_end,
-            start_date_source=daily_response.start_date_source,
-            last_actual_date=daily_response.last_actual_date,
-            business_cutoff_rule=daily_response.business_cutoff_rule,
+            start_date_source=(weekly_start_meta["start_date_source"] if weekly_start_meta else daily_response.start_date_source),
+            last_actual_date=(weekly_start_meta["last_actual_date"] if weekly_start_meta else daily_response.last_actual_date),
+            business_cutoff_rule=(weekly_start_meta["business_cutoff_rule"] if weekly_start_meta else daily_response.business_cutoff_rule),
             forecasts=forecasts,
             model_metadata=self._metadata_for_response(
                 store_id=store_id,
@@ -2532,12 +2784,17 @@ class ForecastService:
         if resolved_start_date is None:
             raw_data = await golang_client.fetch_all_historical_data(store_id)
             df_daily = self.preprocessor.build_daily_dataframe(raw_data)
+            df_daily, _ = self._filter_daily_to_complete_period(
+                df_daily,
+                raw_data.get("operational_hours", []),
+            )
             if df_daily.empty:
-                raise ValueError(f"Tidak ada data historis untuk store {store_id}")
+                raise ValueError(f"Tidak ada data historis complete untuk store {store_id}")
             start_meta = self._resolve_forecast_start_meta(
                 df_daily=df_daily,
                 operational_hours=raw_data.get("operational_hours", []),
                 requested_start_date=None,
+                horizon_label="monthly",
             )
             monthly_start_meta = start_meta
             resolved_start_date = start_meta["forecast_start_date"]
