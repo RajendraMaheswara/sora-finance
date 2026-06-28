@@ -195,6 +195,17 @@ if Config.FORECAST_MODE == "scheduler":
     )
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
+    
+    scheduler.add_job(
+        func=scheduled_sales_forecast_check,
+        trigger="interval",
+        minutes=Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
+        id="sales_auto_forecast_check",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Sales scheduler enabled")
     logger.info(
         "Visitors scheduler enabled: interval=%s minutes, after_close=%s minutes, 24h_cutoff=%s minutes, retrain=%s",
         Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
@@ -204,6 +215,110 @@ if Config.FORECAST_MODE == "scheduler":
     )
 else:
     logger.info("Visitors scheduler disabled because FORECAST_MODE=%s", Config.FORECAST_MODE)
+
+# ============================================
+# SALES SCHEDULER
+# ============================================
+_SALES_SCHEDULER_RUN_KEYS = set()
+_SALES_SCHEDULER_RUNNING_KEYS = set()
+_SALES_SCHEDULER_LOCK = threading.Lock()
+
+async def _run_sales_scheduler_once_async():
+    store_ids = await golang_client.fetch_store_ids()
+    if not store_ids:
+        logger.warning("Sales scheduler: tidak ada store dari backend internal /stores")
+        return []
+
+    results = []
+    for store_id in store_ids:
+        try:
+            operational_hours = await golang_client.fetch_store_operational_hours(store_id)
+            jobs = sales_forecast_service.build_scheduler_jobs_for_store(
+                store_id=store_id,
+                operational_hours=operational_hours,
+            )
+
+            due_jobs = []
+            for job in jobs:
+                key = _visitors_scheduler_key(job)
+                with _SALES_SCHEDULER_LOCK:
+                    if key in _SALES_SCHEDULER_RUN_KEYS or key in _SALES_SCHEDULER_RUNNING_KEYS:
+                        continue
+                    _SALES_SCHEDULER_RUNNING_KEYS.add(key)
+                due_jobs.append((key, job))
+
+            if not due_jobs:
+                continue
+
+            if Config.SCHEDULER_RETRAIN:
+                logger.info("Sales scheduler: retrain store=%s sebelum auto forecast", store_id)
+                await sales_forecast_service.retrain(store_id=store_id, force=True)
+
+            for key, job in due_jobs:
+                try:
+                    logger.info(
+                        "Sales scheduler: run store=%s horizon=%s start_date=%s",
+                        store_id,
+                        job["horizon_label"],
+                        job["start_date"],
+                    )
+                    
+                    if job["horizon_label"] == "daily":
+                        forecast_result = await sales_forecast_service.forecast(store_id, job["horizon_count"], job["start_date"])
+                    elif job["horizon_label"] == "weekly":
+                        forecast_result = await sales_forecast_service.forecast_weekly(store_id, job["horizon_count"], job["start_date"])
+                    else:
+                        forecast_result = await sales_forecast_service.forecast_monthly(store_id, job["horizon_count"], job["start_date"])
+
+                    if hasattr(forecast_result, "start_date_source"):
+                        forecast_result.start_date_source = job.get("start_date_source")
+                    if hasattr(forecast_result, "business_cutoff_rule"):
+                        forecast_result.business_cutoff_rule = job.get("business_cutoff_rule")
+                    if hasattr(forecast_result, "last_actual_date"):
+                        forecast_result.last_actual_date = job.get("latest_complete_day")
+                        
+                    forecast_dict = forecast_result.model_dump() if hasattr(forecast_result, 'model_dump') else forecast_result.dict()
+                    forecast_dict['request_meta'] = {
+                        "horizon_label": job["horizon_label"],
+                        "horizon_count": job["horizon_count"],
+                        "mode": "run"
+                    }
+
+                    success, msg = await sales_forecast_service.save_forecast_to_db(
+                        store_id=store_id,
+                        forecast_response=forecast_dict,
+                        backend_token=""
+                    )
+                    
+                    save_result = {"run_id": None, "saved_results": len(forecast_dict.get('forecasts', [])), "status": "saved" if success else "failed"}
+
+                    with _SALES_SCHEDULER_LOCK:
+                        _SALES_SCHEDULER_RUN_KEYS.add(key)
+                        
+                    results.append({
+                        "store_id": store_id,
+                        "horizon_label": job["horizon_label"],
+                        "start_date": job["start_date"].isoformat() if isinstance(job["start_date"], date) else job["start_date"],
+                        "saved_results": save_result.get("saved_results"),
+                    })
+                except Exception:
+                    traceback.print_exc()
+                finally:
+                    with _SALES_SCHEDULER_LOCK:
+                        _SALES_SCHEDULER_RUNNING_KEYS.discard(key)
+        except Exception:
+            traceback.print_exc()
+
+    if results:
+        logger.info("Sales scheduler selesai: %s job tersimpan", len(results))
+    return results
+
+def scheduled_sales_forecast_check():
+    try:
+        asyncio.run(_run_sales_scheduler_once_async())
+    except Exception:
+        traceback.print_exc()
+
 
 # ============================================
 # ROUTE MODUL VISITORS
@@ -302,7 +417,7 @@ def _date_or_none(value):
     return value.isoformat() if isinstance(value, date) else None
 
 
-def _visitors_request_meta(payload):
+def _sales_request_meta(payload):
     return {
         "store_id": payload["store_id"],
         "horizon_label": payload["horizon_label"],
@@ -487,7 +602,7 @@ def visitors_preview_standard():
         return jsonify({
             "status": "success",
             "message": "Forecast visitors berhasil dibuat tanpa disimpan.",
-            "request": _visitors_request_meta(payload),
+            "request": _sales_request_meta(payload),
             "data": _visitors_response_data_public(result, payload),
         }), 200
     except Exception as exc:
@@ -511,7 +626,7 @@ def visitors_save_standard():
         return jsonify({
             "status": "success",
             "message": "Forecast visitors berhasil disimpan ke database.",
-            "request": _visitors_request_meta(payload),
+            "request": _sales_request_meta(payload),
             "save_result": _visitors_save_result_public(save_result),
             "data": _visitors_response_data_public(forecast_result, payload, save_result),
         }), 201
@@ -536,7 +651,7 @@ def visitors_run_standard():
         return jsonify({
             "status": "success",
             "message": "Forecast visitors berhasil dijalankan dan disimpan.",
-            "request": _visitors_request_meta(payload),
+            "request": _sales_request_meta(payload),
             "save_result": _visitors_save_result_public(save_result),
             "data": _visitors_response_data_public(forecast_result, payload, save_result),
         }), 201
@@ -577,6 +692,103 @@ def _parse_horizon_count(payload, horizon_label):
         raise ValueError("horizon_count minimal 1")
     return horizon_count
 
+
+
+def _clean_sales_forecast_item(item, horizon_label):
+    if horizon_label == "daily":
+        cleaned = {
+            "date": item.get("date"),
+            "predicted_omzet": item.get("predicted_omzet"),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+            "day_of_week": item.get("day_of_week"),
+            "is_weekend": item.get("is_weekend"),
+        }
+    else:
+        cleaned = {
+            "period_start": item.get("period_start"),
+            "period_end": item.get("period_end"),
+            "predicted_omzet": item.get("predicted_omzet"),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+        }
+    return {key: value for key, value in cleaned.items() if value is not None}
+
+def _sales_model_metadata_public(raw_metadata, horizon_label, save_result=None):
+    raw_metadata = raw_metadata or {}
+    model_metrics = raw_metadata.get("metrics") or {}
+    save_metrics = (save_result or {}).get("metrics") or {}
+
+    metadata = {
+        "trained_at": raw_metadata.get("trained_at"),
+        "training_data_points": raw_metadata.get("training_data_points"),
+        "metric_horizon": raw_metadata.get("metric_horizon") or horizon_label,
+        "horizon_method": raw_metadata.get("horizon_method"),
+        "cv_mae": raw_metadata.get("cv_mae"),
+        "cv_rmse": raw_metadata.get("cv_rmse"),
+        "error_ratio": model_metrics.get(f"{horizon_label}_error_ratio"),
+        "wape": model_metrics.get(f"{horizon_label}_wape"),
+        "error_percentage": model_metrics.get(f"{horizon_label}_error_percentage") or model_metrics.get(f"{horizon_label}_mae_percentage"),
+        "bias": model_metrics.get(f"{horizon_label}_bias"),
+        "mean_error": model_metrics.get(f"{horizon_label}_mean_error"),
+        "bias_percentage": model_metrics.get(f"{horizon_label}_bias_percentage"),
+        "interval_coverage": model_metrics.get(f"{horizon_label}_interval_coverage"),
+        "avg_interval_width": model_metrics.get(f"{horizon_label}_avg_interval_width"),
+        "relative_interval_width": model_metrics.get(f"{horizon_label}_relative_interval_width"),
+        "reliability": model_metrics.get(f"{horizon_label}_reliability"),
+        "confidence_level": save_metrics.get("confidence_level"),
+        "metrics_version": model_metrics.get("metrics_version"),
+        "metric_source": model_metrics.get("metric_source"),
+        "feature_importance": raw_metadata.get("feature_importance") or {},
+    }
+    return {key: value for key, value in metadata.items() if value is not None}
+
+def _sales_response_data_public(forecast_result, payload, save_result=None):
+    raw = _json_model(forecast_result)
+    horizon_label = payload.get("horizon_label", "daily")
+    horizon_count = payload.get("horizon_count", 0)
+
+    forecasts = [
+        _clean_sales_forecast_item(item, horizon_label)
+        for item in raw.get("forecasts", [])
+    ]
+    total_predicted = int(sum(float(item.get("predicted_omzet") or 0) for item in forecasts))
+    forecast_count = len(forecasts)
+    avg_predicted = round(total_predicted / forecast_count, 2) if forecast_count else 0
+
+    forecast_start = raw.get("forecast_start_date")
+    forecast_end = raw.get("forecast_end_date")
+    horizon_days = _days_between(forecast_start, forecast_end)
+    if horizon_days is None:
+        horizon_days = raw.get("forecast_horizon_days")
+        if horizon_days is None and save_result:
+            horizon_days = save_result.get("horizon_days")
+
+    return {
+        "store_id": raw.get("store_id"),
+        "generated_at": raw.get("generated_at"),
+        "forecast_start_date": forecast_start,
+        "forecast_end_date": forecast_end,
+        "horizon": {
+            "label": horizon_label,
+            "count": horizon_count,
+            "days": horizon_days,
+        },
+        "start_date_source": raw.get("start_date_source"),
+        "last_actual_date": raw.get("last_actual_date"),
+        "business_cutoff_rule": raw.get("business_cutoff_rule"),
+        "summary": {
+            "total_predicted_omzet": total_predicted,
+            "average_predicted_omzet": avg_predicted,
+            "forecast_count": forecast_count,
+        },
+        "forecasts": forecasts,
+        "model_metadata": _sales_model_metadata_public(
+            raw.get("model_metadata"),
+            horizon_label,
+            save_result=save_result,
+        ),
+    }
 
 # ============================================
 # ROUTE MODUL SALES (NEW STANDARD ROUTES)
@@ -620,16 +832,24 @@ async def _run_sales_forecast_from_payload(payload):
     }
     return response
 
+
 @app.route('/api/forecast/sales/preview', methods=['POST'])
 def sales_preview():
     payload = _get_request_json()
     try:
+        store_id = _get_store_id(payload)
+        horizon_label = _parse_horizon_label(payload)
+        horizon_count = _parse_horizon_count(payload, horizon_label)
+        payload["horizon_label"] = horizon_label
+        payload["horizon_count"] = horizon_count
+        
         result = asyncio.run(_run_sales_forecast_from_payload(payload))
-        return jsonify(result), 200
-    except FileNotFoundError as e:
-        return jsonify({"detail": str(e)}), 404
-    except ValueError as e:
-        return jsonify({"detail": str(e)}), 400
+        return jsonify({
+            "status": "success",
+            "message": "Forecast sales berhasil dibuat tanpa disimpan.",
+            "request": _sales_request_meta(payload),
+            "data": _sales_response_data_public(result, payload),
+        }), 200
     except Exception as e:
         traceback.print_exc()
         return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
@@ -662,24 +882,30 @@ def sales_run():
     backend_token = payload.get("backend_token", "")
     
     try:
+        store_id = _get_store_id(payload)
+        horizon_label = _parse_horizon_label(payload)
+        horizon_count = _parse_horizon_count(payload, horizon_label)
+        payload["horizon_label"] = horizon_label
+        payload["horizon_count"] = horizon_count
+        
         result = asyncio.run(_run_sales_forecast_from_payload(payload))
         
         # Override mode for saving
         result["request_meta"]["mode"] = "run"
         result["request_meta"]["saved_to_database"] = True
         
-        store_id = _get_store_id(payload)
         success, message = asyncio.run(sales_forecast_service.save_forecast_to_db(store_id, result, backend_token))
         
         if success:
-            return jsonify(result), 200
+            return jsonify({
+                "status": "success",
+                "message": "Forecast sales berhasil dijalankan dan disimpan.",
+                "request": _sales_request_meta(payload),
+                "data": _sales_response_data_public(result, payload),
+            }), 201
         else:
             return jsonify({"detail": message}), 500
             
-    except FileNotFoundError as e:
-        return jsonify({"detail": str(e)}), 404
-    except ValueError as e:
-        return jsonify({"detail": str(e)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
