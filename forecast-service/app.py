@@ -55,6 +55,21 @@ if not logger.handlers:
 
 app = Flask(__name__)
 
+@app.before_request
+def check_internal_service_key():
+    if request.method == "OPTIONS":
+        return
+    # Hanya berlakukan untuk endpoint sales dan inventory
+    if request.path.startswith("/api/forecast/"):
+        auth_header = request.headers.get("Authorization")
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"detail": "Missing or invalid internal service key (Bearer token)"}), 401
+        
+        token = auth_header.split(" ")[1]
+        if token != Config.INTERNAL_SERVICE_KEY:
+            return jsonify({"detail": "Unauthorized internal service key"}), 401
+
+
 # ============================================
 # VISITORS SCHEDULER
 # ============================================

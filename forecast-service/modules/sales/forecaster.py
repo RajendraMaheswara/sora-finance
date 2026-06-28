@@ -956,24 +956,78 @@ class SalesForecastService:
         }
         
         try:
-            db_client.save_sales_forecast(
-                store_id=store_id,
-                horizon_label=horizon_label,
-                horizon_days=horizon_days,
-                result_rows=result_rows,
-                metrics=metrics,
-                summary=summary,
-                data_quality=data_quality,
-                train_start_date=train_start,
-                train_end_date=train_end,
-                predict_start_date=predict_start,
-                predict_end_date=predict_end,
-                model_version=model_version
+            # Prepare payload for /forecast-runs
+            run_payload = {
+                "store_id": store_id,
+                "forecast_type": "sales",
+                "horizon_label": horizon_label,
+                "horizon_days": horizon_days,
+                "granularity": granularity,
+                "model_name": "random forest individual",
+                "model_version": model_version,
+                "feature_version": "v2",
+                "train_start_date": train_start.isoformat() if train_start else "2020-01-01",
+                "train_end_date": train_end.isoformat() if train_end else now.date().isoformat(),
+                "predict_start_date": predict_start.isoformat() if predict_start else now.date().isoformat(),
+                "predict_end_date": predict_end.isoformat() if predict_end else now.date().isoformat(),
+                "metrics": json.dumps(metrics),
+                "summary": json.dumps(summary),
+                "data_quality": json.dumps(data_quality),
+                "status": "success",
+                "started_at": now.isoformat(),
+                "finished_at": now.isoformat()
+            }
+            
+            headers = {"Content-Type": "application/json"}
+            if backend_token:
+                headers["Authorization"] = f"Bearer {backend_token}"
+            elif Config.INTERNAL_SERVICE_KEY:
+                headers["Authorization"] = f"Bearer {Config.INTERNAL_SERVICE_KEY}"
+
+            resp = requests.post(
+                f"{Config.BACKEND_API_URL}/forecast-runs",
+                json=run_payload,
+                headers=headers,
+                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS
             )
-            return (True, f'Semua data forecast {granularity} berhasil disimpan ke database!')
+            resp.raise_for_status()
+            run_data = resp.json()
+            run_id = run_data.get("run_id") or run_data.get("data", {}).get("id")
+            
+            if not run_id:
+                return False, "Berhasil insert forecast_runs tapi run_id tidak kembali dari API."
+
+            # Prepare payload for /forecast-results
+            results_data = []
+            for item in result_rows:
+                target_date = item.get("date") or item.get("period_start")
+                if hasattr(target_date, "isoformat"):
+                    target_date = target_date.isoformat()
+                elif hasattr(target_date, "strftime"):
+                    target_date = target_date.strftime('%Y-%m-%d')
+                else:
+                    target_date = str(target_date)
+                    
+                results_data.append({
+                    "date": target_date,
+                    "predicted_omzet": float(item.get("predicted_omzet", item.get("predicted", 0))),
+                    "lower_bound": float(item.get("lower_bound", 0)),
+                    "upper_bound": float(item.get("upper_bound", 0)),
+                    "metrics": json.dumps({"model_confidence": "high"}) 
+                })
+                
+            resp2 = requests.post(
+                f"{Config.BACKEND_API_URL}/forecast-results",
+                json={"run_id": run_id, "results": results_data},
+                headers=headers,
+                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS
+            )
+            resp2.raise_for_status()
+            
+            return (True, f'Semua data forecast {granularity} berhasil disimpan ke backend via API!')
         except Exception as e:
-            logger.error(f"Gagal save_sales_forecast: {e}")
-            return (False, f'Gagal simpan ke database: {e}')
+            logger.error(f"Gagal save_sales_forecast ke API backend: {e}")
+            return (False, f'Gagal simpan ke API backend: {e}')
 
 
     def _empty_metric_block(self, prefix: str) -> Dict[str, Any]:
