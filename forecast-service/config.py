@@ -17,7 +17,10 @@ class Config:
     SALES_MODELS_DIR = os.path.join(MODEL_DIR, "sales")
 
     # Visitors Configs
-    GOLANG_API_BASE_URL = os.getenv('GOLANG_API_BASE_URL', 'http://localhost:8080/api')
+    # Default diarahkan ke backend internal forecast routes. Route ini dilindungi
+    # INTERNAL_SERVICE_KEY melalui header X-Service-Key.
+    GOLANG_API_BASE_URL = os.getenv('GOLANG_API_BASE_URL', 'http://localhost:8080/internal/forecast')
+    GOLANG_INTERNAL_API_BASE_URL = os.getenv('GOLANG_INTERNAL_API_BASE_URL', GOLANG_API_BASE_URL)
     VISITORS_MODEL_DIR = os.getenv('MODEL_DIR', os.path.join(MODEL_DIR, "visitors"))
     VISITORS_FORECAST_HORIZON_DAYS = int(os.getenv('FORECAST_HORIZON_DAYS', 30))
     VISITORS_RETRAIN_INTERVAL_DAYS = int(os.getenv('RETRAIN_INTERVAL_DAYS', 7))
