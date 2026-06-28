@@ -7,12 +7,14 @@ class SalesForecastPoint {
   final double value;
   final double? lowerBound;
   final double? upperBound;
+  final int? confidence;
 
   const SalesForecastPoint({
     required this.date,
     required this.value,
     this.lowerBound,
     this.upperBound,
+    this.confidence,
   });
 
   factory SalesForecastPoint.fromPoint(ForecastPoint p) => SalesForecastPoint(
@@ -20,6 +22,7 @@ class SalesForecastPoint {
         value: p.value,
         lowerBound: p.lower,
         upperBound: p.upper,
+        confidence: p.confidence,
       );
 }
 
