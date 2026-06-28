@@ -299,13 +299,13 @@ String _formatShortDate(String iso) {
 String _formatLongDate(String iso) {
   final d = DateTime.tryParse(iso);
   if (d == null) return iso;
-  return '${d.day} ${_monthShort[d.month]} ${d.year}';
+  return '${_dayFullName[d.weekday]}, ${d.day} ${_monthShort[d.month]} ${d.year}';
 }
 
 String _dayShort(String iso) {
   final d = DateTime.tryParse(iso);
   if (d == null) return iso;
-  return '${d.day}/${d.month}';
+  return '${_dayShortName[d.weekday]} ${d.day}/${d.month}';
 }
 
 String _formatMonthLabel(String yyyymm) {
@@ -326,6 +326,13 @@ String _addDays(String iso, int days) {
 const _monthShort = {
   1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'Mei', 6: 'Jun',
   7: 'Jul', 8: 'Agu', 9: 'Sep', 10: 'Okt', 11: 'Nov', 12: 'Des',
+};
+const _dayShortName = {
+  1: 'Sen', 2: 'Sel', 3: 'Rab', 4: 'Kam', 5: 'Jum', 6: 'Sab', 7: 'Min',
+};
+const _dayFullName = {
+  1: 'Senin', 2: 'Selasa', 3: 'Rabu', 4: 'Kamis',
+  5: 'Jumat', 6: 'Sabtu', 7: 'Minggu',
 };
 
 // ==========================================
@@ -461,7 +468,6 @@ class _ForecastBodyState extends State<_ForecastBody> {
             bars: bars,
             fmt: _visitorsFull,
             confidenceScore: widget.bundle.model.confidenceScore,
-            confidenceLevel: widget.bundle.model.confidenceLevel,
             accent: _kPrimaryGreenDark,
           ),
           const SizedBox(height: 20),

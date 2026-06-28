@@ -57,6 +57,13 @@ const _legendMonth = {
   1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'Mei', 6: 'Jun',
   7: 'Jul', 8: 'Agu', 9: 'Sep', 10: 'Okt', 11: 'Nov', 12: 'Des',
 };
+const _dayShortName = {
+  1: 'Sen', 2: 'Sel', 3: 'Rab', 4: 'Kam', 5: 'Jum', 6: 'Sab', 7: 'Min',
+};
+const _dayFullName = {
+  1: 'Senin', 2: 'Selasa', 3: 'Rabu', 4: 'Kamis',
+  5: 'Jumat', 6: 'Sabtu', 7: 'Minggu',
+};
 
 DateTime? _parseDay(String s) {
   final t = s.length >= 10 ? s.substring(0, 10) : s;
@@ -99,10 +106,11 @@ List<ForecastBar> buildHistoryBars({
       return last.map((k) {
         final d = _parseDay(k);
         return ForecastBar(
-          label: d == null ? k : '${d.day}/${d.month}',
+          label: d == null ? k : '${_dayShortName[d.weekday]} ${d.day}/${d.month}',
           fullLabel: d == null
               ? k
-              : '${d.day} ${_legendMonth[d.month]} ${d.year}',
+              : '${_dayFullName[d.weekday]}, ${d.day} ${_legendMonth[d.month]} '
+                  '${d.year}',
           value: byDay[k]!,
         );
       }).toList();
@@ -741,8 +749,10 @@ class _LegendBand extends StatelessWidget {
 class ForecastMetricsPanel extends StatelessWidget {
   final List<ForecastBar> bars;
   final String Function(double) fmt;
+
+  /// Dipakai sebagai cadangan saja bila titik periode tidak punya
+  /// confidence_level.
   final double confidenceScore;
-  final String confidenceLevel;
   final Color accent;
 
   const ForecastMetricsPanel({
@@ -750,7 +760,6 @@ class ForecastMetricsPanel extends StatelessWidget {
     required this.bars,
     required this.fmt,
     required this.confidenceScore,
-    required this.confidenceLevel,
     required this.accent,
   });
 
@@ -769,9 +778,22 @@ class ForecastMetricsPanel extends StatelessWidget {
         : ciBars.fold<double>(0, (s, b) => s + (b.hi - b.lo) / 2) /
             ciBars.length;
 
-    final confColor = confidenceScore >= 85
+    // Tingkat keyakinan diambil dari confidence_level baris periode AKTIF
+    // (per granularitas, sesuai DB) — jadi nilainya berubah saat ganti
+    // harian/mingguan/bulanan. Cadangan: confidenceScore dari model.
+    final barConfs = bars
+        .where((b) => b.confidence != null)
+        .map((b) => b.confidence!.toDouble())
+        .toList();
+    final score = barConfs.isEmpty
+        ? confidenceScore
+        : barConfs.reduce((a, b) => a + b) / barConfs.length;
+    final confLevel =
+        score >= 85 ? 'Tinggi' : score >= 70 ? 'Sedang' : 'Rendah';
+
+    final confColor = score >= 85
         ? Colors.green
-        : confidenceScore >= 70
+        : score >= 70
             ? Colors.orange
             : Colors.red;
 
@@ -799,8 +821,8 @@ class ForecastMetricsPanel extends StatelessWidget {
                 icon: Icons.verified_outlined,
                 iconColor: confColor,
                 label: 'Tingkat Keyakinan',
-                value: '${confidenceScore.toStringAsFixed(0)}%',
-                sub: confidenceLevel,
+                value: '${score.toStringAsFixed(0)}%',
+                sub: confLevel,
               ),
               _MetricTile(
                 icon: Icons.trending_up,
