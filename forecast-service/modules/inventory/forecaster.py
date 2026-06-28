@@ -89,6 +89,22 @@ class InventoryForecaster:
         daily['ds'] = pd.to_datetime(daily['ds'])
 
         max_actual_date = daily['ds'].max()
+
+        # Pemotongan Period Complete sesuai freq
+        if self.freq == 'W':
+            # Cari hari Minggu terakhir (dayofweek == 6)
+            if max_actual_date.dayofweek != 6:
+                offset = max_actual_date.dayofweek + 1
+                max_actual_date = max_actual_date - pd.Timedelta(days=offset)
+        elif self.freq == 'M':
+            # Cari akhir bulan terakhir
+            if not max_actual_date.is_month_end:
+                max_actual_date = max_actual_date - pd.offsets.MonthEnd(1)
+
+        daily = daily[daily['ds'] <= max_actual_date]
+        if daily.empty:
+            raise ValueError(f"Tidak ada data tersisa setelah pemotongan periode komplit (freq={self.freq})")
+
         full_range = pd.date_range(start=daily['ds'].min(), end=max_actual_date, freq='D')
         df_final   = pd.DataFrame({'ds': full_range}).merge(daily, on='ds', how='left')
         df_final['y'] = df_final['y'].fillna(0)
@@ -551,40 +567,14 @@ class InventoryForecaster:
         if not forecast_array:
             return False
 
-        model_version = "1.0.0"
-        pred_rows = []
-        for item in forecast_array:
-            pred_rows.append({
-                "store_id":        self.store_id,
-                "module":          "inventory",
-                "horizon_label":   horizon_label,
-                "horizon_days":    horizon_days,
-                "prediction_date": item[date_key],
-                "predicted_value": item.get('predicted_usage', 0.0),
-                "lower_bound":     item.get('lower_bound') or 0.0,
-                "upper_bound":     item.get('upper_bound') or 0.0,
-                "mae":             metrics.get('mae') or 0.0,
-                "rmse":            metrics.get('rmse') or 0.0,
-                "mape":            metrics.get('mape') or 0.0,
-                "model_version":   model_version,
-            })
-
-        url_pred = f"{Config.BACKEND_API_URL}/forecast-predictions"
-        try:
-            resp = requests.post(url_pred, json={"predictions": pred_rows},
-                                 headers=Config.backend_headers(),
-                                 timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
-            resp.raise_for_status()
-            print(f"[SAVED] {len(pred_rows)} baris → forecast_predictions")
-        except Exception as e:
-            print(f"[ERROR] forecast_predictions: {e}")
-
         if self.model and hasattr(self.model, 'history') and not self.model.history.empty:
             hist = self.model.history
             train_start = hist['ds'].min().strftime('%Y-%m-%d')
             train_end   = hist['ds'].max().strftime('%Y-%m-%d')
         else:
             train_start = train_end = 'unknown'
+
+        model_version = "1.0.0"
 
         predict_start = forecast_array[0][date_key]
         predict_end   = forecast_array[-1][date_key]
