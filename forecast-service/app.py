@@ -299,6 +299,105 @@ def scheduled_sales_forecast_check():
         traceback.print_exc()
 
 
+# ============================================
+# INVENTORY SCHEDULER
+# ============================================
+_INVENTORY_SCHEDULER_RUN_KEYS = set()
+_INVENTORY_SCHEDULER_RUNNING_KEYS = set()
+_INVENTORY_SCHEDULER_LOCK = threading.Lock()
+
+def _inventory_scheduler_key(job, ingredient_id):
+    start_date = job.get("start_date")
+    start_value = start_date.isoformat() if isinstance(start_date, date) else str(start_date)
+    return (str(job.get("store_id")), str(ingredient_id), str(job.get("horizon_label")), start_value)
+
+async def _run_inventory_scheduler_once_async():
+    """Cek semua store dan jalankan inventory forecast yang sudah due."""
+    store_ids = await golang_client.fetch_store_ids()
+    if not store_ids:
+        logger.warning("Inventory scheduler: tidak ada store dari backend internal /stores")
+        return []
+
+    results = []
+    for store_id in store_ids:
+        try:
+            operational_hours = await golang_client.fetch_store_operational_hours(store_id)
+            jobs = visitors_forecast_service.build_scheduler_jobs_for_store(
+                store_id=store_id,
+                operational_hours=operational_hours,
+            )
+            
+            if not jobs:
+                continue
+
+            # Ambil semua ingredient id dari store tersebut
+            ingredients_resp = await golang_client._get("food-ingredients", params={"store_id": store_id})
+            ingredients = golang_client._extract_items(ingredients_resp)
+            if not ingredients:
+                continue
+                
+            due_jobs = []
+            for job in jobs:
+                for ingredient in ingredients:
+                    ing_id = str(ingredient.get("id", ""))
+                    if not ing_id:
+                        continue
+                    key = _inventory_scheduler_key(job, ing_id)
+                    with _INVENTORY_SCHEDULER_LOCK:
+                        if key in _INVENTORY_SCHEDULER_RUN_KEYS or key in _INVENTORY_SCHEDULER_RUNNING_KEYS:
+                            continue
+                        _INVENTORY_SCHEDULER_RUNNING_KEYS.add(key)
+                    due_jobs.append((key, job, ing_id))
+            
+            if not due_jobs:
+                continue
+                
+            for key, job, ing_id in due_jobs:
+                try:
+                    logger.info(
+                        "Inventory scheduler: run store=%s ingredient=%s horizon=%s start_date=%s",
+                        store_id, ing_id, job["horizon_label"], job["start_date"]
+                    )
+                    freq = _map_horizon_to_freq(job["horizon_label"])
+                    if freq == 'D':
+                        periods = 30
+                    elif freq == 'W':
+                        periods = 12
+                    elif freq == 'M':
+                        periods = 12
+                    else:
+                        periods = 1
+                    
+                    forecaster = InventoryForecaster(store_id, ing_id)
+                    forecaster.save_all_forecasts(periods=periods, freq=freq, start_date=job["start_date"])
+                    
+                    with _INVENTORY_SCHEDULER_LOCK:
+                        _INVENTORY_SCHEDULER_RUN_KEYS.add(key)
+                    
+                    results.append({
+                        "store_id": store_id,
+                        "ingredient_id": ing_id,
+                        "horizon_label": job["horizon_label"]
+                    })
+                except Exception:
+                    traceback.print_exc()
+                finally:
+                    with _INVENTORY_SCHEDULER_LOCK:
+                        _INVENTORY_SCHEDULER_RUNNING_KEYS.discard(key)
+        except Exception:
+            traceback.print_exc()
+            
+    if results:
+        logger.info("Inventory scheduler selesai: %s job tersimpan", len(results))
+    return results
+
+def scheduled_inventory_forecast_check():
+    try:
+        asyncio.run(_run_inventory_scheduler_once_async())
+    except Exception:
+        traceback.print_exc()
+
+
 scheduler = None
 if Config.FORECAST_MODE == "scheduler":
     scheduler = BackgroundScheduler(timezone=Config.FORECAST_SCHEDULER_TIMEZONE)
@@ -320,17 +419,26 @@ if Config.FORECAST_MODE == "scheduler":
         max_instances=1,
         coalesce=True,
     )
+    scheduler.add_job(
+        func=scheduled_inventory_forecast_check,
+        trigger="interval",
+        minutes=Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
+        id="inventory_auto_forecast_check",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
     logger.info(
-        "Visitors scheduler enabled: interval=%s minutes, after_close=%s minutes, 24h_cutoff=%s minutes, retrain=%s",
+        "Forecast scheduler enabled: interval=%s minutes, after_close=%s minutes, 24h_cutoff=%s minutes, retrain=%s",
         Config.FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES,
         Config.FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES,
         Config.FORECAST_24H_RUN_SCHEDULER_MINUTES,
         Config.SCHEDULER_RETRAIN,
     )
 else:
-    logger.info("Visitors scheduler disabled because FORECAST_MODE=%s", Config.FORECAST_MODE)
+    logger.info("Forecast scheduler disabled because FORECAST_MODE=%s", Config.FORECAST_MODE)
 
 # ============================================
 # ROUTE MODUL VISITORS
