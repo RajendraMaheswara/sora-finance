@@ -371,13 +371,24 @@ class InventoryForecaster:
         
         if start_date:
             target_start = pd.to_datetime(start_date)
-            days_diff = (target_start - last_hist_date).days
-            if days_diff > 0:
-                total_periods = days_diff + future_periods
-            else:
-                total_periods = future_periods
         else:
-            target_start = last_hist_date + pd.Timedelta(days=1)
+            now = pd.Timestamp.now().floor('D')
+            if freq == 'W':
+                # Mulai hari Senin (bergeser ke Senin depan jika bukan Senin)
+                target_start = now + pd.Timedelta(days=(7 - now.dayofweek) % 7)
+            elif freq == 'M':
+                # Mulai tanggal awal bulan (bergeser ke bulan depan jika bukan tanggal 1)
+                if now.day == 1:
+                    target_start = now
+                else:
+                    target_start = now + pd.offsets.MonthBegin(1)
+            else:
+                target_start = now
+
+        days_diff = (target_start - last_hist_date).days
+        if days_diff > 0:
+            total_periods = days_diff + future_periods
+        else:
             total_periods = future_periods
 
         future = self.model.make_future_dataframe(periods=total_periods)
