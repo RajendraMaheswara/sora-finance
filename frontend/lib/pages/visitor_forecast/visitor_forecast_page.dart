@@ -32,7 +32,11 @@ class VisitorForecastPage extends StatefulWidget {
 class _VisitorBundle {
   final VisitorForecastModel model;
   final List<dynamic> summaries;
-  const _VisitorBundle(this.model, this.summaries);
+
+  /// Metrik evaluasi model (MAE/RMSE/WAPE) per granularitas, dari
+  /// /api/forecast/visitors/latest.
+  final Map<ForecastPeriodKind, ForecastModelMetrics> metrics;
+  const _VisitorBundle(this.model, this.summaries, this.metrics);
 }
 
 class _VisitorForecastPageState extends State<VisitorForecastPage> {
@@ -47,11 +51,25 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
   }
 
   Future<_VisitorBundle> _fetch() async {
-    final r = await Future.wait([
+    final data = await Future.wait([
       _apiService.fetchData(_kForecastResultsEndpoint),
       _apiService.fetchData('sales-daily-summaries'),
     ]);
-    return _VisitorBundle(VisitorForecastModel.fromResults(r[0]), r[1]);
+    final maps = await Future.wait([
+      _apiService.fetchMap('forecast/visitors/latest?horizon_label=daily'),
+      _apiService.fetchMap('forecast/visitors/latest?horizon_label=weekly'),
+      _apiService.fetchMap('forecast/visitors/latest?horizon_label=monthly'),
+    ]);
+    ForecastModelMetrics parse(Map<String, dynamic>? resp) =>
+        ForecastModelMetrics.fromMetricsJson(
+            (resp?['run'] as Map?)?['metrics'] as Map?);
+    final metrics = {
+      ForecastPeriodKind.daily: parse(maps[0]),
+      ForecastPeriodKind.weekly: parse(maps[1]),
+      ForecastPeriodKind.monthly: parse(maps[2]),
+    };
+    return _VisitorBundle(
+        VisitorForecastModel.fromResults(data[0]), data[1], metrics);
   }
 
   void _refresh() {
@@ -469,6 +487,7 @@ class _ForecastBodyState extends State<_ForecastBody> {
             fmt: _visitorsFull,
             confidenceScore: widget.bundle.model.confidenceScore,
             accent: _kPrimaryGreenDark,
+            modelMetrics: widget.bundle.metrics[_period],
           ),
           const SizedBox(height: 20),
           ForecastDetailTable(

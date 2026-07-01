@@ -5,6 +5,7 @@ import 'package:sora2/widgets/sidebar.dart';
 import '../../core/services/api_service.dart';
 import '../../core/services/auth_service.dart';
 import '../../models/forecast_series_model.dart';
+import '../../widgets/forecast_chart.dart';
 
 // ==========================================
 // COLORS
@@ -55,6 +56,7 @@ class _DayForecast {
   final double? upper;
   final double estimatedRemaining;
   final _StockStatus status;
+  final int? confidence;
 
   const _DayForecast({
     required this.date,
@@ -63,6 +65,7 @@ class _DayForecast {
     required this.status,
     this.lower,
     this.upper,
+    this.confidence,
   });
 }
 
@@ -80,6 +83,12 @@ class _ItemData {
   final List<_HistoryPoint> history; // last N days actual stock
   final List<_DayForecast> forecasts;
 
+  // confidence_level dari run native tiap granularitas (sesuai DB), supaya
+  // "Tingkat Keyakinan" berubah sesuai tab (bukan selalu nilai run harian).
+  final int? confDaily;
+  final int? confWeekly;
+  final int? confMonthly;
+
   const _ItemData({
     required this.id,
     required this.name,
@@ -87,7 +96,21 @@ class _ItemData {
     required this.stockLimit,
     required this.history,
     required this.forecasts,
+    this.confDaily,
+    this.confWeekly,
+    this.confMonthly,
   });
+
+  /// Tingkat keyakinan untuk periode tertentu (fallback ke harian bila run
+  /// granularitas itu tidak ada).
+  double confidenceFor(_Period p) {
+    final v = switch (p) {
+      _Period.daily => confDaily,
+      _Period.weekly => confWeekly ?? confDaily,
+      _Period.monthly => confMonthly ?? confDaily,
+    };
+    return (v ?? 80).toDouble();
+  }
 
   bool get hasCi =>
       forecasts.any((f) => f.lower != null && f.upper != null);
@@ -224,6 +247,7 @@ class _ViewModel {
           status: status,
           lower: p.lower,
           upper: p.upper,
+          confidence: p.confidence,
         ));
       }
 
@@ -237,6 +261,11 @@ class _ViewModel {
         stockLimit: stockLimit,
         history: historyPoints,
         forecasts: forecasts,
+        confDaily: _avgConfidence(fr.daily),
+        confWeekly:
+            fr.weekly.isNotEmpty ? _avgConfidence(fr.weekly) : null,
+        confMonthly:
+            fr.monthly.isNotEmpty ? _avgConfidence(fr.monthly) : null,
       ));
     }
 
@@ -505,15 +534,93 @@ class _EmptyPanel extends StatelessWidget {
 // ==========================================
 // PERIOD
 // ==========================================
-enum _Period { weekly, monthly }
+enum _Period { daily, weekly, monthly }
 
 extension on _Period {
   String get label {
     switch (this) {
+      case _Period.daily: return 'Harian';
       case _Period.weekly: return 'Mingguan';
       case _Period.monthly: return 'Bulanan';
     }
   }
+}
+
+const _kStockMonths = {
+  1: 'Jan', 2: 'Feb', 3: 'Mar', 4: 'Apr', 5: 'Mei', 6: 'Jun',
+  7: 'Jul', 8: 'Agu', 9: 'Sep', 10: 'Okt', 11: 'Nov', 12: 'Des',
+};
+const _kStockDayShort = {
+  1: 'Sen', 2: 'Sel', 3: 'Rab', 4: 'Kam', 5: 'Jum', 6: 'Sab', 7: 'Min',
+};
+const _kStockDayFull = {
+  1: 'Senin', 2: 'Selasa', 3: 'Rabu', 4: 'Kamis',
+  5: 'Jumat', 6: 'Sabtu', 7: 'Minggu',
+};
+
+String _stockDateLabel(String iso) {
+  final d = DateTime.tryParse(iso);
+  if (d == null) return iso;
+  return '${d.day} ${_kStockMonths[d.month]} ${d.year}';
+}
+
+/// Label tanggal dengan nama hari (untuk tab Harian).
+String _stockDateLabelWithDay(String iso) {
+  final d = DateTime.tryParse(iso);
+  if (d == null) return iso;
+  return '${_kStockDayFull[d.weekday]}, ${d.day} ${_kStockMonths[d.month]} '
+      '${d.year}';
+}
+
+/// Rata-rata confidence_level (dibulatkan) dari sederet titik forecast.
+int? _avgConfidence(List<ForecastPoint> pts) {
+  final c = pts.where((p) => p.confidence != null).map((p) => p.confidence!);
+  return c.isEmpty ? null : (c.reduce((a, b) => a + b) / c.length).round();
+}
+
+/// Agregasi forecast harian ke bucket (per minggu / per bulan). Sisa stok
+/// diambil dari hari terakhir bucket (kondisi di akhir periode), pemakaian &
+/// batas CI dijumlahkan, status mengikuti sisa di akhir bucket.
+List<_DayForecast> _aggregateForecasts(
+    List<_DayForecast> daily, _Period period) {
+  if (period == _Period.daily || daily.isEmpty) return daily;
+
+  final buckets = <List<_DayForecast>>[];
+  if (period == _Period.weekly) {
+    for (var i = 0; i < daily.length; i += 7) {
+      buckets.add(daily.sublist(i, (i + 7).clamp(0, daily.length)));
+    }
+  } else {
+    // Bulanan: kelompokkan per bulan kalender (YYYY-MM).
+    final byMonth = <String, List<_DayForecast>>{};
+    final order = <String>[];
+    for (final f in daily) {
+      final key = f.date.length >= 7 ? f.date.substring(0, 7) : f.date;
+      if (!byMonth.containsKey(key)) order.add(key);
+      byMonth.putIfAbsent(key, () => []).add(f);
+    }
+    for (final k in order) {
+      buckets.add(byMonth[k]!);
+    }
+  }
+
+  return buckets.map((b) {
+    final usage = b.fold<double>(0, (s, f) => s + f.predictedUsage);
+    final allLo = b.every((f) => f.lower != null);
+    final allHi = b.every((f) => f.upper != null);
+    final confs = b.where((f) => f.confidence != null).map((f) => f.confidence!);
+    return _DayForecast(
+      date: b.first.date,
+      predictedUsage: usage,
+      lower: allLo ? b.fold<double>(0, (s, f) => s + f.lower!) : null,
+      upper: allHi ? b.fold<double>(0, (s, f) => s + f.upper!) : null,
+      estimatedRemaining: b.last.estimatedRemaining,
+      status: b.last.status,
+      confidence: confs.isEmpty
+          ? null
+          : (confs.reduce((a, c) => a + c) / confs.length).round(),
+    );
+  }).toList();
 }
 
 // ==========================================
@@ -529,7 +636,7 @@ class _StockBody extends StatefulWidget {
 
 class _StockBodyState extends State<_StockBody> {
   late int _selectedIdx;
-  _Period _period = _Period.weekly;
+  _Period _period = _Period.daily;
 
   @override
   void initState() {
@@ -541,12 +648,15 @@ class _StockBodyState extends State<_StockBody> {
 
   List<_DayForecast> get _periodForecasts {
     switch (_period) {
+      case _Period.daily:
+        // Detail per hari sepanjang horizon (hingga ~1 bulan).
+        return _item.forecasts;
       case _Period.weekly:
-        // 7 hari ke depan (dalam 1 minggu, tidak melebihi 1 bulan).
-        return _item.forecasts.take(7).toList();
+        // Agregasi per minggu (7 hari).
+        return _aggregateForecasts(_item.forecasts, _Period.weekly);
       case _Period.monthly:
-        // Hingga 30 hari ke depan.
-        return _item.forecasts.take(30).toList();
+        // Agregasi per bulan kalender.
+        return _aggregateForecasts(_item.forecasts, _Period.monthly);
     }
   }
 
@@ -651,10 +761,59 @@ class _StockBodyState extends State<_StockBody> {
         _DepletionChart(item: item, period: _period, forecasts: forecasts),
         const SizedBox(height: 20),
 
+        // Metrik & penjelasan (pemakaian). Tingkat keyakinan mengikuti run
+        // native granularitas aktif (sesuai DB) lewat confidenceScore; bar
+        // sengaja tanpa confidence agar tidak menimpanya.
+        ForecastMetricsPanel(
+          bars: forecasts
+              .map((f) => ForecastBar(
+                    label: '',
+                    fullLabel: _stockDateLabel(f.date),
+                    value: f.predictedUsage,
+                    lower: f.lower,
+                    upper: f.upper,
+                  ))
+              .toList(),
+          fmt: (v) => '${v.toStringAsFixed(1)} Kg',
+          confidenceScore: item.confidenceFor(_period),
+          accent: _kGreenDark,
+        ),
+        const SizedBox(height: 20),
+
         // Table
         _ForecastTable(item: item, forecasts: forecasts, period: _period),
+        const SizedBox(height: 20),
+
+        // Insight
+        _StockInsightsCard(insights: _stockInsights(item)),
       ],
     );
+  }
+
+  List<String> _stockInsights(_ItemData item) {
+    final daily = item.forecasts;
+    if (daily.isEmpty) return const [];
+    final days = item.daysUntilDepletion;
+    final head = daily.take(7).toList();
+    final avg =
+        head.fold<double>(0, (s, f) => s + f.predictedUsage) / head.length;
+    _DayForecast peak = daily.first;
+    for (final f in daily) {
+      if (f.predictedUsage > peak.predictedUsage) peak = f;
+    }
+    final conf = item.confidenceFor(_Period.daily);
+
+    return [
+      days > 0
+          ? 'Stok "${item.name}" diprediksi habis dalam $days hari — segera '
+              'rencanakan restock.'
+          : 'Stok "${item.name}" diprediksi aman sepanjang ${daily.length} '
+              'hari ke depan.',
+      'Puncak pemakaian diprediksi pada ${_stockDateLabel(peak.date)} '
+          '(~${peak.predictedUsage.toStringAsFixed(1)} Kg).',
+      'Rata-rata pemakaian ~${avg.toStringAsFixed(1)} Kg/hari, tingkat '
+          'keyakinan model ${conf.toStringAsFixed(0)}%.',
+    ];
   }
 }
 
@@ -897,16 +1056,24 @@ class _DepletionChart extends StatelessWidget {
       }
     }
 
-    // X labels
+    // X labels — pada tab Harian, sertakan nama hari (mis. "Sen\n1/7").
+    String xlabel(String d) {
+      if (d.length < 10) return d;
+      if (period == _Period.daily) {
+        final dt = DateTime.tryParse(d);
+        if (dt != null) {
+          return '${_kStockDayShort[dt.weekday]}\n${dt.day}/${dt.month}';
+        }
+      }
+      return '${_dd(d)}\n${_mm(d)}';
+    }
+
     final xLabels = <int, String>{};
     for (var i = 0; i < histCount; i++) {
-      final d = histPoints[i].date;
-      xLabels[i] = d.length >= 10 ? '${_dd(d)}\n${_mm(d)}' : d;
+      xLabels[i] = xlabel(histPoints[i].date);
     }
     for (var i = 0; i < predForecasts.length; i++) {
-      final d = predForecasts[i].date;
-      xLabels[histCount + i] =
-          d.length >= 10 ? '${_dd(d)}\n${_mm(d)}' : d;
+      xLabels[histCount + i] = xlabel(predForecasts[i].date);
     }
 
     final totalPoints = histCount + predForecasts.length;
@@ -1258,7 +1425,7 @@ class _ForecastTable extends StatelessWidget {
           ),
           const Divider(height: 1),
           for (final f in forecasts) ...[
-            _ForecastRow(f: f),
+            _ForecastRow(f: f, period: period),
             const Divider(height: 1),
           ],
           const SizedBox(height: 8),
@@ -1282,7 +1449,8 @@ class _TH extends StatelessWidget {
 
 class _ForecastRow extends StatelessWidget {
   final _DayForecast f;
-  const _ForecastRow({required this.f});
+  final _Period period;
+  const _ForecastRow({required this.f, required this.period});
 
   @override
   Widget build(BuildContext context) {
@@ -1298,13 +1466,17 @@ class _ForecastRow extends StatelessWidget {
                 ? Colors.deepOrange
                 : Colors.black87;
 
+    // Tab Harian: tampilkan nama hari juga (mis. "Senin, 1 Jul 2026").
+    final dateText = period == _Period.daily
+        ? _stockDateLabelWithDay(f.date)
+        : _fmtDate(f.date);
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 13),
       child: Row(children: [
         Expanded(
             flex: 2,
-            child: Text(_fmtDate(f.date),
-                style: const TextStyle(fontSize: 13))),
+            child: Text(dateText, style: const TextStyle(fontSize: 13))),
         Expanded(
             flex: 2,
             child: Text('${f.predictedUsage.toStringAsFixed(1)} Kg',
@@ -1347,5 +1519,50 @@ class _ForecastRow extends StatelessWidget {
     } catch (_) {
       return iso;
     }
+  }
+}
+
+// ==========================================
+// INSIGHT PREDIKSI STOK
+// ==========================================
+class _StockInsightsCard extends StatelessWidget {
+  final List<String> insights;
+  const _StockInsightsCard({required this.insights});
+
+  @override
+  Widget build(BuildContext context) {
+    return ForecastCardShell(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Row(children: [
+            Icon(Icons.lightbulb_outline, color: _kGreenDark, size: 18),
+            SizedBox(width: 8),
+            Text('Insight Prediksi Stok',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+          ]),
+          const SizedBox(height: 12),
+          ...insights.map((t) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 6),
+                      child: Icon(Icons.circle, size: 6, color: _kGreenDark),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                        child: Text(t,
+                            style: const TextStyle(
+                                fontSize: 12,
+                                height: 1.5,
+                                color: Colors.black87))),
+                  ],
+                ),
+              )),
+        ],
+      ),
+    );
   }
 }
