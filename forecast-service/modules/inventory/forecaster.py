@@ -354,6 +354,28 @@ class InventoryForecaster:
     # PREDICTION
     # =========================================================================
     def predict(self, periods=1, freq='W', start_date=None):
+        """Jalankan prediksi inventory menggunakan model Prophet yang sudah di-train.
+
+        Parameters
+        ----------
+        periods : int
+            Jumlah periode ke depan (hari/minggu/bulan tergantung freq).
+        freq : str
+            'D' = daily, 'W' = weekly, 'M' = monthly.
+        start_date : str or date or None
+            Tanggal mulai prediksi (YYYY-MM-DD). Jika None, auto-resolve:
+              - Daily  : hari setelah actual complete terakhir di histori.
+              - Weekly : Senin setelah Minggu complete terakhir di histori.
+              - Monthly: tanggal 1 bulan berikutnya setelah bulan complete.
+
+            Catatan: histori sudah dipotong via Period Complete saat training
+            (_get_historical_data), jadi last_hist_date untuk freq='W' selalu
+            Minggu, dan untuk freq='M' selalu akhir bulan.
+
+        Returns
+        -------
+        dict – Berisi forecasts, model_metadata, summary, horizon, dll.
+        """
         if not self.model:
             self.load_model()
 
@@ -371,19 +393,28 @@ class InventoryForecaster:
         
         if start_date:
             target_start = pd.to_datetime(start_date)
+            start_date_source = "manual_body"
         else:
-            now = pd.Timestamp.now().floor('D')
+            # Auto-resolve: berdasarkan tanggal akhir data historis (last actual)
+            next_after_actual = last_hist_date + pd.Timedelta(days=1)
             if freq == 'W':
-                # Mulai hari Senin (bergeser ke Senin depan jika bukan Senin)
-                target_start = now + pd.Timedelta(days=(7 - now.dayofweek) % 7)
+                # Weekly: mulai hari Senin setelah Minggu complete
+                # Cari Senin berikutnya dari last_hist_date
+                days_until_monday = (7 - last_hist_date.dayofweek) % 7
+                if days_until_monday == 0:
+                    days_until_monday = 7
+                target_start = last_hist_date + pd.Timedelta(days=days_until_monday)
+                start_date_source = "auto_weekly_complete_period"
             elif freq == 'M':
-                # Mulai tanggal awal bulan (bergeser ke bulan depan jika bukan tanggal 1)
-                if now.day == 1:
-                    target_start = now
-                else:
-                    target_start = now + pd.offsets.MonthBegin(1)
+                # Monthly: mulai tanggal 1 bulan berikutnya
+                target_start = (last_hist_date + pd.offsets.MonthBegin(1))
+                if target_start <= last_hist_date:
+                    target_start = last_hist_date + pd.offsets.MonthBegin(1)
+                start_date_source = "auto_monthly_complete_period"
             else:
-                target_start = now
+                # Daily: mulai dari hari setelah actual complete terakhir
+                target_start = next_after_actual
+                start_date_source = "auto_daily_after_complete"
 
         days_diff = (target_start - last_hist_date).days
         if days_diff > 0:
@@ -515,7 +546,7 @@ class InventoryForecaster:
             "forecast_end_date": fc_end,
             "last_actual_date": last_hist_date.strftime('%Y-%m-%d'),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "start_date_source": "custom_start_date" if start_date else "auto_last_actual_date",
+            "start_date_source": start_date_source,
             "horizon": {
                 "count": periods,
                 "days": future_periods,
@@ -550,11 +581,25 @@ class InventoryForecaster:
     # SAVE TO DATABASE
     # =========================================================================
     def save_all_forecasts(self, periods=4, freq='W', start_date=None):
+        """Prediksi dan simpan ke database via backend Golang.
+
+        Returns
+        -------
+        dict  – Berisi run_id, saved_results, predict_range, backend_status.
+               Jika gagal, dict tetap dikembalikan dengan status "failed".
+        """
         try:
             result = self.predict(periods=periods, freq=freq, start_date=start_date)
         except Exception as e:
             print(f"[ERROR] Gagal prediksi: {e}")
-            return False
+            return {
+                "status": "failed",
+                "run_id": None,
+                "saved_results": 0,
+                "predict_range": None,
+                "backend_status": None,
+                "message": str(e),
+            }
 
         model_meta = result.get('model_metadata', {})
         metrics = {}
@@ -576,7 +621,14 @@ class InventoryForecaster:
             date_key = 'period_start'
 
         if not forecast_array:
-            return False
+            return {
+                "status": "failed",
+                "run_id": None,
+                "saved_results": 0,
+                "predict_range": None,
+                "backend_status": None,
+                "message": "forecast_array kosong",
+            }
 
         if self.model and hasattr(self.model, 'history') and not self.model.history.empty:
             hist = self.model.history
@@ -632,12 +684,19 @@ class InventoryForecaster:
             print(f"[SAVED] forecast_runs run_id={run_id}")
         except Exception as e:
             print(f"[ERROR] forecast_runs: {e}")
-            return False
+            return {
+                "status": "failed",
+                "run_id": None,
+                "saved_results": 0,
+                "predict_range": {"start": predict_start, "end": predict_end},
+                "backend_status": getattr(resp, 'status_code', None) if 'resp' in dir() else None,
+                "message": f"forecast_runs gagal: {e}",
+            }
 
-        results = []
+        fc_results = []
         conf_level = result.get('model_metadata', {}).get('confidence_level', 0)
         for item in forecast_array:
-            results.append({
+            fc_results.append({
                 "target_date": item[date_key],
                 "predicted_value": item.get('predicted_usage', 0.0),
                 "lower_bound": item.get('lower_bound'),
@@ -649,12 +708,26 @@ class InventoryForecaster:
 
         url_results = f"{Config.BACKEND_API_URL}/forecast-results"
         try:
-            resp = requests.post(url_results, json={"run_id": run_id, "results": results},
+            resp = requests.post(url_results, json={"run_id": run_id, "results": fc_results},
                                  headers=Config.backend_headers(),
                                  timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
             resp.raise_for_status()
-            print(f"[SAVED] {len(results)} baris → forecast_results run_id={run_id}")
-            return True
+            print(f"[SAVED] {len(fc_results)} baris → forecast_results run_id={run_id}")
+            return {
+                "status": "saved",
+                "run_id": run_id,
+                "saved_results": len(fc_results),
+                "predict_range": {"start": predict_start, "end": predict_end},
+                "backend_status": resp.status_code,
+                "message": f"{len(fc_results)} hasil disimpan",
+            }
         except Exception as e:
             print(f"[ERROR] forecast_results: {e}")
-            return False
+            return {
+                "status": "failed",
+                "run_id": run_id,
+                "saved_results": 0,
+                "predict_range": {"start": predict_start, "end": predict_end},
+                "backend_status": getattr(resp, 'status_code', None) if 'resp' in dir() else None,
+                "message": f"forecast_results gagal: {e}",
+            }
