@@ -860,9 +860,17 @@ def sales_preview():
     payload = _get_request_json()
     try:
         result = asyncio.run(_run_sales_forecast_from_payload(payload))
-        return jsonify(result), 200
+        request_meta = result.pop("request_meta", {})
+        return jsonify({
+            "status": "success",
+            "message": "Forecast sales berhasil dibuat tanpa disimpan.",
+            "request": request_meta,
+            "data": result
+        }), 200
     except FileNotFoundError as e:
         return jsonify({"detail": str(e)}), 404
+    except PermissionError as e:
+        return jsonify({"detail": str(e)}), 401
     except ValueError as e:
         return jsonify({"detail": str(e)}), 400
     except Exception as e:
@@ -884,9 +892,25 @@ def sales_save():
     try:
         success, message = asyncio.run(sales_forecast_service.save_forecast_to_db(store_id, forecast_data, backend_token))
         if success:
-            return jsonify({"success": True, "message": message}), 200
+            request_meta = forecast_data.pop("request_meta", {}) if isinstance(forecast_data, dict) else {}
+            return jsonify({
+                "status": "success",
+                "message": "Forecast sales berhasil disimpan ke database.",
+                "request": request_meta,
+                "save_result": {
+                    "status": "saved",
+                    "message": message
+                },
+                "data": forecast_data
+            }), 201
         else:
-            return jsonify({"success": False, "detail": message}), 500
+            return jsonify({"detail": message}), 500
+    except FileNotFoundError as e:
+        return jsonify({"detail": str(e)}), 404
+    except PermissionError as e:
+        return jsonify({"detail": str(e)}), 401
+    except ValueError as e:
+        return jsonify({"detail": str(e)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({"detail": f"Internal server error: {str(e)}"}), 500
@@ -907,12 +931,24 @@ def sales_run():
         success, message = asyncio.run(sales_forecast_service.save_forecast_to_db(store_id, result, backend_token))
         
         if success:
-            return jsonify(result), 200
+            request_meta = result.pop("request_meta", {})
+            return jsonify({
+                "status": "success",
+                "message": "Forecast sales berhasil dijalankan dan disimpan.",
+                "request": request_meta,
+                "save_result": {
+                    "status": "saved",
+                    "message": message
+                },
+                "data": result
+            }), 201
         else:
             return jsonify({"detail": message}), 500
             
     except FileNotFoundError as e:
         return jsonify({"detail": str(e)}), 404
+    except PermissionError as e:
+        return jsonify({"detail": str(e)}), 401
     except ValueError as e:
         return jsonify({"detail": str(e)}), 400
     except Exception as e:
