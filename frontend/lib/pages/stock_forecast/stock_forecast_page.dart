@@ -352,7 +352,7 @@ class _StockForecastPageState extends State<StockForecastPage> {
                       else if (snapshot.data!.items.isEmpty)
                         _EmptyPanel(onRetry: _refresh)
                       else
-                        _StockBody(vm: snapshot.data!),
+                        _StockSummaryGrid(vm: snapshot.data!),
                     ],
                   );
                 },
@@ -532,6 +532,232 @@ class _EmptyPanel extends StatelessWidget {
 }
 
 // ==========================================
+// SUMMARY GRID — kotak ringkasan tiap bahan (dibuka saat klik "Prediksi Stok")
+// ==========================================
+class _StockSummaryGrid extends StatelessWidget {
+  final _ViewModel vm;
+  const _StockSummaryGrid({required this.vm});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+            '${vm.items.length} bahan dipantau • diurutkan dari yang paling '
+            'mendesak',
+            style: const TextStyle(color: Colors.grey, fontSize: 12)),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 16,
+          runSpacing: 16,
+          children: [
+            for (final item in vm.items)
+              SizedBox(
+                width: 260,
+                child: _StockSummaryCard(item: item),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _StockSummaryCard extends StatelessWidget {
+  final _ItemData item;
+  const _StockSummaryCard({required this.item});
+
+  @override
+  Widget build(BuildContext context) {
+    final status = item.overallStatus;
+    final days = item.daysUntilDepletion;
+    final avgUsage = item.forecasts.isEmpty
+        ? 0.0
+        : item.forecasts.take(7).fold<double>(0, (s, f) => s + f.predictedUsage) /
+            item.forecasts.take(7).length;
+
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(14),
+        boxShadow: [
+          BoxShadow(
+              color: Colors.black.withValues(alpha: 0.03),
+              blurRadius: 8,
+              offset: const Offset(0, 2)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Text(item.name,
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                    color: status.bgColor,
+                    borderRadius: BorderRadius.circular(6)),
+                child: Text(status.label,
+                    style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                        color: status.fgColor)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            item.currentStock > 0
+                ? '${item.currentStock.toStringAsFixed(1)} Kg'
+                : 'N/A',
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 2),
+          const Text('Stok saat ini',
+              style: TextStyle(color: Colors.grey, fontSize: 11)),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Icon(Icons.schedule, size: 13, color: Colors.grey[500]),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  days > 0 ? 'Habis dalam $days hari' : 'Stok aman',
+                  style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: days > 0 && days <= 3
+                          ? _kLineRed
+                          : Colors.grey[700]),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('Rata-rata pakai ${avgUsage.toStringAsFixed(1)} Kg/hari',
+              style: const TextStyle(color: Colors.grey, fontSize: 11)),
+          const SizedBox(height: 14),
+          const Divider(height: 1),
+          const SizedBox(height: 10),
+          InkWell(
+            onTap: () => Navigator.of(context).push(MaterialPageRoute(
+                builder: (_) => _StockItemDetailPage(itemId: item.id))),
+            child: const Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text('Detail',
+                    style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: _kGreenDark)),
+                SizedBox(width: 4),
+                Icon(Icons.arrow_forward_ios, size: 10, color: _kGreenDark),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==========================================
+// DETAIL PAGE — dibuka dari tombol "Detail" pada kotak ringkasan
+// ==========================================
+class _StockItemDetailPage extends StatefulWidget {
+  final String itemId;
+  const _StockItemDetailPage({required this.itemId});
+
+  @override
+  State<_StockItemDetailPage> createState() => _StockItemDetailPageState();
+}
+
+class _StockItemDetailPageState extends State<_StockItemDetailPage> {
+  final ApiService _api = ApiService();
+  late Future<_ViewModel> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _ViewModel.load(_api);
+    _loadUser();
+  }
+
+  void _refresh() => setState(() => _future = _ViewModel.load(_api));
+
+  String _userName = 'Loading...';
+  String _name = 'User';
+
+  Future<void> _loadUser() async {
+    try {
+      final user = await AuthService().getCurrentUser();
+      setState(() {
+        _userName = user.username;
+        _name = user.name;
+      });
+    } catch (_) {
+      setState(() {
+        _userName = 'Guest';
+        _name = '-';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFFF5F6F7),
+      body: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SidebarWidget(userName: _userName, name: _name),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(32, 24, 32, 32),
+              child: FutureBuilder<_ViewModel>(
+                future: _future,
+                builder: (context, snapshot) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _Header(onRefresh: _refresh),
+                      const SizedBox(height: 28),
+                      if (snapshot.connectionState == ConnectionState.waiting)
+                        const _LoadingPanel()
+                      else if (snapshot.hasError)
+                        _ErrorPanel(
+                            message: '${snapshot.error}', onRetry: _refresh)
+                      else if (snapshot.data!.items.isEmpty)
+                        _EmptyPanel(onRetry: _refresh)
+                      else
+                        _StockBody(
+                            vm: snapshot.data!, initialItemId: widget.itemId),
+                    ],
+                  );
+                },
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ==========================================
 // PERIOD
 // ==========================================
 enum _Period { daily, weekly, monthly }
@@ -581,17 +807,22 @@ int? _avgConfidence(List<ForecastPoint> pts) {
 /// Agregasi forecast harian ke bucket (per minggu / per bulan). Sisa stok
 /// diambil dari hari terakhir bucket (kondisi di akhir periode), pemakaian &
 /// batas CI dijumlahkan, status mengikuti sisa di akhir bucket.
+///
+/// Bucket yang belum genap satu periode penuh (mis. sisa horizon < 7 hari
+/// untuk mingguan, atau bulan yang cuma sebagian hari untuk bulanan) DIBUANG
+/// supaya grafik/tabel tidak menampilkan bar yang tiba-tiba anjlok hanya
+/// karena periode itu belum lengkap.
 List<_DayForecast> _aggregateForecasts(
     List<_DayForecast> daily, _Period period) {
   if (period == _Period.daily || daily.isEmpty) return daily;
 
   final buckets = <List<_DayForecast>>[];
   if (period == _Period.weekly) {
-    for (var i = 0; i < daily.length; i += 7) {
-      buckets.add(daily.sublist(i, (i + 7).clamp(0, daily.length)));
+    for (var i = 0; i + 7 <= daily.length; i += 7) {
+      buckets.add(daily.sublist(i, i + 7));
     }
   } else {
-    // Bulanan: kelompokkan per bulan kalender (YYYY-MM).
+    // Bulanan: kelompokkan per bulan kalender (YYYY-MM), hanya bulan penuh.
     final byMonth = <String, List<_DayForecast>>{};
     final order = <String>[];
     for (final f in daily) {
@@ -600,7 +831,8 @@ List<_DayForecast> _aggregateForecasts(
       byMonth.putIfAbsent(key, () => []).add(f);
     }
     for (final k in order) {
-      buckets.add(byMonth[k]!);
+      final chunk = byMonth[k]!;
+      if (chunk.length >= daysInMonth(k)) buckets.add(chunk);
     }
   }
 
@@ -628,7 +860,8 @@ List<_DayForecast> _aggregateForecasts(
 // ==========================================
 class _StockBody extends StatefulWidget {
   final _ViewModel vm;
-  const _StockBody({required this.vm});
+  final String? initialItemId;
+  const _StockBody({required this.vm, this.initialItemId});
 
   @override
   State<_StockBody> createState() => _StockBodyState();
@@ -641,7 +874,10 @@ class _StockBodyState extends State<_StockBody> {
   @override
   void initState() {
     super.initState();
-    _selectedIdx = 0;
+    final id = widget.initialItemId;
+    final idx =
+        id == null ? -1 : widget.vm.items.indexWhere((i) => i.id == id);
+    _selectedIdx = idx >= 0 ? idx : 0;
   }
 
   _ItemData get _item => widget.vm.items[_selectedIdx];
@@ -757,31 +993,38 @@ class _StockBodyState extends State<_StockBody> {
         _SummaryCards(item: item, period: _period),
         const SizedBox(height: 20),
 
-        // Chart
-        _DepletionChart(item: item, period: _period, forecasts: forecasts),
-        const SizedBox(height: 20),
+        // Chart + metrik + tabel — hanya bila periode aktif punya minimal
+        // satu bucket LENGKAP (lihat _aggregateForecasts). Kalau belum ada
+        // (mis. horizon prediksi belum menutupi 1 minggu/bulan penuh),
+        // tampilkan info kosong daripada bar yang anjlok karena data parsial.
+        if (forecasts.isEmpty)
+          _PeriodEmptyPanel(period: _period)
+        else ...[
+          _DepletionChart(item: item, period: _period, forecasts: forecasts),
+          const SizedBox(height: 20),
 
-        // Metrik & penjelasan (pemakaian). Tingkat keyakinan mengikuti run
-        // native granularitas aktif (sesuai DB) lewat confidenceScore; bar
-        // sengaja tanpa confidence agar tidak menimpanya.
-        ForecastMetricsPanel(
-          bars: forecasts
-              .map((f) => ForecastBar(
-                    label: '',
-                    fullLabel: _stockDateLabel(f.date),
-                    value: f.predictedUsage,
-                    lower: f.lower,
-                    upper: f.upper,
-                  ))
-              .toList(),
-          fmt: (v) => '${v.toStringAsFixed(1)} Kg',
-          confidenceScore: item.confidenceFor(_period),
-          accent: _kGreenDark,
-        ),
-        const SizedBox(height: 20),
+          // Metrik & penjelasan (pemakaian). Tingkat keyakinan mengikuti run
+          // native granularitas aktif (sesuai DB) lewat confidenceScore; bar
+          // sengaja tanpa confidence agar tidak menimpanya.
+          ForecastMetricsPanel(
+            bars: forecasts
+                .map((f) => ForecastBar(
+                      label: '',
+                      fullLabel: _stockDateLabel(f.date),
+                      value: f.predictedUsage,
+                      lower: f.lower,
+                      upper: f.upper,
+                    ))
+                .toList(),
+            fmt: (v) => '${v.toStringAsFixed(1)} Kg',
+            confidenceScore: item.confidenceFor(_period),
+            accent: _kGreenDark,
+          ),
+          const SizedBox(height: 20),
 
-        // Table
-        _ForecastTable(item: item, forecasts: forecasts, period: _period),
+          // Table
+          _ForecastTable(item: item, forecasts: forecasts, period: _period),
+        ],
         const SizedBox(height: 20),
 
         // Insight
@@ -814,6 +1057,35 @@ class _StockBodyState extends State<_StockBody> {
       'Rata-rata pemakaian ~${avg.toStringAsFixed(1)} Kg/hari, tingkat '
           'keyakinan model ${conf.toStringAsFixed(0)}%.',
     ];
+  }
+}
+
+/// Ditampilkan saat periode aktif (mingguan/bulanan) belum punya satu bucket
+/// pun yang lengkap dalam horizon prediksi — lebih baik kosong daripada
+/// menampilkan bar hasil agregasi sebagian hari yang menyesatkan.
+class _PeriodEmptyPanel extends StatelessWidget {
+  final _Period period;
+  const _PeriodEmptyPanel({required this.period});
+
+  @override
+  Widget build(BuildContext context) {
+    return ForecastCardShell(
+      padding: const EdgeInsets.all(32),
+      child: Center(
+        child: Column(
+          children: [
+            Icon(Icons.timeline, size: 36, color: Colors.grey[300]),
+            const SizedBox(height: 10),
+            Text(
+              'Belum ada periode ${period.label.toLowerCase()} yang lengkap '
+              'dalam rentang prediksi ini',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: Colors.grey, fontSize: 13),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

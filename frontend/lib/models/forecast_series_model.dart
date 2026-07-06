@@ -151,20 +151,23 @@ class ForecastResults {
   // --------------------------------------------------------------------------
 
   /// Pecah titik harian jadi minggu 7-harian, DIBATASI pada bulan pertama.
+  /// Minggu terakhir yang belum genap 7 hari (sisa horizon) dibuang supaya
+  /// tidak tampil sebagai bar yang tiba-tiba anjlok karena cuma sebagian hari.
   static List<ForecastPoint> weeksFromDaily(List<ForecastPoint> daily) {
     if (daily.isEmpty) return const [];
     final firstMonth = _ym(daily.first.date);
     final monthDays =
         daily.where((p) => _ym(p.date) == firstMonth).toList();
     final out = <ForecastPoint>[];
-    for (var i = 0; i < monthDays.length; i += 7) {
-      out.add(_sumChunk(
-          monthDays.sublist(i, (i + 7).clamp(0, monthDays.length))));
+    for (var i = 0; i + 7 <= monthDays.length; i += 7) {
+      out.add(_sumChunk(monthDays.sublist(i, i + 7)));
     }
     return out;
   }
 
-  /// Kelompokkan titik harian per bulan kalender.
+  /// Kelompokkan titik harian per bulan kalender. Bulan yang belum lengkap
+  /// (mis. bulan pertama/terakhir horizon yang cuma sebagian hari) dibuang
+  /// supaya tidak tampil sebagai bar yang tiba-tiba anjlok.
   static List<ForecastPoint> monthsFromDaily(List<ForecastPoint> daily) {
     if (daily.isEmpty) return const [];
     final byMonth = <String, List<ForecastPoint>>{};
@@ -172,7 +175,10 @@ class ForecastResults {
       byMonth.putIfAbsent(_ym(p.date), () => []).add(p);
     }
     final keys = byMonth.keys.toList()..sort();
-    return keys.map((k) => _sumChunk(byMonth[k]!)).toList();
+    return keys
+        .where((k) => byMonth[k]!.length >= daysInMonth(k))
+        .map((k) => _sumChunk(byMonth[k]!))
+        .toList();
   }
 
   static ForecastPoint _sumChunk(List<ForecastPoint> chunk) {
@@ -199,6 +205,15 @@ class ForecastResults {
 // ============================================================================
 // HELPER TOP-LEVEL
 // ============================================================================
+
+/// Jumlah hari dalam bulan kalender `key` berformat "YYYY-MM".
+int daysInMonth(String key) {
+  final parts = key.split('-');
+  final y = int.tryParse(parts[0]) ?? 2000;
+  final m = parts.length > 1 ? int.tryParse(parts[1]) ?? 1 : 1;
+  // Tanggal 0 bulan berikutnya = hari terakhir bulan `m`.
+  return DateTime(y, m + 1, 0).day;
+}
 
 /// Parse `target_date` yang bisa berupa RFC3339 ("2026-06-24T00:00:00Z")
 /// atau tanggal polos ("2026-06-24").

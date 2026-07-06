@@ -70,6 +70,23 @@ DateTime? _parseDay(String s) {
   return DateTime.tryParse(t);
 }
 
+/// true bila tanggal [d] sudah lewat sepenuhnya (strictly sebelum hari ini) —
+/// dipakai untuk memastikan bucket minggu/bulan terakhir sudah benar-benar
+/// berakhir sebelum ditampilkan sebagai data real.
+bool _isBeforeToday(DateTime d) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  return DateTime(d.year, d.month, d.day).isBefore(today);
+}
+
+/// Hari terakhir bulan kalender `key` berformat "YYYY-MM-...".
+DateTime _lastDayOfMonth(String key) {
+  final p = key.split('-');
+  final y = int.tryParse(p[0]) ?? 2000;
+  final m = p.length > 1 ? int.tryParse(p[1]) ?? 1 : 1;
+  return DateTime(y, m + 1, 0);
+}
+
 // ============================================================================
 // HISTORY HELPER — bangun titik DATA REAL dari sales_daily_summaries
 // ============================================================================
@@ -125,8 +142,19 @@ List<ForecastBar> buildHistoryBars({
             '${ws.day.toString().padLeft(2, '0')}';
         byWeek.putIfAbsent(key, () => []).add(r);
       }
-      final keys = byWeek.keys.toList()..sort();
-      final last = keys.length > 8 ? keys.sublist(keys.length - 8) : keys;
+      var weekKeys = byWeek.keys.toList()..sort();
+      // Buang minggu TERAKHIR bila belum genap berakhir (mis. hari ini masih
+      // di tengah minggu itu) — supaya tidak tampil sebagai penurunan tiba-
+      // tiba karena baru sebagian hari yang tercatat.
+      if (weekKeys.isNotEmpty) {
+        final weekEnd =
+            DateTime.parse(weekKeys.last).add(const Duration(days: 6));
+        if (!_isBeforeToday(weekEnd)) {
+          weekKeys = weekKeys.sublist(0, weekKeys.length - 1);
+        }
+      }
+      final last =
+          weekKeys.length > 8 ? weekKeys.sublist(weekKeys.length - 8) : weekKeys;
       return last.map((k) {
         final sum = byWeek[k]!.fold<double>(0, (s, r) => s + valueOf(r));
         final ws = DateTime.parse(k);
@@ -147,8 +175,18 @@ List<ForecastBar> buildHistoryBars({
         final key = '${d.year}-${d.month.toString().padLeft(2, '0')}';
         byMonth.putIfAbsent(key, () => []).add(r);
       }
-      final keys = byMonth.keys.toList()..sort();
-      final last = keys.length > 6 ? keys.sublist(keys.length - 6) : keys;
+      var monthKeys = byMonth.keys.toList()..sort();
+      // Buang bulan TERAKHIR bila belum genap berakhir (bulan berjalan) —
+      // alasan sama seperti mingguan di atas.
+      if (monthKeys.isNotEmpty) {
+        final monthEnd = _lastDayOfMonth(monthKeys.last);
+        if (!_isBeforeToday(monthEnd)) {
+          monthKeys = monthKeys.sublist(0, monthKeys.length - 1);
+        }
+      }
+      final last = monthKeys.length > 6
+          ? monthKeys.sublist(monthKeys.length - 6)
+          : monthKeys;
       return last.map((k) {
         final sum = byMonth[k]!.fold<double>(0, (s, r) => s + valueOf(r));
         final p = k.split('-');
