@@ -195,7 +195,7 @@ class GolangAPIClient:
                     raise
 
     def _headers(self) -> Dict[str, str]:
-        # Service-to-service auth. Jangan pakai JWT user/backend_token dari request.
+        # Service-to-service auth. Gunakan X-Service-Key dari env.
         return Config.backend_headers()
 
     async def _post(
@@ -316,12 +316,16 @@ class GolangAPIClient:
         )
 
         return {
+            "status": "saved",
+            "message": f"Forecast visitors {horizon_label} berhasil disimpan ke backend.",
             "run_id": int(run_id),
-            "saved_results": len(result_rows),
+            "forecast_type": "visitors",
             "horizon_label": horizon_label,
             "horizon_days": horizon_days,
             "predict_start_date": predict_start_date.isoformat(),
             "predict_end_date": predict_end_date.isoformat(),
+            "saved_results": len(result_rows),
+            "backend_status": "success",
             "backend_run_response": run_response,
             "backend_results_response": results_response,
         }

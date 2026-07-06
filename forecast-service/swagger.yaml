@@ -1,0 +1,178 @@
+openapi: 3.0.3
+info:
+  title: Sora Forecast Service API
+  version: "2.3"
+  description: Forecast-service endpoints after /run removal. Use /save for generate + save.
+servers:
+  - url: http://localhost:5000
+security:
+  - ServiceKeyHeader: []
+  - ServiceKeyBearer: []
+components:
+  securitySchemes:
+    ServiceKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+    ServiceKeyBearer:
+      type: http
+      scheme: bearer
+  schemas:
+    StandardForecastRequest:
+      type: object
+      required: [store_id, horizon_label, horizon_count]
+      properties:
+        store_id:
+          type: string
+          format: uuid
+        horizon_label:
+          type: string
+          enum: [daily, weekly, monthly]
+        horizon_count:
+          type: integer
+          minimum: 1
+          description: daily max 90, weekly max 52, monthly max 24
+        start_date:
+          type: string
+          format: date
+          nullable: true
+    InventoryForecastRequest:
+      allOf:
+        - $ref: '#/components/schemas/StandardForecastRequest'
+        - type: object
+          required: [ingredient_id]
+          properties:
+            ingredient_id:
+              type: string
+              format: uuid
+    ForecastEnvelope:
+      type: object
+      properties:
+        status:
+          type: string
+          example: success
+        message:
+          type: string
+        request:
+          type: object
+        save_result:
+          type: object
+        data:
+          type: object
+    RetrainRequest:
+      type: object
+      required: [store_id]
+      properties:
+        store_id:
+          type: string
+          format: uuid
+        force:
+          type: boolean
+          default: false
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: OK
+  /api/forecast/visitors/preview:
+    post:
+      summary: Preview visitors forecast without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/visitors/save:
+    post:
+      summary: Generate visitors forecast and save to backend/database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '201': {description: Saved}
+  /api/forecast/visitors/retrain:
+    post:
+      summary: Retrain visitors model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrainRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/sales/preview:
+    post:
+      summary: Preview sales forecast without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/sales/save:
+    post:
+      summary: Generate sales forecast and save to backend/database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '201': {description: Saved}
+  /api/forecast/sales/retrain:
+    post:
+      summary: Retrain sales model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrainRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/inventory/preview:
+    post:
+      summary: Preview inventory forecast without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryForecastRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/inventory/save:
+    post:
+      summary: Generate inventory forecast and save to backend/database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryForecastRequest'
+      responses:
+        '201': {description: Saved}
+  /api/forecast/inventory/retrain:
+    post:
+      summary: Retrain inventory model for one store across daily, weekly, monthly
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrainRequest'
+      responses:
+        '200': {description: OK}

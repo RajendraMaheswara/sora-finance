@@ -1,3 +1,3 @@
 class ApiConstants {
-  static final String baseUrl = '${Uri.base.origin}/api';
+  static const String baseUrl = 'http://localhost:8080/api';
 }

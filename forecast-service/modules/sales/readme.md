@@ -57,7 +57,7 @@ Berikut adalah daftar API yang tersedia pada modul `sales` (Base URL: `http://lo
 
 ### 1. **Run Forecast (Preview + Save)**
 *   **Method:** `POST`
-*   **Endpoint:** `/api/forecast/sales/run`
+*   **Endpoint:** `/api/forecast/sales/save`
 *   **Deskripsi:** Menjalankan prediksi penjualan (*sales*) berdasarkan data *history* yang ada, mengembalikan hasil *response* prediksi, dan otomatis menyimpannya ke database (`forecast_runs` & `forecast_results`).
 *   **Payload (JSON):**
     ```json
@@ -73,7 +73,7 @@ Berikut adalah daftar API yang tersedia pada modul `sales` (Base URL: `http://lo
 *   **Method:** `POST`
 *   **Endpoint:** `/api/forecast/sales/preview`
 *   **Deskripsi:** Hanya menjalankan prediksi dan mengembalikan *response* tanpa menyimpannya ke database.
-*   **Payload (JSON):** *(Sama seperti endpoint /run)*
+*   **Payload (JSON):** *(Sama seperti endpoint /save)*
 
 ### 3. **Save Forecast**
 *   **Method:** `POST`

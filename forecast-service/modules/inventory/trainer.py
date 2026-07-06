@@ -148,3 +148,33 @@ def train_all_inventory_models(task_id: str | None = None):
     if task_id:
         _update_task(task_id, status="DONE", processed=total_jobs, current_pair=None, message="")
     print(f"[trainer] Selesai. {total_jobs} job diproses.")
+
+def retrain_inventory_store(store_id: str, force: bool = False) -> dict:
+    """Retrain inventory models for one store across daily, weekly, monthly horizons.
+
+    The `force` flag is accepted for API consistency with visitors/sales. The
+    current trainer always overwrites the model artifacts for the requested
+    store/horizon when training succeeds.
+    """
+    horizons = [('D', 'daily'), ('W', 'weekly'), ('M', 'monthly')]
+    horizon_results = []
+    success_count = 0
+
+    for freq, label in horizons:
+        ok, message = _train_store_for_horizon(store_id, freq, task_id=None)
+        horizon_results.append({
+            "horizon_label": label,
+            "status": "success" if ok else "failed",
+            "message": message,
+        })
+        if ok:
+            success_count += 1
+
+    status = "success" if success_count == len(horizons) else "partial_success" if success_count else "failed"
+    return {
+        "store_id": store_id,
+        "status": status,
+        "message": f"Retrain inventory selesai: {success_count}/{len(horizons)} horizon berhasil.",
+        "force": bool(force),
+        "horizons": horizon_results,
+    }
