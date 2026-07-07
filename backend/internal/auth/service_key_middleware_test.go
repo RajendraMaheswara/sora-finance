@@ -11,9 +11,11 @@ func TestServiceKeyMiddleware(t *testing.T) {
 		name           string
 		expectedKey    string
 		providedKey    string
+		bearerKey      string
 		expectedStatus int
 	}{
-		{name: "valid key", expectedKey: "secret", providedKey: "secret", expectedStatus: http.StatusOK},
+		{name: "valid x service key", expectedKey: "secret", providedKey: "secret", expectedStatus: http.StatusOK},
+		{name: "valid bearer service key", expectedKey: "secret", bearerKey: "secret", expectedStatus: http.StatusOK},
 		{name: "invalid key", expectedKey: "secret", providedKey: "wrong", expectedStatus: http.StatusUnauthorized},
 		{name: "missing backend config", expectedKey: "", providedKey: "secret", expectedStatus: http.StatusServiceUnavailable},
 	}
@@ -23,6 +25,9 @@ func TestServiceKeyMiddleware(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/internal/forecast/orders", nil)
 			if tt.providedKey != "" {
 				req.Header.Set(ServiceKeyHeader, tt.providedKey)
+			}
+			if tt.bearerKey != "" {
+				req.Header.Set("Authorization", "Bearer "+tt.bearerKey)
 			}
 			rr := httptest.NewRecorder()
 

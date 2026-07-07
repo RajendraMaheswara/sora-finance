@@ -40,17 +40,22 @@ components:
       allOf:
         - $ref: '#/components/schemas/StandardForecastRequest'
         - type: object
-          required: [ingredient_id]
           properties:
             ingredient_id:
               type: string
               format: uuid
+              nullable: true
+              description: Optional. If omitted, forecast runs for all ingredients in the store.
+            allow_partial:
+              type: boolean
+              default: true
+              description: Only used by /save without ingredient_id. Default true saves successful ingredients and reports ingredients without history/model as warnings/skipped_ingredients. Runtime failures are reported in errors. Set false for strict all-or-nothing.
     ForecastEnvelope:
       type: object
       properties:
         status:
           type: string
-          example: success
+          example: partial_success
         message:
           type: string
         request:
@@ -154,6 +159,7 @@ paths:
               $ref: '#/components/schemas/InventoryForecastRequest'
       responses:
         '200': {description: OK}
+        '207': {description: Partial success when some ingredients fail in all-store mode}
   /api/forecast/inventory/save:
     post:
       summary: Generate inventory forecast and save to backend/database
@@ -164,7 +170,8 @@ paths:
             schema:
               $ref: '#/components/schemas/InventoryForecastRequest'
       responses:
-        '201': {description: Saved}
+        '201': {description: Saved. Response status may be success or partial_success.}
+        '400': {description: Some ingredients failed and allow_partial=false, or no ingredient can be forecasted.}
   /api/forecast/inventory/retrain:
     post:
       summary: Retrain inventory model for one store across daily, weekly, monthly

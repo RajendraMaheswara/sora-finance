@@ -54,6 +54,8 @@ SCHEDULER_RETRAIN=true
 
 ### Inventory
 
+Single ingredient:
+
 ```json
 {
   "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
@@ -62,6 +64,18 @@ SCHEDULER_RETRAIN=true
   "horizon_count": 4
 }
 ```
+
+Semua ingredient dalam store:
+
+```json
+{
+  "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+  "horizon_label": "daily",
+  "horizon_count": 30
+}
+```
+
+Untuk `/api/forecast/inventory/save` tanpa `ingredient_id`, default behavior adalah partial-tolerant: ingredient yang berhasil tetap disimpan, sedangkan ingredient yang ada di master tetapi belum punya histori/model forecast dilaporkan sebagai `warnings`/`skipped_ingredients`, bukan fatal error. `errors` hanya untuk kegagalan runtime yang benar-benar gagal. Kirim `"allow_partial": false` jika ingin mode strict all-or-nothing.
 
 `start_date` opsional dan harus format `YYYY-MM-DD`. Jika tidak dikirim, service akan memakai start date otomatis berdasarkan complete operational period.
 

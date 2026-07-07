@@ -149,6 +149,12 @@ def public_save_result(save_result: Optional[Dict[str, Any]]) -> Optional[Dict[s
         "predict_start_date",
         "predict_end_date",
         "saved_results",
+        "ingredient_count",
+        "successful_ingredient_count",
+        "failed_ingredient_count",
+        "requested_ingredient_count",
+        "partial_success",
+        "failed_ingredients",
         "backend_status",
     )
     public = {key: save_result.get(key) for key in fields if save_result.get(key) is not None}

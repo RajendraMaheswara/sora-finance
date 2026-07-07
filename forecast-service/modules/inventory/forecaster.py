@@ -17,6 +17,21 @@ from config import Config
 from datetime import datetime, timezone, date, timedelta
 
 
+class InventoryModelNotAvailableError(ValueError):
+    """Raised when an ingredient exists but no trained inventory model is available.
+
+    This usually means the ingredient had no usable stock/usage history during
+    the latest retrain, so the trainer could not include it in the store model.
+    """
+
+    def __init__(self, store_id: str, ingredient_id: str, reason_code: str = "no_training_history_or_model"):
+        self.store_id = store_id
+        self.ingredient_id = ingredient_id
+        self.reason_code = reason_code
+        message = "Belum ada histori stok; model forecast belum tersedia."
+        super().__init__(message)
+
+
 class InventoryForecaster:
     def __init__(self, store_id, ingredient_id, freq, model_dir=None):
         """
@@ -337,10 +352,10 @@ class InventoryForecaster:
             )
         all_models = joblib.load(self.store_model_path)
         if self.ingredient_id not in all_models:
-            raise ValueError(f"Ingredient {self.ingredient_id} tidak ada di model toko.")
+            raise InventoryModelNotAvailableError(self.store_id, self.ingredient_id)
         self.model = all_models[self.ingredient_id]
         if self.model is None:
-            raise ValueError(f"Model untuk ingredient {self.ingredient_id} adalah None.")
+            raise InventoryModelNotAvailableError(self.store_id, self.ingredient_id, reason_code="training_failed")
         return self.model
 
     def _load_metrics(self):

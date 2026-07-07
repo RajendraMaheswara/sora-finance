@@ -58,7 +58,9 @@ func (h *ForecastRunHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respondWithJSON(w, http.StatusCreated, map[string]interface{}{
-		"run_id": id,
-		"status": "created",
+		"run_id":    id,
+		"status":    "created",
+		"is_latest": false,
+		"message":   "forecast run created; it becomes latest only after results are saved",
 	})
 }

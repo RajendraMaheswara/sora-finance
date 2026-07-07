@@ -218,7 +218,7 @@ Gunakan endpoint `POST /api/forecast/inventory/preview` (atau `/save` untuk gene
 
 Parameter opsional `start_date` (format "YYYY-MM-DD") dapat ditambahkan jika Anda ingin memulai prediksi dari tanggal tertentu. Jika dikosongkan, prediksi akan mengambil patokan **hari ini** dan otomatis bergeser maju jika tipe peramalan adalah mingguan/bulanan (memulai hari Senin depan atau tanggal 1 bulan depan).
 
-Contoh harian (7 hari ke depan):
+Contoh harian single ingredient (7 hari ke depan):
 
 ```bash
 curl -X POST http://localhost:5000/api/forecast/inventory/preview   -H "Content-Type: application/json"   -H "X-Service-Key: <INTERNAL_SERVICE_KEY>"   -d '{
@@ -229,6 +229,18 @@ curl -X POST http://localhost:5000/api/forecast/inventory/preview   -H "Content-
     "start_date": "2026-07-01"
   }'
 ```
+
+Contoh harian semua ingredient dalam store, tanpa `ingredient_id`:
+
+```bash
+curl -X POST http://localhost:5000/api/forecast/inventory/save   -H "Content-Type: application/json"   -H "X-Service-Key: <INTERNAL_SERVICE_KEY>"   -d '{
+    "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+    "horizon_label": "daily",
+    "horizon_count": 30
+  }'
+```
+
+Untuk `/save` tanpa `ingredient_id`, default-nya partial-tolerant. Jika sebagian ingredient ada di master tetapi belum punya histori stok, ingredient tersebut dilaporkan sebagai `warnings`/`skipped_ingredients`. Ingredient yang berhasil tetap disimpan sebagai satu `forecast_run`. Field `errors` hanya untuk kegagalan runtime yang benar-benar gagal. Gunakan `"allow_partial": false` jika ingin mode strict all-or-nothing.
 
 Contoh mingguan (4 minggu ke depan):
 

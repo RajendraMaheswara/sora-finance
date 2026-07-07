@@ -37,6 +37,7 @@ type AppDependencies struct {
 	FinanceMonthlySummaryHandler       *handler.FinanceMonthlySummaryHandler
 	ForecastResultHandler              *handler.ForecastResultHandler
 	ForecastRunHandler                 *handler.ForecastRunHandler
+	ForecastSaveHandler                *handler.ForecastSaveHandler
 	IngredientStockHistoryHandler      *handler.IngredientStockHistoryHandler
 	OrderItemHandler                   *handler.OrderItemHandler
 	OrderHandler                       *handler.OrderHandler
@@ -151,6 +152,8 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 	forecastRunRepo := repository.NewForecastRunRepository(pool)
 	forecastRunService := service.NewForecastRunService(forecastRunRepo)
 	forecastRunHandler := handler.NewForecastRunHandler(forecastRunService)
+	forecastSaveService := service.NewForecastSaveService(forecastRunRepo)
+	forecastSaveHandler := handler.NewForecastSaveHandler(forecastSaveService)
 
 	ingredientStockHistoryRepo := repository.NewIngredientStockHistoryRepository(pool)
 	ingredientStockHistoryService := service.NewIngredientStockHistoryService(ingredientStockHistoryRepo)
@@ -200,6 +203,7 @@ func initDependencies(pool *pgxpool.Pool) *AppDependencies {
 		FinanceMonthlySummaryHandler:       financeMonthlySummaryHandler,
 		ForecastResultHandler:              forecastResultHandler,
 		ForecastRunHandler:                 forecastRunHandler,
+		ForecastSaveHandler:                forecastSaveHandler,
 		IngredientStockHistoryHandler:      ingredientStockHistoryHandler,
 		OrderItemHandler:                   orderItemHandler,
 		OrderHandler:                       orderHandler,

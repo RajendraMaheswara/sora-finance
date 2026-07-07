@@ -155,7 +155,7 @@ func normalizeForecastRunInput(input models.ForecastRunInput) (models.ForecastRu
 		Summary:          summary,
 		DataQuality:      dataQuality,
 		Status:           status,
-		IsLatest:         status == "success",
+		IsLatest:         false,
 		ErrorMessage:     optionalString(input.ErrorMessage),
 		StartedAt:        startedAt,
 		FinishedAt:       finishedAt,

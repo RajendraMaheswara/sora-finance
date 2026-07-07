@@ -106,14 +106,11 @@ func (s *ForecastResultService) GetLatestVisitors(ctx context.Context, horizonLa
 
 func validateForecastResults(items []models.ForecastResultInput) ([]models.ForecastResultCreateData, error) {
 	validated := make([]models.ForecastResultCreateData, 0, len(items))
-	previousDate := ""
 	for i, item := range items {
 		date, err := parseDate(item.TargetDate)
 		if err != nil {
 			return nil, fmt.Errorf("results[%d].target_date: %w", i, err)
 		}
-		normalizedDate := date.Format("2006-01-02")
-
 		if math.IsNaN(item.PredictedValue) || math.IsInf(item.PredictedValue, 0) {
 			return nil, fmt.Errorf("results[%d].predicted_value must be a finite number", i)
 		}
@@ -146,11 +143,6 @@ func validateForecastResults(items []models.ForecastResultInput) ([]models.Forec
 				itemType = &trimmed
 			}
 		}
-
-		if previousDate != "" && normalizedDate < previousDate {
-			return nil, errors.New("results must be ordered by target_date ascending")
-		}
-		previousDate = normalizedDate
 
 		validated = append(validated, models.ForecastResultCreateData{
 			TargetDate:      date,

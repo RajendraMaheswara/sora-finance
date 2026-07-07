@@ -16,6 +16,8 @@ from modules.shared.forecast_helpers import (
     validate_uuid as shared_validate_uuid,
 )
 import os
+import json
+import requests
 import traceback
 import uuid
 import threading
@@ -28,7 +30,7 @@ from modules.visitors.trainer import trainer as visitors_trainer
 from modules.visitors.forecaster import golang_client
 
 # Import modul inventory
-from modules.inventory.forecaster import InventoryForecaster
+from modules.inventory.forecaster import InventoryForecaster, InventoryModelNotAvailableError
 from modules.inventory.trainer import train_all_inventory_models, training_tasks
 
 # Import modul Sales
@@ -824,26 +826,534 @@ async def _resolve_inventory_start_date_meta(store_id, horizon_label, requested_
 
 
 def _parse_inventory_standard_body(payload):
-    return parse_standard_body(payload, module="inventory", require_ingredient=True)
+    parsed = parse_standard_body(payload, module="inventory", require_ingredient=False)
+    ingredient_id = payload.get("ingredient_id") or payload.get("m_food_ingredient_id")
+    if ingredient_id not in (None, ""):
+        parsed["ingredient_id"] = _validate_uuid(ingredient_id, "ingredient_id")
+    return parsed
 
 
-def _standard_inventory_response(result, payload, message, save_result=None):
+def _standard_inventory_response(result, payload, message, save_result=None, status="success"):
+    ingredient_id = payload.get("ingredient_id")
     body = {
-        "status": "success",
+        "status": status,
         "message": message,
         "request": _standard_request_meta(
             "inventory",
             payload,
             {
-                "ingredient_id": payload.get("ingredient_id"),
+                "ingredient_id": ingredient_id,
+                "ingredient_mode": "single" if ingredient_id else "all_store_ingredients",
                 "start_date_mode": payload.get("start_date_mode"),
             },
         ),
         "data": result,
     }
+    if isinstance(result, dict):
+        if result.get("warnings"):
+            body["warnings"] = result.get("warnings")
+        if result.get("errors"):
+            body["errors"] = result.get("errors")
     if save_result is not None:
         body["save_result"] = save_result
     return body
+
+
+
+def _inventory_ingredient_id_from_item(item):
+    value = (
+        item.get("id")
+        or item.get("ingredient_id")
+        or item.get("m_food_ingredient_id")
+        or item.get("food_ingredient_id")
+        or item.get("mFoodIngredientId")
+    )
+    return str(value) if value else None
+
+
+def _inventory_item_belongs_to_store(item, store_id):
+    value = item.get("m_store_id") or item.get("store_id") or item.get("storeId") or item.get("mStoreId")
+    # Be defensive: beberapa internal endpoint sudah melakukan scoping by store dan
+    # response lama tidak selalu membawa store_id. Dalam kasus itu, jangan drop item.
+    return value in (None, "") or str(value) == str(store_id)
+
+
+async def _fetch_inventory_ingredient_ids(store_id):
+    ingredients_resp = await golang_client._get("food-ingredients", params={"store_id": store_id})
+    ingredients = golang_client._extract_items(ingredients_resp)
+    ingredient_ids = []
+    seen = set()
+    for item in ingredients:
+        if not _inventory_item_belongs_to_store(item, store_id):
+            continue
+        ingredient_id = _inventory_ingredient_id_from_item(item)
+        if not ingredient_id:
+            continue
+        ingredient_id = _validate_uuid(ingredient_id, "ingredient_id")
+        if ingredient_id not in seen:
+            ingredient_ids.append(ingredient_id)
+            seen.add(ingredient_id)
+    return ingredient_ids
+
+
+def _inventory_forecast_bounds(result):
+    forecasts = result.get("forecasts") or []
+    if not forecasts:
+        return None, None
+    first = forecasts[0]
+    last = forecasts[-1]
+    start_value = first.get("date") or first.get("period_start") or result.get("forecast_start_date")
+    end_value = last.get("date") or last.get("period_end") or result.get("forecast_end_date")
+    return start_value, end_value
+
+
+def _inventory_result_rows_for_backend(result, ingredient_id):
+    horizon_label = (result.get("horizon") or {}).get("label", "daily")
+    date_key = "date" if horizon_label == "daily" else "period_start"
+    model_meta = result.get("model_metadata") or {}
+    confidence_level = int(model_meta.get("confidence_level") or 0)
+    rows = []
+    for item in result.get("forecasts") or []:
+        target_date = item.get(date_key) or item.get("date") or item.get("period_start")
+        if not target_date:
+            raise ValueError(f"target_date kosong untuk ingredient {ingredient_id}")
+        rows.append({
+            "target_date": target_date,
+            "predicted_value": float(item.get("predicted_usage", item.get("predicted_value", 0.0))),
+            "lower_bound": item.get("lower_bound"),
+            "upper_bound": item.get("upper_bound"),
+            "confidence_level": confidence_level,
+            "item_id": ingredient_id,
+            "item_type": "ingredient",
+        })
+    return rows
+
+
+def _inventory_model_training_info(forecaster):
+    if forecaster.model is not None and hasattr(forecaster.model, "history") and not forecaster.model.history.empty:
+        hist = forecaster.model.history
+        return {
+            "train_start_date": hist["ds"].min().strftime("%Y-%m-%d"),
+            "train_end_date": hist["ds"].max().strftime("%Y-%m-%d"),
+            "training_rows": int(len(hist)),
+        }
+    today = datetime.now().date().isoformat()
+    return {"train_start_date": today, "train_end_date": today, "training_rows": 0}
+
+
+def _inventory_issue(ingredient_id, *, status, reason_code, message, detail=None):
+    issue = {
+        "ingredient_id": ingredient_id,
+        "status": status,
+        "reason_code": reason_code,
+        "message": message,
+        # Backward-compatible alias for older callers that read `error`.
+        "error": message,
+    }
+    if detail:
+        issue["detail"] = detail
+    return issue
+
+
+def _inventory_no_model_issue(ingredient_id, exc=None):
+    reason_code = getattr(exc, "reason_code", None) or "no_training_history_or_model"
+    return _inventory_issue(
+        ingredient_id,
+        status="skipped",
+        reason_code=reason_code,
+        message="Belum ada histori stok; model forecast belum tersedia.",
+    )
+
+
+def _inventory_missing_store_model_issue(ingredient_id, exc=None):
+    return _inventory_issue(
+        ingredient_id,
+        status="skipped",
+        reason_code="store_model_not_trained",
+        message="Model inventory toko belum di-training untuk horizon ini.",
+        detail=str(exc) if exc else None,
+    )
+
+
+def _inventory_failed_issue(ingredient_id, exc):
+    return _inventory_issue(
+        ingredient_id,
+        status="failed",
+        reason_code="forecast_failed",
+        message=str(exc),
+    )
+
+
+def _split_inventory_issues(issues):
+    issues = issues or []
+    skipped = [item for item in issues if item.get("status") == "skipped"]
+    failed = [item for item in issues if item.get("status") != "skipped"]
+    return skipped, failed
+
+
+def _inventory_issue_summary(issues):
+    skipped, failed = _split_inventory_issues(issues)
+    return {
+        "skipped_ingredient_count": len(skipped),
+        "failed_ingredient_count": len(failed),
+        "unsuccessful_ingredient_count": len(issues or []),
+        "skipped_ingredients": skipped,
+        "failed_ingredients": failed,
+        "warnings": skipped,
+        # Keep `errors` semantically strict: only real runtime failures, not no-history skips.
+        "errors": failed,
+    }
+
+
+def _run_inventory_single_forecast(store_id, ingredient_id, payload, freq, start_meta):
+    forecaster = InventoryForecaster(store_id, ingredient_id, freq)
+    result = forecaster.predict(
+        periods=payload["horizon_count"],
+        freq=freq,
+        start_date=start_meta["start_date"],
+        start_date_source=start_meta.get("start_date_source"),
+        business_cutoff_rule=start_meta.get("business_cutoff_rule"),
+    )
+    if start_meta.get("latest_complete_day"):
+        result["last_actual_date"] = start_meta["latest_complete_day"].isoformat() if hasattr(start_meta["latest_complete_day"], "isoformat") else str(start_meta["latest_complete_day"])
+    training_info = _inventory_model_training_info(forecaster)
+    return {"ingredient_id": ingredient_id, "result": result, "forecaster": forecaster, "training_info": training_info}
+
+
+async def _run_inventory_forecasts_from_payload(payload, freq, start_meta):
+    single_mode = bool(payload.get("ingredient_id"))
+    if single_mode:
+        ingredient_ids = [payload["ingredient_id"]]
+    else:
+        ingredient_ids = await _fetch_inventory_ingredient_ids(payload["store_id"])
+        if not ingredient_ids:
+            raise ValueError("Tidak ada ingredient untuk store_id tersebut")
+
+    forecasts = []
+    errors = []
+    for ingredient_id in ingredient_ids:
+        try:
+            forecasts.append(_run_inventory_single_forecast(
+                payload["store_id"],
+                ingredient_id,
+                payload,
+                freq,
+                start_meta,
+            ))
+        except InventoryModelNotAvailableError as exc:
+            if single_mode:
+                raise
+            errors.append(_inventory_no_model_issue(ingredient_id, exc))
+        except FileNotFoundError as exc:
+            if single_mode:
+                raise
+            errors.append(_inventory_missing_store_model_issue(ingredient_id, exc))
+        except Exception as exc:
+            if single_mode:
+                raise
+            errors.append(_inventory_failed_issue(ingredient_id, exc))
+
+    if not forecasts:
+        skipped, failed = _split_inventory_issues(errors)
+        if errors and len(skipped) == len(errors):
+            raise FileNotFoundError(
+                "Tidak ada ingredient yang bisa diprediksi karena belum ada histori stok/model forecast."
+            )
+        raise ValueError("Forecast inventory gagal untuk semua ingredient yang diminta")
+
+    return forecasts, errors, ingredient_ids
+
+
+def _aggregate_inventory_response(store_id, payload, forecast_items, errors=None):
+    errors = errors or []
+    issue_summary = _inventory_issue_summary(errors)
+    if len(forecast_items) == 1 and payload.get("ingredient_id"):
+        result = forecast_items[0]["result"]
+        if errors:
+            result = dict(result)
+            result.update(issue_summary)
+        return result
+
+    ingredient_results = []
+    total_predicted_usage = 0.0
+    total_forecast_count = 0
+    starts = []
+    ends = []
+    confidence_levels = []
+    per_ingredient_summary = []
+
+    for item in forecast_items:
+        ingredient_id = item["ingredient_id"]
+        result = item["result"]
+        summary = result.get("summary") or {}
+        model_meta = result.get("model_metadata") or {}
+        start_value, end_value = _inventory_forecast_bounds(result)
+        if start_value:
+            starts.append(str(start_value))
+        if end_value:
+            ends.append(str(end_value))
+        total_value = float(summary.get("total_predicted_usage") or summary.get("total_predicted_value") or 0.0)
+        forecast_count = int(summary.get("forecast_count") or len(result.get("forecasts") or []))
+        total_predicted_usage += total_value
+        total_forecast_count += forecast_count
+        if model_meta.get("confidence_level") is not None:
+            confidence_levels.append(float(model_meta.get("confidence_level") or 0))
+        per_ingredient_summary.append({
+            "ingredient_id": ingredient_id,
+            "forecast_count": forecast_count,
+            "total_predicted_usage": round(total_value, 2),
+            "average_predicted_usage": summary.get("average_predicted_usage"),
+            "confidence_level": model_meta.get("confidence_level"),
+        })
+        ingredient_results.append({
+            "ingredient_id": ingredient_id,
+            "forecast_start_date": result.get("forecast_start_date"),
+            "forecast_end_date": result.get("forecast_end_date"),
+            "last_actual_date": result.get("last_actual_date"),
+            "model_metadata": model_meta,
+            "summary": summary,
+            "forecasts": result.get("forecasts") or [],
+        })
+
+    first_result = forecast_items[0]["result"]
+    avg_confidence = round(sum(confidence_levels) / len(confidence_levels), 2) if confidence_levels else None
+    return {
+        "store_id": store_id,
+        "ingredient_id": None,
+        "ingredient_mode": "all_store_ingredients",
+        "ingredient_count": len(forecast_items),
+        "requested_ingredient_count": len(forecast_items) + len(errors),
+        "forecast_start_date": min(starts) if starts else first_result.get("forecast_start_date"),
+        "forecast_end_date": max(ends) if ends else first_result.get("forecast_end_date"),
+        "last_actual_date": first_result.get("last_actual_date"),
+        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "start_date_source": first_result.get("start_date_source"),
+        "business_cutoff_rule": first_result.get("business_cutoff_rule"),
+        "horizon": first_result.get("horizon") or {},
+        "model_metadata": {
+            "confidence_level": avg_confidence,
+            "per_ingredient": {
+                item["ingredient_id"]: item["result"].get("model_metadata", {})
+                for item in forecast_items
+            },
+        },
+        "summary": {
+            "module": "inventory",
+            "ingredient_mode": "all_store_ingredients",
+            "ingredient_count": len(forecast_items),
+            "forecast_count": total_forecast_count,
+            "total_predicted_usage": round(total_predicted_usage, 2),
+            "total_predicted_value": round(total_predicted_usage, 2),
+            "average_predicted_usage": round(total_predicted_usage / total_forecast_count, 2) if total_forecast_count else 0.0,
+            "per_ingredient": per_ingredient_summary,
+        },
+        "forecasts_by_ingredient": ingredient_results,
+        **issue_summary,
+    }
+
+
+def _save_inventory_all_forecasts_atomically(payload, forecast_items, start_meta, errors=None, requested_ingredient_ids=None):
+    errors = errors or []
+    requested_ingredient_ids = requested_ingredient_ids or [item["ingredient_id"] for item in forecast_items]
+    if not forecast_items:
+        return {"status": "failed", "message": "Forecast kosong, tidak ada data untuk disimpan.", "saved_results": 0}
+
+    all_rows = []
+    starts = []
+    ends = []
+    train_starts = []
+    train_ends = []
+    training_rows = 0
+    per_ingredient_metrics = {}
+    per_ingredient_quality = {}
+    per_ingredient_summary = []
+    total_predicted_usage = 0.0
+
+    for item in forecast_items:
+        ingredient_id = item["ingredient_id"]
+        result = item["result"]
+        rows = _inventory_result_rows_for_backend(result, ingredient_id)
+        all_rows.extend(rows)
+        start_value, end_value = _inventory_forecast_bounds(result)
+        if start_value:
+            starts.append(str(start_value))
+        if end_value:
+            ends.append(str(end_value))
+
+        training_info = item.get("training_info") or {}
+        if training_info.get("train_start_date"):
+            train_starts.append(training_info["train_start_date"])
+        if training_info.get("train_end_date"):
+            train_ends.append(training_info["train_end_date"])
+        training_rows += int(training_info.get("training_rows") or 0)
+
+        model_meta = result.get("model_metadata") or {}
+        summary = result.get("summary") or {}
+        per_ingredient_metrics[ingredient_id] = model_meta
+        per_ingredient_quality[ingredient_id] = {
+            "training_rows": int(training_info.get("training_rows") or 0),
+            "train_start_date": training_info.get("train_start_date"),
+            "train_end_date": training_info.get("train_end_date"),
+            "data_days": model_meta.get("data_days"),
+            "zero_ratio": model_meta.get("zero_ratio"),
+            "outliers_nullified": model_meta.get("outliers_nullified"),
+            "stockout_days_nullified": model_meta.get("stockout_days_nullified"),
+        }
+        total_value = float(summary.get("total_predicted_usage") or summary.get("total_predicted_value") or 0.0)
+        total_predicted_usage += total_value
+        per_ingredient_summary.append({
+            "ingredient_id": ingredient_id,
+            "forecast_count": len(result.get("forecasts") or []),
+            "total_predicted_usage": round(total_value, 2),
+            "average_predicted_usage": summary.get("average_predicted_usage"),
+        })
+
+    if not all_rows:
+        return {"status": "failed", "message": "Forecast kosong, tidak ada result untuk disimpan.", "saved_results": 0}
+
+    first_result = forecast_items[0]["result"]
+    horizon = first_result.get("horizon") or {}
+    horizon_label = horizon.get("label") or payload.get("horizon_label") or "daily"
+    predict_start = min(starts) if starts else first_result.get("forecast_start_date")
+    predict_end = max(ends) if ends else first_result.get("forecast_end_date")
+    train_start = min(train_starts) if train_starts else datetime.now().date().isoformat()
+    train_end = max(train_ends) if train_ends else datetime.now().date().isoformat()
+    now = datetime.utcnow().isoformat() + "Z"
+
+    issue_summary = _inventory_issue_summary(errors)
+    skipped_ingredients = issue_summary["skipped_ingredients"]
+    failed_ingredients = issue_summary["failed_ingredients"]
+    skipped_ingredient_count = issue_summary["skipped_ingredient_count"]
+    failed_ingredient_count = issue_summary["failed_ingredient_count"]
+    unsuccessful_ingredient_count = issue_summary["unsuccessful_ingredient_count"]
+    requested_ingredient_count = len(requested_ingredient_ids)
+    partial_success = unsuccessful_ingredient_count > 0
+    metrics = {
+        "module": "inventory",
+        "ingredient_mode": "all_store_ingredients",
+        "ingredient_count": len(forecast_items),
+        "successful_ingredient_count": len(forecast_items),
+        "skipped_ingredient_count": skipped_ingredient_count,
+        "failed_ingredient_count": failed_ingredient_count,
+        "unsuccessful_ingredient_count": unsuccessful_ingredient_count,
+        "requested_ingredient_count": requested_ingredient_count,
+        "partial_success": partial_success,
+        "skipped_ingredients": skipped_ingredients,
+        "failed_ingredients": failed_ingredients,
+        "warnings": skipped_ingredients,
+        "errors": failed_ingredients,
+        "per_ingredient": per_ingredient_metrics,
+    }
+    summary = {
+        "module": "inventory",
+        "ingredient_mode": "all_store_ingredients",
+        "ingredient_count": len(forecast_items),
+        "successful_ingredient_count": len(forecast_items),
+        "skipped_ingredient_count": skipped_ingredient_count,
+        "failed_ingredient_count": failed_ingredient_count,
+        "unsuccessful_ingredient_count": unsuccessful_ingredient_count,
+        "requested_ingredient_count": requested_ingredient_count,
+        "partial_success": partial_success,
+        "skipped_ingredients": skipped_ingredients,
+        "failed_ingredients": failed_ingredients,
+        "warnings": skipped_ingredients,
+        "errors": failed_ingredients,
+        "horizon_label": horizon_label,
+        "forecast_start_date": predict_start,
+        "forecast_end_date": predict_end,
+        "start_date_source": first_result.get("start_date_source"),
+        "last_actual_date": first_result.get("last_actual_date"),
+        "business_cutoff_rule": first_result.get("business_cutoff_rule"),
+        "forecast_count": len(all_rows),
+        "total_predicted_usage": round(total_predicted_usage, 2),
+        "total_predicted_value": round(total_predicted_usage, 2),
+        "per_ingredient": per_ingredient_summary,
+    }
+    data_quality = {
+        "date_range": {"start": train_start, "end": train_end},
+        "training_rows": training_rows,
+        "model_training_data_points": training_rows,
+        "last_actual_date": first_result.get("last_actual_date") or train_end,
+        "per_ingredient": per_ingredient_quality,
+        "successful_ingredient_count": len(forecast_items),
+        "skipped_ingredient_count": skipped_ingredient_count,
+        "failed_ingredient_count": failed_ingredient_count,
+        "unsuccessful_ingredient_count": unsuccessful_ingredient_count,
+        "requested_ingredient_count": requested_ingredient_count,
+        "partial_success": partial_success,
+        "skipped_ingredients": skipped_ingredients,
+        "failed_ingredients": failed_ingredients,
+        "warnings": skipped_ingredients,
+        "errors": failed_ingredients,
+    }
+
+    run_payload = {
+        "store_id": payload["store_id"],
+        "forecast_type": "inventory",
+        "horizon_label": horizon_label,
+        "horizon_days": int(horizon.get("days") or len(all_rows) or payload.get("horizon_count") or 1),
+        "granularity": horizon_label,
+        "model_name": "prophet",
+        "model_version": "inventory-prophet-v2-calendar",
+        "feature_version": "v2",
+        "train_start_date": train_start,
+        "train_end_date": train_end,
+        "predict_start_date": predict_start,
+        "predict_end_date": predict_end,
+        "metrics": json.dumps(metrics),
+        "summary": json.dumps(summary),
+        "data_quality": json.dumps(data_quality),
+        "status": "success",
+        "started_at": now,
+        "finished_at": now,
+    }
+
+    url = f"{Config.BACKEND_API_URL}/save"
+    try:
+        resp = requests.post(
+            url,
+            json={"run": run_payload, "results": all_rows},
+            headers=Config.backend_headers(),
+            timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS,
+        )
+        resp.raise_for_status()
+        backend_response = resp.json()
+        run_id = backend_response.get("run_id") or backend_response.get("data", {}).get("id")
+        return {
+            "status": "saved",
+            "message": (
+                "Forecast inventory sebagian ingredient berhasil disimpan ke backend; sebagian ingredient dilewati karena belum punya histori/model."
+                if partial_success else
+                "Forecast inventory semua ingredient berhasil disimpan ke backend."
+            ),
+            "run_id": run_id,
+            "forecast_type": "inventory",
+            "horizon_label": horizon_label,
+            "horizon_days": run_payload["horizon_days"],
+            "predict_start_date": predict_start,
+            "predict_end_date": predict_end,
+            "ingredient_count": len(forecast_items),
+            "successful_ingredient_count": len(forecast_items),
+            "skipped_ingredient_count": skipped_ingredient_count,
+            "failed_ingredient_count": failed_ingredient_count,
+            "unsuccessful_ingredient_count": unsuccessful_ingredient_count,
+            "requested_ingredient_count": requested_ingredient_count,
+            "skipped_ingredients": skipped_ingredients,
+            "failed_ingredients": failed_ingredients,
+            "warnings": skipped_ingredients,
+            "errors": failed_ingredients,
+            "partial_success": partial_success,
+            "saved_results": len(all_rows),
+            "backend_status": "success",
+            "backend_response": backend_response,
+        }
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "message": f"Gagal simpan forecast inventory semua ingredient: {exc}",
+            "saved_results": 0,
+            "backend_status": "failed",
+        }
 
 
 # ============================================
@@ -1026,7 +1536,11 @@ def inventory_retrain():
 
 @app.route('/api/forecast/inventory/preview', methods=['POST'])
 def inventory_preview():
-    """Preview forecast inventory tanpa menyimpan ke database."""
+    """Preview forecast inventory tanpa menyimpan ke database.
+
+    Jika ingredient_id tidak dikirim, endpoint menjalankan forecast untuk semua
+    ingredient milik store_id tersebut.
+    """
     try:
         raw_payload = _get_request_json()
         payload = _parse_inventory_standard_body(raw_payload)
@@ -1037,25 +1551,28 @@ def inventory_preview():
             payload.get("start_date"),
         ))
 
-        forecaster = InventoryForecaster(payload["store_id"], payload["ingredient_id"], freq)
-        result = forecaster.predict(
-            periods=payload["horizon_count"],
-            freq=freq,
-            start_date=start_meta["start_date"],
-            start_date_source=start_meta.get("start_date_source"),
-            business_cutoff_rule=start_meta.get("business_cutoff_rule"),
-        )
-        if start_meta.get("latest_complete_day"):
-            result["last_actual_date"] = start_meta["latest_complete_day"].isoformat() if hasattr(start_meta["latest_complete_day"], "isoformat") else str(start_meta["latest_complete_day"])
+        forecast_items, errors, ingredient_ids = asyncio.run(_run_inventory_forecasts_from_payload(payload, freq, start_meta))
+        result = _aggregate_inventory_response(payload["store_id"], payload, forecast_items, errors=errors)
 
         response_payload = dict(payload)
         response_payload["start_date"] = start_meta["start_date"]
         response_payload["start_date_mode"] = start_meta.get("start_date_mode", "auto")
+        if not response_payload.get("ingredient_id"):
+            response_payload["ingredient_count"] = len(ingredient_ids)
+
+        status = "partial_success" if errors else "success"
+        status_code = 207 if errors else 200
+        message = (
+            f"Preview forecast inventory {payload['horizon_label']} berhasil untuk {len(forecast_items)} dari {len(ingredient_ids)} ingredient."
+            if not payload.get("ingredient_id")
+            else f"Preview forecast inventory {payload['horizon_label']} berhasil."
+        )
         return jsonify(_standard_inventory_response(
             result,
             response_payload,
-            f"Preview forecast inventory {payload['horizon_label']} berhasil.",
-        )), 200
+            message,
+            status=status,
+        )), status_code
     except FileNotFoundError:
         return jsonify({"detail": "Model inventory belum di-training"}), 404
     except ValueError as e:
@@ -1067,10 +1584,17 @@ def inventory_preview():
 
 @app.route('/api/forecast/inventory/save', methods=['POST'])
 def inventory_save():
-    """Generate + simpan forecast inventory ke database."""
+    """Generate + simpan forecast inventory ke database.
+
+    Jika ingredient_id tidak dikirim, endpoint menjalankan semua ingredient milik
+    store_id. Default save all menyimpan ingredient yang berhasil dan melaporkan
+    ingredient yang gagal sebagai skipped/failed. Kirim allow_partial=false bila
+    ingin mode strict all-or-nothing.
+    """
     try:
         raw_payload = _get_request_json()
         payload = _parse_inventory_standard_body(raw_payload)
+        allow_partial = bool(raw_payload.get("allow_partial", not bool(payload.get("ingredient_id"))))
         freq = _map_horizon_to_freq(payload["horizon_label"])
         start_meta = asyncio.run(_resolve_inventory_start_date_meta(
             payload["store_id"],
@@ -1078,25 +1602,44 @@ def inventory_save():
             payload.get("start_date"),
         ))
 
-        forecaster = InventoryForecaster(payload["store_id"], payload["ingredient_id"], freq)
-        result = forecaster.predict(
-            periods=payload["horizon_count"],
-            freq=freq,
-            start_date=start_meta["start_date"],
-            start_date_source=start_meta.get("start_date_source"),
-            business_cutoff_rule=start_meta.get("business_cutoff_rule"),
-        )
-        if start_meta.get("latest_complete_day"):
-            result["last_actual_date"] = start_meta["latest_complete_day"].isoformat() if hasattr(start_meta["latest_complete_day"], "isoformat") else str(start_meta["latest_complete_day"])
-        save_result = forecaster.save_all_forecasts(
-            periods=payload["horizon_count"],
-            freq=freq,
-            start_date=start_meta["start_date"],
-            forecast_result=result,
-            start_date_source=start_meta.get("start_date_source"),
-            business_cutoff_rule=start_meta.get("business_cutoff_rule"),
-            last_actual_date=start_meta.get("latest_complete_day"),
-        )
+        forecast_items, errors, ingredient_ids = asyncio.run(_run_inventory_forecasts_from_payload(payload, freq, start_meta))
+
+        if payload.get("ingredient_id"):
+            forecaster = forecast_items[0]["forecaster"]
+            result = forecast_items[0]["result"]
+            save_result = forecaster.save_all_forecasts(
+                periods=payload["horizon_count"],
+                freq=freq,
+                start_date=start_meta["start_date"],
+                forecast_result=result,
+                start_date_source=start_meta.get("start_date_source"),
+                business_cutoff_rule=start_meta.get("business_cutoff_rule"),
+                last_actual_date=start_meta.get("latest_complete_day"),
+            )
+        else:
+            if errors and not allow_partial:
+                issue_summary = _inventory_issue_summary(errors)
+                return jsonify({
+                    "detail": "Sebagian ingredient tidak bisa diprediksi; forecast inventory semua ingredient tidak disimpan karena allow_partial=false.",
+                    "skipped_ingredients": issue_summary["skipped_ingredients"],
+                    "failed_ingredients": issue_summary["failed_ingredients"],
+                    "warnings": issue_summary["warnings"],
+                    "errors": issue_summary["errors"],
+                    "successful_ingredient_count": len(forecast_items),
+                    "skipped_ingredient_count": issue_summary["skipped_ingredient_count"],
+                    "failed_ingredient_count": issue_summary["failed_ingredient_count"],
+                    "unsuccessful_ingredient_count": issue_summary["unsuccessful_ingredient_count"],
+                    "requested_ingredient_count": len(ingredient_ids),
+                    "hint": "Tambahkan histori stok lalu retrain, atau pakai allow_partial=true.",
+                }), 400
+            result = _aggregate_inventory_response(payload["store_id"], payload, forecast_items, errors=errors)
+            save_result = _save_inventory_all_forecasts_atomically(
+                payload,
+                forecast_items,
+                start_meta,
+                errors=errors,
+                requested_ingredient_ids=ingredient_ids,
+            )
 
         if save_result.get("status") != "saved":
             return jsonify({"detail": save_result.get("message", "Gagal menyimpan forecast inventory"), "save_result": save_result}), 500
@@ -1104,12 +1647,23 @@ def inventory_save():
         response_payload = dict(payload)
         response_payload["start_date"] = start_meta["start_date"]
         response_payload["start_date_mode"] = start_meta.get("start_date_mode", "auto")
+        if not response_payload.get("ingredient_id"):
+            response_payload["ingredient_count"] = len(ingredient_ids)
+
+        status = "partial_success" if errors else "success"
+        status_code = 201
+        message = (
+            f"Forecast inventory {payload['horizon_label']} berhasil disimpan untuk {len(forecast_items)} dari {len(ingredient_ids)} ingredient."
+            if not payload.get("ingredient_id")
+            else f"Forecast inventory {payload['horizon_label']} berhasil disimpan ke database."
+        )
         return jsonify(_standard_inventory_response(
             result,
             response_payload,
-            f"Forecast inventory {payload['horizon_label']} berhasil disimpan ke database.",
+            message,
             save_result=public_save_result(save_result),
-        )), 201
+            status=status,
+        )), status_code
     except FileNotFoundError:
         return jsonify({"detail": "Model inventory belum di-training"}), 404
     except ValueError as e:

@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
 """Smoke-test standar forecast endpoints.
 
-Contoh:
+Contoh single ingredient:
 python scripts/test_forecast_standard_endpoints.py \
   --base-url http://localhost:5000 \
   --service-key "$INTERNAL_SERVICE_KEY" \
   --store-id b4e2f559-9615-4263-84fe-9ee97780748f \
   --ingredient-id b98b5042-30b5-4dc7-80ce-7dbb4797c4c7
+
+Contoh semua ingredient dalam store:
+python scripts/test_forecast_standard_endpoints.py \
+  --base-url http://localhost:5000 \
+  --service-key "$INTERNAL_SERVICE_KEY" \
+  --store-id b4e2f559-9615-4263-84fe-9ee97780748f
 """
 
 from __future__ import annotations
@@ -39,9 +45,7 @@ def build_payload(module: str, store_id: str, ingredient_id: Optional[str], hori
         "horizon_label": horizon,
         "horizon_count": 1,
     }
-    if module == "inventory":
-        if not ingredient_id:
-            raise ValueError("--ingredient-id wajib untuk module inventory")
+    if module == "inventory" and ingredient_id:
         payload["ingredient_id"] = ingredient_id
     return payload
 
@@ -57,7 +61,7 @@ def check_envelope(data: Dict[str, Any], *, expect_save: bool) -> Optional[str]:
     for field in ("status", "message", "request", "data"):
         if field not in data:
             return f"missing response field: {field}"
-    if data.get("status") != "success":
+    if data.get("status") not in ("success", "partial_success"):
         return f"unexpected status: {data.get('status')}"
     if expect_save and "save_result" not in data:
         return "missing save_result"
@@ -81,8 +85,11 @@ def run_tests(args: argparse.Namespace) -> List[TestResult]:
                         body = {"raw": response.text}
 
                     error = None
-                    if response.status_code != expected_code:
-                        error = f"expected {expected_code}, got {response.status_code}: {body}"
+                    expected_codes = {expected_code}
+                    if module == "inventory":
+                        expected_codes.add(207)
+                    if response.status_code not in expected_codes:
+                        error = f"expected one of {sorted(expected_codes)}, got {response.status_code}: {body}"
                     elif isinstance(body, dict):
                         error = check_envelope(body, expect_save=expect_save)
                     else:
