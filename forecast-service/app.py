@@ -31,7 +31,10 @@ from modules.visitors.forecaster import golang_client
 
 # Import modul inventory
 from modules.inventory.forecaster import InventoryForecaster, InventoryModelNotAvailableError
-from modules.inventory.trainer import train_all_inventory_models, training_tasks
+from modules.inventory.trainer import (
+    get_training_task,
+    start_inventory_retrain_task,
+)
 
 # Import modul Sales
 from modules.sales.forecaster import sales_forecast_service
@@ -1483,56 +1486,65 @@ def sales_retrain():
 # ============================================
 # ROUTE INVENTORY
 # ============================================
-@app.route('/api/inventory/train/start', methods=['POST'])
-def start_training():
-    """Memulai training async dan mengembalikan task_id."""
-    task_id = str(uuid.uuid4())
-    with threading.Lock():
-        training_tasks[task_id] = {
-            "status": "STARTING",
-            "total": 0,
-            "processed": 0,
-            "current_pair": None,
-            "message": ""
-        }
-    thread = threading.Thread(target=train_all_inventory_models, args=(task_id,))
-    thread.start()
-    return jsonify({
-        "task_id": task_id,
-        "message": "Training dimulai. Pantau progress di /api/inventory/train/status/<task_id>"
-    })
-
-
-@app.route('/api/inventory/train/status/<task_id>', methods=['GET'])
-def get_training_status(task_id):
-    """Mengembalikan status training berdasarkan task_id."""
-    task = training_tasks.get(task_id)
-    if not task:
-        return jsonify({"error": "Task tidak ditemukan"}), 404
-    return jsonify(task)
-
 @app.route('/api/forecast/inventory/retrain', methods=['POST'])
 def inventory_retrain():
+    """Start async inventory retrain for one store.
+
+    Inventory training can take several minutes, so this endpoint returns a
+    task_id immediately. Check progress via
+    GET /api/forecast/inventory/retrain/status/<task_id>.
+    """
     req = request.get_json(silent=True) or {}
     if 'store_id' not in req and 'm_store_id' not in req:
         return jsonify({"detail": "store_id wajib diisi"}), 400
 
     try:
-        from modules.inventory.trainer import retrain_inventory_store
-
         store_id = _validate_uuid(_get_store_id(req), "store_id")
         force = req.get('force', False)
-        result = retrain_inventory_store(store_id=store_id, force=bool(force))
-        return jsonify(standard_retrain_response(
-            "inventory",
-            result,
-            {"module": "inventory", "store_id": store_id, "force": bool(force)},
-        )), 200
+        task_id, task, created = start_inventory_retrain_task(store_id=store_id, force=bool(force))
+        status_code = 202 if created else 200
+        message = (
+            "Inventory retrain job started."
+            if created
+            else "Inventory retrain masih berjalan untuk store ini; task lama dikembalikan."
+        )
+        return jsonify({
+            "status": task.get("status", "queued"),
+            "message": message,
+            "task_id": task_id,
+            "request": {"module": "inventory", "store_id": store_id, "force": bool(force)},
+            "data": task,
+        }), status_code
     except ValueError as e:
         return jsonify({"detail": str(e)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({"detail": f"Retrain gagal: {str(e)}"}), 500
+
+
+@app.route('/api/forecast/inventory/retrain/status/<task_id>', methods=['GET'])
+def inventory_retrain_status(task_id):
+    """Return inventory retrain task status."""
+    try:
+        uuid.UUID(str(task_id))
+    except ValueError:
+        return jsonify({"detail": "task_id harus UUID valid"}), 400
+
+    task = get_training_task(task_id)
+    if not task or task.get("job_type") != "inventory_retrain":
+        return jsonify({"detail": "Task inventory retrain tidak ditemukan"}), 404
+
+    return jsonify({
+        "status": task.get("status", "unknown"),
+        "message": task.get("message", ""),
+        "task_id": task_id,
+        "request": {
+            "module": "inventory",
+            "store_id": task.get("store_id"),
+            "force": bool(task.get("force", False)),
+        },
+        "data": task,
+    }), 200
 
 @app.route('/api/forecast/inventory/preview', methods=['POST'])
 def inventory_preview():

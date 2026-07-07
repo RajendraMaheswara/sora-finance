@@ -67,16 +67,15 @@ class ForecastResults {
 
   bool get isEmpty => daily.isEmpty && weekly.isEmpty && monthly.isEmpty;
 
-  /// Mingguan efektif: pakai run mingguan asli; bila tidak ada, agregasi run
-  /// harian menjadi minggu-minggu yang DIBATASI pada bulan pertama saja
-  /// (supaya tampilan mingguan tidak pernah melebihi 1 bulan).
-  List<ForecastPoint> get effectiveWeekly =>
-      weekly.isNotEmpty ? weekly : weeksFromDaily(daily);
+  /// Mingguan native dari run `horizon_label=weekly`.
+  /// Tidak ada fallback dari daily agar tab mingguan tidak menampilkan data
+  /// harian yang diagregasi seolah-olah run weekly asli.
+  List<ForecastPoint> get effectiveWeekly => weekly;
 
-  /// Bulanan efektif: pakai run bulanan asli; bila tidak ada, agregasi run
-  /// harian per bulan kalender.
-  List<ForecastPoint> get effectiveMonthly =>
-      monthly.isNotEmpty ? monthly : monthsFromDaily(daily);
+  /// Bulanan native dari run `horizon_label=monthly`.
+  /// Tidak ada fallback dari daily agar tab bulanan tidak menampilkan data
+  /// harian yang diagregasi seolah-olah run monthly asli.
+  List<ForecastPoint> get effectiveMonthly => monthly;
 
   // --------------------------------------------------------------------------
   // PARSING
@@ -129,6 +128,60 @@ class ForecastResults {
     );
   }
 
+  /// Bangun seri dari response latest backend:
+  /// {
+  ///   "run": {"horizon_label": "daily|weekly|monthly", ...},
+  ///   "results": [{"target_date": "...", "predicted_value": ...}]
+  /// }
+  ///
+  /// Berbeda dari [fromRows], fungsi ini tidak menebak granularitas dari jarak
+  /// tanggal. Horizon diambil langsung dari `run.horizon_label`, sehingga daily
+  /// tidak pernah berubah menjadi weekly/monthly di FE.
+  factory ForecastResults.fromLatestResponse(Map<String, dynamic>? response) {
+    if (response == null) return empty;
+    final run = response['run'];
+    final runMap = run is Map ? Map<String, dynamic>.from(run) : const <String, dynamic>{};
+    final horizon = (runMap['horizon_label'] as String? ?? '')
+        .trim()
+        .toLowerCase();
+    final points = latestResultsRows(response).map(_pointFromRow).whereType<ForecastPoint>().toList()
+      ..sort((a, b) => a.date.compareTo(b.date));
+    if (points.isEmpty) return empty;
+
+    return ForecastResults(
+      daily: horizon == 'daily' ? points : const [],
+      weekly: horizon == 'weekly' ? points : const [],
+      monthly: horizon == 'monthly' ? points : const [],
+    );
+  }
+
+  /// Gabungkan 3 response latest yang sudah diminta eksplisit per horizon.
+  factory ForecastResults.fromLatestResponses({
+    Map<String, dynamic>? daily,
+    Map<String, dynamic>? weekly,
+    Map<String, dynamic>? monthly,
+  }) {
+    return ForecastResults(
+      daily: ForecastResults.fromLatestResponse(daily).daily,
+      weekly: ForecastResults.fromLatestResponse(weekly).weekly,
+      monthly: ForecastResults.fromLatestResponse(monthly).monthly,
+    );
+  }
+
+  static ForecastPoint? _pointFromRow(Map<String, dynamic> r) {
+    final date = parseDate(r['target_date']);
+    if (date == null) return null;
+    return ForecastPoint(
+      date: date,
+      value: (r['predicted_value'] as num?)?.toDouble() ?? 0.0,
+      lower: (r['lower_bound'] as num?)?.toDouble(),
+      upper: (r['upper_bound'] as num?)?.toDouble(),
+      confidence: (r['confidence_level'] as num?)?.toInt(),
+      itemId: r['item_id'] as String?,
+      itemType: r['item_type'] as String?,
+    );
+  }
+
   /// Tebak granularitas run dari median jarak antar tanggal (dalam hari).
   static ForecastGranularity _classify(List<ForecastPoint> pts) {
     // Run 1 titik tak bisa diukur jaraknya. Run forecast bulanan memang sering
@@ -151,20 +204,23 @@ class ForecastResults {
   // --------------------------------------------------------------------------
 
   /// Pecah titik harian jadi minggu 7-harian, DIBATASI pada bulan pertama.
+  /// Minggu terakhir yang belum genap 7 hari (sisa horizon) dibuang supaya
+  /// tidak tampil sebagai bar yang tiba-tiba anjlok karena cuma sebagian hari.
   static List<ForecastPoint> weeksFromDaily(List<ForecastPoint> daily) {
     if (daily.isEmpty) return const [];
     final firstMonth = _ym(daily.first.date);
     final monthDays =
         daily.where((p) => _ym(p.date) == firstMonth).toList();
     final out = <ForecastPoint>[];
-    for (var i = 0; i < monthDays.length; i += 7) {
-      out.add(_sumChunk(
-          monthDays.sublist(i, (i + 7).clamp(0, monthDays.length))));
+    for (var i = 0; i + 7 <= monthDays.length; i += 7) {
+      out.add(_sumChunk(monthDays.sublist(i, i + 7)));
     }
     return out;
   }
 
-  /// Kelompokkan titik harian per bulan kalender.
+  /// Kelompokkan titik harian per bulan kalender. Bulan yang belum lengkap
+  /// (mis. bulan pertama/terakhir horizon yang cuma sebagian hari) dibuang
+  /// supaya tidak tampil sebagai bar yang tiba-tiba anjlok.
   static List<ForecastPoint> monthsFromDaily(List<ForecastPoint> daily) {
     if (daily.isEmpty) return const [];
     final byMonth = <String, List<ForecastPoint>>{};
@@ -172,7 +228,10 @@ class ForecastResults {
       byMonth.putIfAbsent(_ym(p.date), () => []).add(p);
     }
     final keys = byMonth.keys.toList()..sort();
-    return keys.map((k) => _sumChunk(byMonth[k]!)).toList();
+    return keys
+        .where((k) => byMonth[k]!.length >= daysInMonth(k))
+        .map((k) => _sumChunk(byMonth[k]!))
+        .toList();
   }
 
   static ForecastPoint _sumChunk(List<ForecastPoint> chunk) {
@@ -199,6 +258,15 @@ class ForecastResults {
 // ============================================================================
 // HELPER TOP-LEVEL
 // ============================================================================
+
+/// Jumlah hari dalam bulan kalender `key` berformat "YYYY-MM".
+int daysInMonth(String key) {
+  final parts = key.split('-');
+  final y = int.tryParse(parts[0]) ?? 2000;
+  final m = parts.length > 1 ? int.tryParse(parts[1]) ?? 1 : 1;
+  // Tanggal 0 bulan berikutnya = hari terakhir bulan `m`.
+  return DateTime(y, m + 1, 0).day;
+}
 
 /// Parse `target_date` yang bisa berupa RFC3339 ("2026-06-24T00:00:00Z")
 /// atau tanggal polos ("2026-06-24").
@@ -234,6 +302,18 @@ List<Map<String, dynamic>> filterResultsByType(
     if (t.isEmpty) return includeNullType;
     return keywords.any((k) => t.contains(k));
   }).toList();
+}
+
+
+/// Ambil array `results` dari response latest forecast.
+List<Map<String, dynamic>> latestResultsRows(Map<String, dynamic>? response) {
+  if (response == null) return const [];
+  final results = response['results'];
+  if (results is! List) return const [];
+  return results
+      .whereType<Map>()
+      .map((e) => Map<String, dynamic>.from(e))
+      .toList();
 }
 
 const salesItemTypes = {'sales', 'revenue', 'penjualan', 'omzet', 'omset'};

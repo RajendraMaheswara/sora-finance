@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Sora Forecast Service API
-  version: "2.3"
+  version: "2.4"
   description: Forecast-service endpoints after /run removal. Use /save for generate + save.
 servers:
   - url: http://localhost:5000
@@ -74,6 +74,51 @@ components:
         force:
           type: boolean
           default: false
+    InventoryRetrainJob:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [queued, running, success, partial_success, failed]
+        message:
+          type: string
+        task_id:
+          type: string
+          format: uuid
+        request:
+          type: object
+        data:
+          type: object
+          properties:
+            task_id:
+              type: string
+              format: uuid
+            job_type:
+              type: string
+              example: inventory_retrain
+            forecast_type:
+              type: string
+              example: inventory
+            store_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [queued, running, success, partial_success, failed]
+            progress:
+              type: object
+              properties:
+                total: {type: integer, example: 3}
+                processed: {type: integer, example: 1}
+                failed: {type: integer, example: 0}
+                percentage: {type: number, example: 33.33}
+            current_horizon:
+              type: string
+              nullable: true
+              example: weekly
+            result:
+              type: object
+              nullable: true
 paths:
   /health:
     get:
@@ -174,7 +219,8 @@ paths:
         '400': {description: Some ingredients failed and allow_partial=false, or no ingredient can be forecasted.}
   /api/forecast/inventory/retrain:
     post:
-      summary: Retrain inventory model for one store across daily, weekly, monthly
+      summary: Start async inventory retrain job for one store across daily, weekly, monthly
+      description: Inventory retrain can take several minutes. This endpoint returns task_id immediately; use the status endpoint to monitor progress.
       requestBody:
         required: true
         content:
@@ -182,4 +228,34 @@ paths:
             schema:
               $ref: '#/components/schemas/RetrainRequest'
       responses:
-        '200': {description: OK}
+        '202':
+          description: Job started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryRetrainJob'
+        '200':
+          description: Existing queued/running job for the same store returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryRetrainJob'
+  /api/forecast/inventory/retrain/status/{task_id}:
+    get:
+      summary: Get async inventory retrain job status
+      parameters:
+        - in: path
+          name: task_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryRetrainJob'
+        '400': {description: Invalid task_id}
+        '404': {description: Task not found}

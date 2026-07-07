@@ -93,10 +93,18 @@ class SalesForecastModel {
   // LOADER: HANYA hasil model nyata dari forecast_results
   // ================================================================
   static Future<SalesForecastModel> loadFromApi(
-    Future<List<dynamic>> Function(String) fetchData,
+    Future<Map<String, dynamic>?> Function(String) fetchMap,
   ) async {
-    final results = await fetchData('forecast-results');
-    return SalesForecastModel.fromResults(results);
+    final maps = await Future.wait([
+      fetchMap('forecast/latest?forecast_type=sales&horizon_label=daily'),
+      fetchMap('forecast/latest?forecast_type=sales&horizon_label=weekly'),
+      fetchMap('forecast/latest?forecast_type=sales&horizon_label=monthly'),
+    ]);
+    return SalesForecastModel.fromLatestResponses(
+      daily: maps[0],
+      weekly: maps[1],
+      monthly: maps[2],
+    );
   }
 
   /// Bangun model hanya dari hasil model nyata di forecast_results
@@ -107,6 +115,20 @@ class SalesForecastModel {
     final rows = filterResultsByType(results, salesItemTypes);
     if (rows.isEmpty) return _empty;
     final fr = ForecastResults.fromRows(rows);
+    if (fr.isEmpty) return _empty;
+    return _fromForecast(fr);
+  }
+
+  factory SalesForecastModel.fromLatestResponses({
+    Map<String, dynamic>? daily,
+    Map<String, dynamic>? weekly,
+    Map<String, dynamic>? monthly,
+  }) {
+    final fr = ForecastResults.fromLatestResponses(
+      daily: daily,
+      weekly: weekly,
+      monthly: monthly,
+    );
     if (fr.isEmpty) return _empty;
     return _fromForecast(fr);
   }

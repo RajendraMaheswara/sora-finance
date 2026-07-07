@@ -16,10 +16,9 @@
 - Format response disamakan dengan modul visitor/sales:  
   `success`, `data` (metrics, forecast_summary, prediction_analysis, model_confidence, daily_forecast)
 - Confidence score dihitung dari MAPE (100 - MAPE), dengan level HIGH/MEDIUM/LOW
-- Training dijalankan secara **asinkron** melalui endpoint `/api/inventory/train/start`
-- Monitoring progress training via `/api/inventory/train/status/<task_id>`
+- Training inventory store dijalankan secara **asinkron** melalui endpoint `POST /api/forecast/inventory/retrain`
+- Monitoring progress training via `GET /api/forecast/inventory/retrain/status/<task_id>`
 - Metrik evaluasi (MAE, RMSE, MAPE) disimpan otomatis dalam file JSON setelah training
-- Backward compatibility: endpoint `/api/inventory/train` tetap bisa dipakai (langsung async)
 - **Uji coba endpoint forecast berhasil** mengembalikan struktur lengkap (daily_forecast, summary, analysis, confidence)
 - Response sudah sesuai untuk konsumsi dashboard; field `metrics` dan `confidence` akan terisi setelah retrain dengan kode terbaru
 
@@ -189,29 +188,26 @@ python app.py
 
 Service tersedia di `http://localhost:5000`.
 
-### 3. Training Model (Async)
-Memulai training semua pasangan toko-bahan secara background:
+### 3. Training Model Inventory (Async)
+Memulai retrain inventory untuk satu store secara background:
 
 ```bash
-curl -X POST http://localhost:5000/api/inventory/train/start
+curl -X POST http://localhost:5000/api/forecast/inventory/retrain \
+  -H "Content-Type: application/json" \
+  -H "X-Service-Key: $INTERNAL_SERVICE_KEY" \
+  -d '{"store_id":"<store_id>","force":true}'
 ```
 
-Response:
-
-```json
-{
-  "task_id": "uuid-string",
-  "message": "Training dimulai. Pantau progress di /api/inventory/train/status/<task_id>"
-}
-```
+Response awal mengembalikan `task_id` dengan status `queued` atau `running`.
 
 Pantau progress:
 
 ```bash
-curl http://localhost:5000/api/inventory/train/status/<task_id>
+curl http://localhost:5000/api/forecast/inventory/retrain/status/<task_id> \
+  -H "X-Service-Key: $INTERNAL_SERVICE_KEY"
 ```
 
-Status: STARTING -> RUNNING -> DONE (atau ERROR).
+Status: `queued` -> `running` -> `success` / `partial_success` / `failed`.
 
 ### 4. Forecasting
 Gunakan endpoint `POST /api/forecast/inventory/preview` (atau `/save` untuk generate sekaligus menyimpan ke DB) dengan body JSON.
@@ -364,7 +360,7 @@ Pastikan virtual environment aktif (`venv\Scriptsctivate`), lalu jalankan `pip 
 ### Masalah Umum (Semua OS)
 
 **FileNotFoundError: Model not found...**
-Training dulu: `curl -X POST http://localhost:5000/api/inventory/train/start`
+Training dulu: `curl -X POST http://localhost:5000/api/forecast/inventory/retrain -H "X-Service-Key: $INTERNAL_SERVICE_KEY" -H "Content-Type: application/json" -d '{"store_id":"<store_id>","force":true}'`
 
 **ConnectionError saat forecast**
 Pastikan backend Go berjalan dan file `.env` sudah benar.

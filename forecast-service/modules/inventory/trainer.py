@@ -3,6 +3,8 @@
 import json
 import os
 import threading
+import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from statistics import mean
@@ -90,10 +92,52 @@ def _no_history_metadata(ingredient_id: str) -> dict:
     }
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _task_progress(processed: int, total: int, failed: int = 0) -> dict:
+    percentage = round((processed / total) * 100, 2) if total else 0
+    return {
+        "total": total,
+        "processed": processed,
+        "failed": failed,
+        "percentage": percentage,
+    }
+
+
 def _update_task(task_id: str, **kwargs):
     with lock:
         if task_id in training_tasks:
+            kwargs.setdefault("updated_at", _utc_now_iso())
             training_tasks[task_id].update(kwargs)
+
+
+def get_training_task(task_id: str) -> dict | None:
+    """Return a shallow copy of a retrain/training task for API responses."""
+    with lock:
+        task = training_tasks.get(task_id)
+        return dict(task) if isinstance(task, dict) else None
+
+
+def _find_running_inventory_retrain_task(store_id: str) -> tuple[str, dict] | tuple[None, None]:
+    with lock:
+        for task_id, task in training_tasks.items():
+            if not isinstance(task, dict):
+                continue
+            if task.get("job_type") != "inventory_retrain":
+                continue
+            if str(task.get("store_id")) != str(store_id):
+                continue
+            if task.get("status") in ("queued", "running"):
+                return task_id, dict(task)
+    return None, None
+
+
+def _public_task(task_id: str, task: dict) -> dict:
+    payload = dict(task or {})
+    payload.setdefault("task_id", task_id)
+    return payload
 
 
 # =========================================================================
@@ -332,19 +376,41 @@ def _summarize_inventory_horizon_metadata(store_id: str, horizon_label: str) -> 
     }
 
 
-def retrain_inventory_store(store_id: str, force: bool = False) -> dict:
+def retrain_inventory_store(store_id: str, force: bool = False, task_id: str | None = None) -> dict:
     """Retrain inventory models for one store across daily, weekly, monthly horizons.
 
     The response is shaped to be consistent with visitors/sales retrain while
     preserving inventory's per-horizon/per-ingredient nature.
     """
     horizons = [('D', 'daily'), ('W', 'weekly'), ('M', 'monthly')]
+    total_horizons = len(horizons)
+    if task_id:
+        _update_task(
+            task_id,
+            status="running",
+            total=total_horizons,
+            processed=0,
+            failed=0,
+            progress=_task_progress(0, total_horizons, 0),
+            current_horizon=None,
+            message="Retrain inventory dimulai.",
+        )
     horizon_results = []
     success_count = 0
     trained_at = datetime.now(timezone.utc).isoformat()
 
-    for freq, label in horizons:
-        ok, message = _train_store_for_horizon(store_id, freq, task_id=None)
+    for index, (freq, label) in enumerate(horizons, start=1):
+        if task_id:
+            _update_task(
+                task_id,
+                status="running",
+                current_horizon=label,
+                current_pair=f"{store_id} ({label})",
+                message=f"Training inventory {label} sedang berjalan.",
+                progress=_task_progress(index - 1, total_horizons, total_horizons - success_count - (total_horizons - index + 1)),
+            )
+
+        ok, message = _train_store_for_horizon(store_id, freq, task_id=task_id)
         summary = _summarize_inventory_horizon_metadata(store_id, label) if ok else {
             "trained_ingredient_count": 0,
             "skipped_ingredient_count": 0,
@@ -367,7 +433,20 @@ def retrain_inventory_store(store_id: str, force: bool = False) -> dict:
         if ok:
             success_count += 1
 
-    total_horizons = len(horizons)
+        if task_id:
+            processed_count = index
+            failed_so_far = processed_count - success_count
+            _update_task(
+                task_id,
+                status="running",
+                processed=processed_count,
+                failed=failed_so_far,
+                current_horizon=label,
+                current_pair=f"{store_id} ({label})",
+                message=f"Training inventory {label} {'berhasil' if ok else 'gagal'}.",
+                progress=_task_progress(processed_count, total_horizons, failed_so_far),
+            )
+
     failed_count = total_horizons - success_count
     status = "success" if success_count == total_horizons else "partial_success" if success_count else "failed"
 
@@ -408,3 +487,92 @@ def retrain_inventory_store(store_id: str, force: bool = False) -> dict:
         },
         "horizons": horizon_results,
     }
+
+
+
+def _run_inventory_retrain_task(task_id: str, store_id: str, force: bool = False):
+    """Background worker for long-running inventory retrain jobs."""
+    try:
+        _update_task(
+            task_id,
+            status="running",
+            started_at=_utc_now_iso(),
+            message="Inventory retrain job sedang berjalan.",
+        )
+        result = retrain_inventory_store(store_id=store_id, force=force, task_id=task_id)
+        final_status = result.get("status") or "success"
+        if final_status not in ("success", "partial_success", "failed"):
+            final_status = "success"
+        _update_task(
+            task_id,
+            status=final_status,
+            finished_at=_utc_now_iso(),
+            current_horizon=None,
+            current_pair=None,
+            message=result.get("message") or "Inventory retrain selesai.",
+            result=result,
+            progress=_task_progress(
+                result.get("summary", {}).get("requested_horizon_count", 3),
+                result.get("summary", {}).get("requested_horizon_count", 3),
+                result.get("summary", {}).get("failed_horizon_count", 0),
+            ),
+        )
+    except Exception as exc:
+        traceback.print_exc()
+        _update_task(
+            task_id,
+            status="failed",
+            finished_at=_utc_now_iso(),
+            message="Inventory retrain gagal.",
+            error=str(exc),
+        )
+
+
+def start_inventory_retrain_task(store_id: str, force: bool = False) -> tuple[str, dict, bool]:
+    """Start one async inventory retrain job per store.
+
+    Returns (task_id, task_snapshot, created). If the same store already has a
+    queued/running job, created is False and the existing task is returned.
+    """
+    now = _utc_now_iso()
+    with lock:
+        for existing_task_id, existing_task in training_tasks.items():
+            if not isinstance(existing_task, dict):
+                continue
+            if existing_task.get("job_type") != "inventory_retrain":
+                continue
+            if str(existing_task.get("store_id")) != str(store_id):
+                continue
+            if existing_task.get("status") in ("queued", "running"):
+                return existing_task_id, _public_task(existing_task_id, existing_task), False
+
+        task_id = str(uuid.uuid4())
+        task = {
+            "task_id": task_id,
+            "job_type": "inventory_retrain",
+            "forecast_type": "inventory",
+            "store_id": store_id,
+            "force": bool(force),
+            "status": "queued",
+            "total": 3,
+            "processed": 0,
+            "failed": 0,
+            "progress": _task_progress(0, 3, 0),
+            "current_horizon": None,
+            "current_pair": None,
+            "message": "Inventory retrain job masuk antrean.",
+            "created_at": now,
+            "updated_at": now,
+            "started_at": None,
+            "finished_at": None,
+        }
+        training_tasks[task_id] = task
+        task_snapshot = _public_task(task_id, task)
+
+    thread = threading.Thread(
+        target=_run_inventory_retrain_task,
+        args=(task_id, store_id, bool(force)),
+        daemon=True,
+    )
+    thread.start()
+    return task_id, task_snapshot, True

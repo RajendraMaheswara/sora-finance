@@ -38,6 +38,23 @@ class ApiService {
     throw Exception('Failed to load data');
   }
 
+  /// GET endpoint yang mengembalikan objek JSON (mis. forecast/visitors/latest).
+  /// Kembalikan null bila gagal / bukan 200, supaya pemanggil bisa fallback.
+  Future<Map<String, dynamic>?> fetchMap(String endpoint) async {
+    try {
+      final response = await http.get(
+        Uri.parse('${ApiConstants.baseUrl}/$endpoint'),
+        headers: await _headers(),
+      );
+      if (response.statusCode != 200) return null;
+      final decoded = jsonDecode(response.body);
+      if (decoded is Map) return Map<String, dynamic>.from(decoded);
+      return null;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<dynamic> fetchDetail(
     String endpoint,
     String id,

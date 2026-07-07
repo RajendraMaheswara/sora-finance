@@ -70,6 +70,23 @@ DateTime? _parseDay(String s) {
   return DateTime.tryParse(t);
 }
 
+/// true bila tanggal [d] sudah lewat sepenuhnya (strictly sebelum hari ini) —
+/// dipakai untuk memastikan bucket minggu/bulan terakhir sudah benar-benar
+/// berakhir sebelum ditampilkan sebagai data real.
+bool _isBeforeToday(DateTime d) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  return DateTime(d.year, d.month, d.day).isBefore(today);
+}
+
+/// Hari terakhir bulan kalender `key` berformat "YYYY-MM-...".
+DateTime _lastDayOfMonth(String key) {
+  final p = key.split('-');
+  final y = int.tryParse(p[0]) ?? 2000;
+  final m = p.length > 1 ? int.tryParse(p[1]) ?? 1 : 1;
+  return DateTime(y, m + 1, 0);
+}
+
 // ============================================================================
 // HISTORY HELPER — bangun titik DATA REAL dari sales_daily_summaries
 // ============================================================================
@@ -125,8 +142,19 @@ List<ForecastBar> buildHistoryBars({
             '${ws.day.toString().padLeft(2, '0')}';
         byWeek.putIfAbsent(key, () => []).add(r);
       }
-      final keys = byWeek.keys.toList()..sort();
-      final last = keys.length > 8 ? keys.sublist(keys.length - 8) : keys;
+      var weekKeys = byWeek.keys.toList()..sort();
+      // Buang minggu TERAKHIR bila belum genap berakhir (mis. hari ini masih
+      // di tengah minggu itu) — supaya tidak tampil sebagai penurunan tiba-
+      // tiba karena baru sebagian hari yang tercatat.
+      if (weekKeys.isNotEmpty) {
+        final weekEnd =
+            DateTime.parse(weekKeys.last).add(const Duration(days: 6));
+        if (!_isBeforeToday(weekEnd)) {
+          weekKeys = weekKeys.sublist(0, weekKeys.length - 1);
+        }
+      }
+      final last =
+          weekKeys.length > 8 ? weekKeys.sublist(weekKeys.length - 8) : weekKeys;
       return last.map((k) {
         final sum = byWeek[k]!.fold<double>(0, (s, r) => s + valueOf(r));
         final ws = DateTime.parse(k);
@@ -147,8 +175,18 @@ List<ForecastBar> buildHistoryBars({
         final key = '${d.year}-${d.month.toString().padLeft(2, '0')}';
         byMonth.putIfAbsent(key, () => []).add(r);
       }
-      final keys = byMonth.keys.toList()..sort();
-      final last = keys.length > 6 ? keys.sublist(keys.length - 6) : keys;
+      var monthKeys = byMonth.keys.toList()..sort();
+      // Buang bulan TERAKHIR bila belum genap berakhir (bulan berjalan) —
+      // alasan sama seperti mingguan di atas.
+      if (monthKeys.isNotEmpty) {
+        final monthEnd = _lastDayOfMonth(monthKeys.last);
+        if (!_isBeforeToday(monthEnd)) {
+          monthKeys = monthKeys.sublist(0, monthKeys.length - 1);
+        }
+      }
+      final last = monthKeys.length > 6
+          ? monthKeys.sublist(monthKeys.length - 6)
+          : monthKeys;
       return last.map((k) {
         final sum = byMonth[k]!.fold<double>(0, (s, r) => s + valueOf(r));
         final p = k.split('-');
@@ -744,16 +782,42 @@ class _LegendBand extends StatelessWidget {
 }
 
 // ============================================================================
-// PANEL METRIK MODEL (akurasi, puncak, terendah, interval)
+// METRIK EVALUASI MODEL (dari forecast_runs.metrics)
+// ============================================================================
+class ForecastModelMetrics {
+  final double? mae; // Mean Absolute Error
+  final double? rmse; // Root Mean Squared Error
+  final double? wape; // Weighted Absolute Percentage Error (0..1)
+
+  const ForecastModelMetrics({this.mae, this.rmse, this.wape});
+
+  static const empty = ForecastModelMetrics();
+
+  /// Ambil dari JSON `run.metrics` (mis. respons /forecast/visitors/latest).
+  factory ForecastModelMetrics.fromMetricsJson(Map? m) {
+    if (m == null) return empty;
+    double? d(dynamic v) => (v as num?)?.toDouble();
+    return ForecastModelMetrics(
+        mae: d(m['mae']), rmse: d(m['rmse']), wape: d(m['wape']));
+  }
+
+  bool get hasAny => mae != null || rmse != null || wape != null;
+}
+
+// ============================================================================
+// PANEL METRIK MODEL (hasil + penjelasan)
 // ============================================================================
 class ForecastMetricsPanel extends StatelessWidget {
   final List<ForecastBar> bars;
   final String Function(double) fmt;
 
-  /// Dipakai sebagai cadangan saja bila titik periode tidak punya
-  /// confidence_level.
+  /// Cadangan bila titik periode tidak punya confidence_level.
   final double confidenceScore;
   final Color accent;
+
+  /// Metrik evaluasi model asli (MAE/RMSE/WAPE) untuk periode aktif; null bila
+  /// tidak tersedia (endpoint metrik hanya ada untuk pengunjung).
+  final ForecastModelMetrics? modelMetrics;
 
   const ForecastMetricsPanel({
     super.key,
@@ -761,6 +825,7 @@ class ForecastMetricsPanel extends StatelessWidget {
     required this.fmt,
     required this.confidenceScore,
     required this.accent,
+    this.modelMetrics,
   });
 
   @override
@@ -778,9 +843,8 @@ class ForecastMetricsPanel extends StatelessWidget {
         : ciBars.fold<double>(0, (s, b) => s + (b.hi - b.lo) / 2) /
             ciBars.length;
 
-    // Tingkat keyakinan diambil dari confidence_level baris periode AKTIF
-    // (per granularitas, sesuai DB) — jadi nilainya berubah saat ganti
-    // harian/mingguan/bulanan. Cadangan: confidenceScore dari model.
+    // Tingkat keyakinan dari confidence_level baris periode AKTIF (per
+    // granularitas, sesuai DB). Cadangan: confidenceScore model.
     final barConfs = bars
         .where((b) => b.confidence != null)
         .map((b) => b.confidence!.toDouble())
@@ -790,12 +854,102 @@ class ForecastMetricsPanel extends StatelessWidget {
         : barConfs.reduce((a, b) => a + b) / barConfs.length;
     final confLevel =
         score >= 85 ? 'Tinggi' : score >= 70 ? 'Sedang' : 'Rendah';
-
     final confColor = score >= 85
         ? Colors.green
         : score >= 70
             ? Colors.orange
             : Colors.red;
+
+    final mm = modelMetrics;
+    final hasEval = mm != null && mm.hasAny;
+
+    // ---- Tile hasil ----
+    final tiles = <Widget>[
+      _MetricTile(
+        icon: Icons.verified_outlined,
+        iconColor: confColor,
+        label: 'Tingkat Keyakinan',
+        value: '${score.toStringAsFixed(0)}%',
+        sub: 'keyakinan model: $confLevel',
+      ),
+      if (mm?.mae != null)
+        _MetricTile(
+          icon: Icons.straighten,
+          iconColor: Colors.indigo,
+          label: 'MAE',
+          value: fmt(mm!.mae!),
+          sub: 'rata-rata selisih',
+        ),
+      if (mm?.rmse != null)
+        _MetricTile(
+          icon: Icons.show_chart,
+          iconColor: Colors.deepPurple,
+          label: 'RMSE',
+          value: fmt(mm!.rmse!),
+          sub: 'error, hukum error besar',
+        ),
+      if (mm?.wape != null)
+        _MetricTile(
+          icon: Icons.percent,
+          iconColor: Colors.teal,
+          label: 'WAPE',
+          value: '${(mm!.wape! * 100).toStringAsFixed(1)}%',
+          sub: 'error relatif total',
+        ),
+      _MetricTile(
+        icon: Icons.unfold_more,
+        iconColor: accent,
+        label: 'Rentang Keyakinan',
+        value: avgCiHalf == null ? '—' : '± ${fmt(avgCiHalf)}',
+        sub: avgCiHalf == null ? 'tidak tersedia' : 'rata-rata interval',
+      ),
+      _MetricTile(
+        icon: Icons.trending_up,
+        iconColor: Colors.green,
+        label: 'Prediksi Tertinggi',
+        value: fmt(peak.value),
+        sub: peak.fullLabel,
+      ),
+      _MetricTile(
+        icon: Icons.trending_down,
+        iconColor: Colors.redAccent,
+        label: 'Prediksi Terendah',
+        value: fmt(low.value),
+        sub: low.fullLabel,
+      ),
+    ];
+
+    // ---- Penjelasan tiap metrik ----
+    final explanations = <(String, String)>[
+      (
+        'Tingkat Keyakinan',
+        'Perkiraan seberapa dapat dipercaya prediksi model. Makin tinggi '
+            '(mendekati 100%) makin bagus.'
+      ),
+      if (mm?.mae != null)
+        (
+          'MAE (Mean Absolute Error)',
+          'Rata-rata selisih (mutlak) antara prediksi dan data aktual saat '
+              'evaluasi. Makin kecil makin akurat.'
+        ),
+      if (mm?.rmse != null)
+        (
+          'RMSE (Root Mean Squared Error)',
+          'Mirip MAE tetapi memberi bobot lebih pada kesalahan besar. Makin '
+              'kecil makin baik.'
+        ),
+      if (mm?.wape != null)
+        (
+          'WAPE',
+          'Total kesalahan dibandingkan total nilai aktual (dalam %). Makin '
+              'kecil makin akurat.'
+        ),
+      (
+        'Rentang Keyakinan (Interval)',
+        'Rentang kemungkinan nilai (batas bawah–atas / pita di grafik). Makin '
+            'sempit berarti prediksi makin pasti.'
+      ),
+    ];
 
     return ForecastCardShell(
       child: Column(
@@ -804,51 +958,46 @@ class ForecastMetricsPanel extends StatelessWidget {
           Row(children: [
             Icon(Icons.insights_outlined, size: 18, color: accent),
             const SizedBox(width: 8),
-            const Text('Ringkasan Metrik Model',
+            const Text('Metrik & Akurasi Model',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
           ]),
           const SizedBox(height: 4),
-          const Text(
-            'Seberapa yakin model terhadap prediksi periode ini.',
-            style: TextStyle(color: Colors.grey, fontSize: 11),
+          Text(
+            hasEval
+                ? 'Hasil evaluasi model saat dilatih beserta penjelasannya.'
+                : 'Ringkasan keyakinan model untuk prediksi periode ini.',
+            style: const TextStyle(color: Colors.grey, fontSize: 11),
           ),
           const SizedBox(height: 16),
-          Wrap(
-            spacing: 14,
-            runSpacing: 14,
-            children: [
-              _MetricTile(
-                icon: Icons.verified_outlined,
-                iconColor: confColor,
-                label: 'Tingkat Keyakinan',
-                value: '${score.toStringAsFixed(0)}%',
-                sub: confLevel,
-              ),
-              _MetricTile(
-                icon: Icons.trending_up,
-                iconColor: Colors.green,
-                label: 'Prediksi Tertinggi',
-                value: fmt(peak.value),
-                sub: peak.fullLabel,
-              ),
-              _MetricTile(
-                icon: Icons.trending_down,
-                iconColor: Colors.redAccent,
-                label: 'Prediksi Terendah',
-                value: fmt(low.value),
-                sub: low.fullLabel,
-              ),
-              _MetricTile(
-                icon: Icons.unfold_more,
-                iconColor: accent,
-                label: 'Rentang Keyakinan',
-                value: avgCiHalf == null ? '—' : '± ${fmt(avgCiHalf)}',
-                sub: avgCiHalf == null
-                    ? 'interval tidak tersedia'
-                    : 'rata-rata interval',
-              ),
-            ],
-          ),
+          Wrap(spacing: 14, runSpacing: 14, children: tiles),
+          const SizedBox(height: 18),
+          const Divider(height: 1),
+          const SizedBox(height: 14),
+          Row(children: [
+            Icon(Icons.menu_book_outlined, size: 16, color: Colors.grey[600]),
+            const SizedBox(width: 6),
+            Text('Penjelasan Metrik',
+                style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12.5,
+                    color: Colors.grey[800])),
+          ]),
+          const SizedBox(height: 10),
+          ...explanations.map((e) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(e.$1,
+                        style: const TextStyle(
+                            fontSize: 12, fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 1),
+                    Text(e.$2,
+                        style: const TextStyle(
+                            fontSize: 11, color: Colors.grey, height: 1.4)),
+                  ],
+                ),
+              )),
         ],
       ),
     );

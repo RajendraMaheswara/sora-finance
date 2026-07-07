@@ -13,8 +13,6 @@ const Color _kPrimaryGreen = Color(0xFF8CE600);
 const Color _kPrimaryGreenDark = Color(0xFF24CC14);
 const Color _kAccentOrange = Color(0xFFF59E0B);
 
-const String _kForecastResultsEndpoint = 'forecast-results';
-
 // ==========================================
 // PAGE
 // ==========================================
@@ -32,7 +30,11 @@ class VisitorForecastPage extends StatefulWidget {
 class _VisitorBundle {
   final VisitorForecastModel model;
   final List<dynamic> summaries;
-  const _VisitorBundle(this.model, this.summaries);
+
+  /// Metrik evaluasi model (MAE/RMSE/WAPE) per granularitas, dari
+  /// /api/forecast/visitors/latest.
+  final Map<ForecastPeriodKind, ForecastModelMetrics> metrics;
+  const _VisitorBundle(this.model, this.summaries, this.metrics);
 }
 
 class _VisitorForecastPageState extends State<VisitorForecastPage> {
@@ -47,11 +49,26 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
   }
 
   Future<_VisitorBundle> _fetch() async {
-    final r = await Future.wait([
-      _apiService.fetchData(_kForecastResultsEndpoint),
-      _apiService.fetchData('sales-daily-summaries'),
+    final maps = await Future.wait([
+      _apiService.fetchMap('forecast/visitors/latest?horizon_label=daily'),
+      _apiService.fetchMap('forecast/visitors/latest?horizon_label=weekly'),
+      _apiService.fetchMap('forecast/visitors/latest?horizon_label=monthly'),
     ]);
-    return _VisitorBundle(VisitorForecastModel.fromResults(r[0]), r[1]);
+    final summaries = await _apiService.fetchData('sales-daily-summaries');
+    ForecastModelMetrics parse(Map<String, dynamic>? resp) =>
+        ForecastModelMetrics.fromMetricsJson(
+            (resp?['run'] as Map?)?['metrics'] as Map?);
+    final metrics = {
+      ForecastPeriodKind.daily: parse(maps[0]),
+      ForecastPeriodKind.weekly: parse(maps[1]),
+      ForecastPeriodKind.monthly: parse(maps[2]),
+    };
+    final model = VisitorForecastModel.fromLatestResponses(
+      daily: maps[0],
+      weekly: maps[1],
+      monthly: maps[2],
+    );
+    return _VisitorBundle(model, summaries, metrics);
   }
 
   void _refresh() {
@@ -469,6 +486,7 @@ class _ForecastBodyState extends State<_ForecastBody> {
             fmt: _visitorsFull,
             confidenceScore: widget.bundle.model.confidenceScore,
             accent: _kPrimaryGreenDark,
+            modelMetrics: widget.bundle.metrics[_period],
           ),
           const SizedBox(height: 20),
           ForecastDetailTable(

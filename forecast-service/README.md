@@ -91,11 +91,11 @@ Limit ini berlaku untuk visitors, sales, dan inventory.
 
 ## Endpoint aktif
 
-| Modul | Preview | Save generate + save | Retrain |
-|---|---|---|---|
-| Visitors | `POST /api/forecast/visitors/preview` | `POST /api/forecast/visitors/save` | `POST /api/forecast/visitors/retrain` |
-| Sales | `POST /api/forecast/sales/preview` | `POST /api/forecast/sales/save` | `POST /api/forecast/sales/retrain` |
-| Inventory | `POST /api/forecast/inventory/preview` | `POST /api/forecast/inventory/save` | `POST /api/forecast/inventory/retrain` |
+| Modul | Preview | Save generate + save | Retrain | Status retrain |
+|---|---|---|---|---|
+| Visitors | `POST /api/forecast/visitors/preview` | `POST /api/forecast/visitors/save` | `POST /api/forecast/visitors/retrain` | - |
+| Sales | `POST /api/forecast/sales/preview` | `POST /api/forecast/sales/save` | `POST /api/forecast/sales/retrain` | - |
+| Inventory | `POST /api/forecast/inventory/preview` | `POST /api/forecast/inventory/save` | `POST /api/forecast/inventory/retrain` | `GET /api/forecast/inventory/retrain/status/{task_id}` |
 
 Endpoint `/api/forecast/{module}/run` sudah dihapus. Gunakan `/save` untuk kebutuhan generate + save.
 
@@ -173,13 +173,41 @@ Semua modul memakai wrapper response yang sama:
 }
 ```
 
-### Contoh retrain inventory
+### Contoh retrain inventory async
+
+Inventory retrain bisa berjalan beberapa menit per store, jadi endpoint ini mengembalikan `task_id` langsung dengan HTTP `202`.
 
 ```bash
 curl -X POST http://localhost:5000/api/forecast/inventory/retrain \
   -H "Content-Type: application/json" \
   -H "X-Service-Key: $INTERNAL_SERVICE_KEY" \
   -d '{"store_id":"b4e2f559-9615-4263-84fe-9ee97780748f","force":true}'
+```
+
+Contoh response awal:
+
+```json
+{
+  "status": "queued",
+  "message": "Inventory retrain job started.",
+  "task_id": "0d2731f1-4b85-4e0e-98a5-5a3a8fdf6d11",
+  "request": {
+    "module": "inventory",
+    "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+    "force": true
+  },
+  "data": {
+    "status": "queued",
+    "progress": {"total": 3, "processed": 0, "failed": 0, "percentage": 0}
+  }
+}
+```
+
+Cek status:
+
+```bash
+curl http://localhost:5000/api/forecast/inventory/retrain/status/0d2731f1-4b85-4e0e-98a5-5a3a8fdf6d11 \
+  -H "X-Service-Key: $INTERNAL_SERVICE_KEY"
 ```
 
 ## Scheduler

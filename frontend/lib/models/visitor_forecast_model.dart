@@ -109,6 +109,30 @@ class VisitorForecastModel {
       includeNullType: true,
     );
     final fr = ForecastResults.fromRows(rows);
+    return _fromForecast(fr);
+  }
+
+  static VisitorForecastModel _fromForecast(ForecastResults fr) {
+    if (fr.isEmpty) {
+      return VisitorForecastModel(
+        storeId: '',
+        totalNext7Days: 0,
+        totalNext30Days: 0,
+        avgDailyNext7Days: 0,
+        avgDailyNext30Days: 0,
+        highestPredictionDay: '',
+        highestPredictionValue: 0,
+        lowestPredictionDay: '',
+        lowestPredictionValue: 0,
+        trendDirection: 'STABLE',
+        confidenceScore: 0,
+        confidenceLevel: '-',
+        insights: const [],
+        dailyForecast: const [],
+        weeklyForecast: const [],
+        monthlyForecast: const [],
+      );
+    }
 
     final daily = fr.daily.map(VisitorForecastPoint.fromPoint).toList();
     final weekly =
@@ -215,6 +239,20 @@ class VisitorForecastModel {
       monthlyForecast: monthly,
     );
   }
+
+  factory VisitorForecastModel.fromLatestResponses({
+    Map<String, dynamic>? daily,
+    Map<String, dynamic>? weekly,
+    Map<String, dynamic>? monthly,
+  }) {
+    final fr = ForecastResults.fromLatestResponses(
+      daily: daily,
+      weekly: weekly,
+      monthly: monthly,
+    );
+    return _fromForecast(fr);
+  }
+
 
   factory VisitorForecastModel.fromJson(Map<String, dynamic> json) {
     final summary = (json['forecast_summary'] as Map?) ?? const {};
