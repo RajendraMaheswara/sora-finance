@@ -194,23 +194,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
   late Future<_DashboardData> _future;
 
   Future<_DashboardData> _load() async {
+    final maps = await Future.wait([
+      _api.fetchMap('forecast/latest?forecast_type=sales&horizon_label=daily'),
+      _api.fetchMap('forecast/visitors/latest?horizon_label=daily'),
+      _api.fetchMap('forecast/latest?forecast_type=inventory&horizon_label=daily'),
+    ]);
     final r = await Future.wait([
-      _api.fetchData('forecast-results'),
       _api.fetchData('sales-daily-summaries'),
       _api.fetchData('ingredient-stock-histories'),
       _api.fetchData('food-ingredients'),
     ]);
-    final results = r[0];
-    final summaries = r[1];
+    final summaries = r[0];
     _StockCardData stock;
     try {
-      stock = _StockCardData.from(results, r[2], r[3]);
+      stock = _StockCardData.from(latestResultsRows(maps[2]), r[1], r[2]);
     } catch (_) {
       stock = _StockCardData(items: const [], monitoredCount: 0);
     }
     return _DashboardData(
-      sales: SalesForecastModel.fromResults(results),
-      visitor: VisitorForecastModel.fromResults(results),
+      sales: SalesForecastModel.fromLatestResponses(daily: maps[0]),
+      visitor: VisitorForecastModel.fromLatestResponses(daily: maps[1]),
       stock: stock,
       salesHistory: _recentDaily(summaries, 'total_omzet', 10),
       visitorHistory: _recentDaily(summaries, 'total_transaction', 10),

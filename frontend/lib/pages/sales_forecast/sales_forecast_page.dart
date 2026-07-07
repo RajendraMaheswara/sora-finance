@@ -39,11 +39,18 @@ class _SalesForecastPageState extends State<SalesForecastPage> {
   }
 
   Future<_SalesBundle> _fetch() async {
-    final r = await Future.wait([
-      _api.fetchData('forecast-results'),
-      _api.fetchData('sales-daily-summaries'),
+    final maps = await Future.wait([
+      _api.fetchMap('forecast/latest?forecast_type=sales&horizon_label=daily'),
+      _api.fetchMap('forecast/latest?forecast_type=sales&horizon_label=weekly'),
+      _api.fetchMap('forecast/latest?forecast_type=sales&horizon_label=monthly'),
     ]);
-    return _SalesBundle(SalesForecastModel.fromResults(r[0]), r[1]);
+    final summaries = await _api.fetchData('sales-daily-summaries');
+    final model = SalesForecastModel.fromLatestResponses(
+      daily: maps[0],
+      weekly: maps[1],
+      monthly: maps[2],
+    );
+    return _SalesBundle(model, summaries);
   }
 
   void _refresh() => setState(() => _future = _fetch());

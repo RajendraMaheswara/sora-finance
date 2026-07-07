@@ -101,13 +101,13 @@ class _ItemData {
     this.confMonthly,
   });
 
-  /// Tingkat keyakinan untuk periode tertentu (fallback ke harian bila run
-  /// granularitas itu tidak ada).
+  /// Tingkat keyakinan untuk periode tampilan 7/30 hari tetap memakai run
+  /// daily karena data stock page berasal dari latest inventory daily.
   double confidenceFor(_Period p) {
     final v = switch (p) {
       _Period.daily => confDaily,
-      _Period.weekly => confWeekly ?? confDaily,
-      _Period.monthly => confMonthly ?? confDaily,
+      _Period.weekly => confDaily,
+      _Period.monthly => confDaily,
     };
     return (v ?? 80).toDouble();
   }
@@ -139,15 +139,17 @@ class _ViewModel {
   const _ViewModel({required this.items});
 
   static Future<_ViewModel> load(ApiService api) async {
+    final latestDaily = await api.fetchMap(
+      'forecast/latest?forecast_type=inventory&horizon_label=daily',
+    );
     final results = await Future.wait([
-      api.fetchData('forecast-results'),
       api.fetchData('ingredient-stock-histories'),
       api.fetchData('food-ingredients'),
     ]);
 
-    final rawResults = results[0];
-    final rawStockHistories = results[1];
-    final rawIngredients = results[2];
+    final rawResults = latestResultsRows(latestDaily);
+    final rawStockHistories = results[0];
+    final rawIngredients = results[1];
 
     // Map ingredient id → name, stockLimit
     final ingredientNames = <String, String>{};
@@ -192,14 +194,10 @@ class _ViewModel {
     for (final entry in rowsByItem.entries) {
       final itemId = entry.key;
 
-      // Tiap ingredient bisa punya run harian/mingguan/bulanan terpisah yang
-      // semuanya masuk ke forecast_results. Untuk penipisan stok kita pakai
-      // HANYA run harian (fallback ke mingguan/bulanan bila tidak ada) supaya
-      // perhitungan sisa stok tidak tercampur antar granularitas.
+      // Sumber data stock adalah latest inventory daily. Tab 7/30 hari di bawah
+      // adalah potongan/agregasi dari run daily, bukan run weekly/monthly native.
       final fr = ForecastResults.fromRows(entry.value);
-      final series = fr.daily.isNotEmpty
-          ? fr.daily
-          : (fr.weekly.isNotEmpty ? fr.weekly : fr.monthly);
+      final series = fr.daily;
       if (series.isEmpty) continue;
 
       final name = ingredientNames[itemId] ?? itemId;
@@ -766,8 +764,8 @@ extension on _Period {
   String get label {
     switch (this) {
       case _Period.daily: return 'Harian';
-      case _Period.weekly: return 'Mingguan';
-      case _Period.monthly: return 'Bulanan';
+      case _Period.weekly: return '7 Hari';
+      case _Period.monthly: return '30 Hari';
     }
   }
 }
@@ -804,57 +802,6 @@ int? _avgConfidence(List<ForecastPoint> pts) {
   return c.isEmpty ? null : (c.reduce((a, b) => a + b) / c.length).round();
 }
 
-/// Agregasi forecast harian ke bucket (per minggu / per bulan). Sisa stok
-/// diambil dari hari terakhir bucket (kondisi di akhir periode), pemakaian &
-/// batas CI dijumlahkan, status mengikuti sisa di akhir bucket.
-///
-/// Bucket yang belum genap satu periode penuh (mis. sisa horizon < 7 hari
-/// untuk mingguan, atau bulan yang cuma sebagian hari untuk bulanan) DIBUANG
-/// supaya grafik/tabel tidak menampilkan bar yang tiba-tiba anjlok hanya
-/// karena periode itu belum lengkap.
-List<_DayForecast> _aggregateForecasts(
-    List<_DayForecast> daily, _Period period) {
-  if (period == _Period.daily || daily.isEmpty) return daily;
-
-  final buckets = <List<_DayForecast>>[];
-  if (period == _Period.weekly) {
-    for (var i = 0; i + 7 <= daily.length; i += 7) {
-      buckets.add(daily.sublist(i, i + 7));
-    }
-  } else {
-    // Bulanan: kelompokkan per bulan kalender (YYYY-MM), hanya bulan penuh.
-    final byMonth = <String, List<_DayForecast>>{};
-    final order = <String>[];
-    for (final f in daily) {
-      final key = f.date.length >= 7 ? f.date.substring(0, 7) : f.date;
-      if (!byMonth.containsKey(key)) order.add(key);
-      byMonth.putIfAbsent(key, () => []).add(f);
-    }
-    for (final k in order) {
-      final chunk = byMonth[k]!;
-      if (chunk.length >= daysInMonth(k)) buckets.add(chunk);
-    }
-  }
-
-  return buckets.map((b) {
-    final usage = b.fold<double>(0, (s, f) => s + f.predictedUsage);
-    final allLo = b.every((f) => f.lower != null);
-    final allHi = b.every((f) => f.upper != null);
-    final confs = b.where((f) => f.confidence != null).map((f) => f.confidence!);
-    return _DayForecast(
-      date: b.first.date,
-      predictedUsage: usage,
-      lower: allLo ? b.fold<double>(0, (s, f) => s + f.lower!) : null,
-      upper: allHi ? b.fold<double>(0, (s, f) => s + f.upper!) : null,
-      estimatedRemaining: b.last.estimatedRemaining,
-      status: b.last.status,
-      confidence: confs.isEmpty
-          ? null
-          : (confs.reduce((a, c) => a + c) / confs.length).round(),
-    );
-  }).toList();
-}
-
 // ==========================================
 // BODY — manages selected item & period
 // ==========================================
@@ -888,11 +835,11 @@ class _StockBodyState extends State<_StockBody> {
         // Detail per hari sepanjang horizon (hingga ~1 bulan).
         return _item.forecasts;
       case _Period.weekly:
-        // Agregasi per minggu (7 hari).
-        return _aggregateForecasts(_item.forecasts, _Period.weekly);
+        // Tampilan ringkas 7 hari pertama dari run daily.
+        return _item.forecasts.take(7).toList();
       case _Period.monthly:
-        // Agregasi per bulan kalender.
-        return _aggregateForecasts(_item.forecasts, _Period.monthly);
+        // Tampilan 30 hari dari run daily.
+        return _item.forecasts.take(30).toList();
     }
   }
 
@@ -993,19 +940,15 @@ class _StockBodyState extends State<_StockBody> {
         _SummaryCards(item: item, period: _period),
         const SizedBox(height: 20),
 
-        // Chart + metrik + tabel — hanya bila periode aktif punya minimal
-        // satu bucket LENGKAP (lihat _aggregateForecasts). Kalau belum ada
-        // (mis. horizon prediksi belum menutupi 1 minggu/bulan penuh),
-        // tampilkan info kosong daripada bar yang anjlok karena data parsial.
+        // Chart + metrik + tabel untuk horizon daily. Tab 7 Hari dan 30 Hari
+        // hanyalah tampilan rentang dari daily, bukan run weekly/monthly native.
         if (forecasts.isEmpty)
           _PeriodEmptyPanel(period: _period)
         else ...[
           _DepletionChart(item: item, period: _period, forecasts: forecasts),
           const SizedBox(height: 20),
 
-          // Metrik & penjelasan (pemakaian). Tingkat keyakinan mengikuti run
-          // native granularitas aktif (sesuai DB) lewat confidenceScore; bar
-          // sengaja tanpa confidence agar tidak menimpanya.
+          // Metrik & penjelasan pemakaian dari latest inventory daily.
           ForecastMetricsPanel(
             bars: forecasts
                 .map((f) => ForecastBar(
@@ -1060,9 +1003,7 @@ class _StockBodyState extends State<_StockBody> {
   }
 }
 
-/// Ditampilkan saat periode aktif (mingguan/bulanan) belum punya satu bucket
-/// pun yang lengkap dalam horizon prediksi — lebih baik kosong daripada
-/// menampilkan bar hasil agregasi sebagian hari yang menyesatkan.
+/// Ditampilkan saat rentang aktif belum punya titik daily forecast yang cukup.
 class _PeriodEmptyPanel extends StatelessWidget {
   final _Period period;
   const _PeriodEmptyPanel({required this.period});
@@ -1077,8 +1018,7 @@ class _PeriodEmptyPanel extends StatelessWidget {
             Icon(Icons.timeline, size: 36, color: Colors.grey[300]),
             const SizedBox(height: 10),
             Text(
-              'Belum ada periode ${period.label.toLowerCase()} yang lengkap '
-              'dalam rentang prediksi ini',
+              'Belum ada data ${period.label.toLowerCase()} dalam rentang prediksi ini',
               textAlign: TextAlign.center,
               style: const TextStyle(color: Colors.grey, fontSize: 13),
             ),
