@@ -13,8 +13,6 @@ const Color _kPrimaryGreen = Color(0xFF8CE600);
 const Color _kPrimaryGreenDark = Color(0xFF24CC14);
 const Color _kAccentOrange = Color(0xFFF59E0B);
 
-const String _kForecastResultsEndpoint = 'forecast-results';
-
 // ==========================================
 // PAGE
 // ==========================================
@@ -51,15 +49,12 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
   }
 
   Future<_VisitorBundle> _fetch() async {
-    final data = await Future.wait([
-      _apiService.fetchData(_kForecastResultsEndpoint),
-      _apiService.fetchData('sales-daily-summaries'),
-    ]);
     final maps = await Future.wait([
       _apiService.fetchMap('forecast/visitors/latest?horizon_label=daily'),
       _apiService.fetchMap('forecast/visitors/latest?horizon_label=weekly'),
       _apiService.fetchMap('forecast/visitors/latest?horizon_label=monthly'),
     ]);
+    final summaries = await _apiService.fetchData('sales-daily-summaries');
     ForecastModelMetrics parse(Map<String, dynamic>? resp) =>
         ForecastModelMetrics.fromMetricsJson(
             (resp?['run'] as Map?)?['metrics'] as Map?);
@@ -68,8 +63,12 @@ class _VisitorForecastPageState extends State<VisitorForecastPage> {
       ForecastPeriodKind.weekly: parse(maps[1]),
       ForecastPeriodKind.monthly: parse(maps[2]),
     };
-    return _VisitorBundle(
-        VisitorForecastModel.fromResults(data[0]), data[1], metrics);
+    final model = VisitorForecastModel.fromLatestResponses(
+      daily: maps[0],
+      weekly: maps[1],
+      monthly: maps[2],
+    );
+    return _VisitorBundle(model, summaries, metrics);
   }
 
   void _refresh() {

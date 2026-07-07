@@ -67,16 +67,15 @@ class ForecastResults {
 
   bool get isEmpty => daily.isEmpty && weekly.isEmpty && monthly.isEmpty;
 
-  /// Mingguan efektif: pakai run mingguan asli; bila tidak ada, agregasi run
-  /// harian menjadi minggu-minggu yang DIBATASI pada bulan pertama saja
-  /// (supaya tampilan mingguan tidak pernah melebihi 1 bulan).
-  List<ForecastPoint> get effectiveWeekly =>
-      weekly.isNotEmpty ? weekly : weeksFromDaily(daily);
+  /// Mingguan native dari run `horizon_label=weekly`.
+  /// Tidak ada fallback dari daily agar tab mingguan tidak menampilkan data
+  /// harian yang diagregasi seolah-olah run weekly asli.
+  List<ForecastPoint> get effectiveWeekly => weekly;
 
-  /// Bulanan efektif: pakai run bulanan asli; bila tidak ada, agregasi run
-  /// harian per bulan kalender.
-  List<ForecastPoint> get effectiveMonthly =>
-      monthly.isNotEmpty ? monthly : monthsFromDaily(daily);
+  /// Bulanan native dari run `horizon_label=monthly`.
+  /// Tidak ada fallback dari daily agar tab bulanan tidak menampilkan data
+  /// harian yang diagregasi seolah-olah run monthly asli.
+  List<ForecastPoint> get effectiveMonthly => monthly;
 
   // --------------------------------------------------------------------------
   // PARSING
@@ -126,6 +125,60 @@ class ForecastResults {
       daily: ptsByGran[ForecastGranularity.daily] ?? const [],
       weekly: ptsByGran[ForecastGranularity.weekly] ?? const [],
       monthly: ptsByGran[ForecastGranularity.monthly] ?? const [],
+    );
+  }
+
+  /// Bangun seri dari response latest backend:
+  /// {
+  ///   "run": {"horizon_label": "daily|weekly|monthly", ...},
+  ///   "results": [{"target_date": "...", "predicted_value": ...}]
+  /// }
+  ///
+  /// Berbeda dari [fromRows], fungsi ini tidak menebak granularitas dari jarak
+  /// tanggal. Horizon diambil langsung dari `run.horizon_label`, sehingga daily
+  /// tidak pernah berubah menjadi weekly/monthly di FE.
+  factory ForecastResults.fromLatestResponse(Map<String, dynamic>? response) {
+    if (response == null) return empty;
+    final run = response['run'];
+    final runMap = run is Map ? Map<String, dynamic>.from(run) : const <String, dynamic>{};
+    final horizon = (runMap['horizon_label'] as String? ?? '')
+        .trim()
+        .toLowerCase();
+    final points = latestResultsRows(response).map(_pointFromRow).whereType<ForecastPoint>().toList()
+      ..sort((a, b) => a.date.compareTo(b.date));
+    if (points.isEmpty) return empty;
+
+    return ForecastResults(
+      daily: horizon == 'daily' ? points : const [],
+      weekly: horizon == 'weekly' ? points : const [],
+      monthly: horizon == 'monthly' ? points : const [],
+    );
+  }
+
+  /// Gabungkan 3 response latest yang sudah diminta eksplisit per horizon.
+  factory ForecastResults.fromLatestResponses({
+    Map<String, dynamic>? daily,
+    Map<String, dynamic>? weekly,
+    Map<String, dynamic>? monthly,
+  }) {
+    return ForecastResults(
+      daily: ForecastResults.fromLatestResponse(daily).daily,
+      weekly: ForecastResults.fromLatestResponse(weekly).weekly,
+      monthly: ForecastResults.fromLatestResponse(monthly).monthly,
+    );
+  }
+
+  static ForecastPoint? _pointFromRow(Map<String, dynamic> r) {
+    final date = parseDate(r['target_date']);
+    if (date == null) return null;
+    return ForecastPoint(
+      date: date,
+      value: (r['predicted_value'] as num?)?.toDouble() ?? 0.0,
+      lower: (r['lower_bound'] as num?)?.toDouble(),
+      upper: (r['upper_bound'] as num?)?.toDouble(),
+      confidence: (r['confidence_level'] as num?)?.toInt(),
+      itemId: r['item_id'] as String?,
+      itemType: r['item_type'] as String?,
     );
   }
 
@@ -249,6 +302,18 @@ List<Map<String, dynamic>> filterResultsByType(
     if (t.isEmpty) return includeNullType;
     return keywords.any((k) => t.contains(k));
   }).toList();
+}
+
+
+/// Ambil array `results` dari response latest forecast.
+List<Map<String, dynamic>> latestResultsRows(Map<String, dynamic>? response) {
+  if (response == null) return const [];
+  final results = response['results'];
+  if (results is! List) return const [];
+  return results
+      .whereType<Map>()
+      .map((e) => Map<String, dynamic>.from(e))
+      .toList();
 }
 
 const salesItemTypes = {'sales', 'revenue', 'penjualan', 'omzet', 'omset'};
