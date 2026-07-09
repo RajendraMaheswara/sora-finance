@@ -16,10 +16,9 @@
 - Format response disamakan dengan modul visitor/sales:  
   `success`, `data` (metrics, forecast_summary, prediction_analysis, model_confidence, daily_forecast)
 - Confidence score dihitung dari MAPE (100 - MAPE), dengan level HIGH/MEDIUM/LOW
-- Training dijalankan secara **asinkron** melalui endpoint `/api/inventory/train/start`
-- Monitoring progress training via `/api/inventory/train/status/<task_id>`
+- Training inventory store dijalankan secara **asinkron** melalui endpoint `POST /api/forecast/inventory/retrain`
+- Monitoring progress training via `GET /api/forecast/inventory/retrain/status/<task_id>`
 - Metrik evaluasi (MAE, RMSE, MAPE) disimpan otomatis dalam file JSON setelah training
-- Backward compatibility: endpoint `/api/inventory/train` tetap bisa dipakai (langsung async)
 - **Uji coba endpoint forecast berhasil** mengembalikan struktur lengkap (daily_forecast, summary, analysis, confidence)
 - Response sudah sesuai untuk konsumsi dashboard; field `metrics` dan `confidence` akan terisi setelah retrain dengan kode terbaru
 
@@ -39,7 +38,7 @@
 
 ### 4 Juni 2026
 - **Penyimpanan hasil forecast ke database** – tiga tabel terisi otomatis setelah training:
-  - `forecast_predictions` → untuk dashboard (ringan, cepat)
+  - `forecast_runs/forecast_results` → untuk dashboard (ringan, cepat)
   - `forecast_runs` → tracking setiap sesi training
   - `forecast_results` → detail prediksi per tanggal, siap evaluasi (masih dalam penyelarasan tipe data)
 - **Payload disamakan** dengan modul visitor/sales:
@@ -189,36 +188,33 @@ python app.py
 
 Service tersedia di `http://localhost:5000`.
 
-### 3. Training Model (Async)
-Memulai training semua pasangan toko-bahan secara background:
+### 3. Training Model Inventory (Async)
+Memulai retrain inventory untuk satu store secara background:
 
 ```bash
-curl -X POST http://localhost:5000/api/inventory/train/start
+curl -X POST http://localhost:5000/api/forecast/inventory/retrain \
+  -H "Content-Type: application/json" \
+  -H "X-Service-Key: $INTERNAL_SERVICE_KEY" \
+  -d '{"store_id":"<store_id>","force":true}'
 ```
 
-Response:
-
-```json
-{
-  "task_id": "uuid-string",
-  "message": "Training dimulai. Pantau progress di /api/inventory/train/status/<task_id>"
-}
-```
+Response awal mengembalikan `task_id` dengan status `queued` atau `running`.
 
 Pantau progress:
 
 ```bash
-curl http://localhost:5000/api/inventory/train/status/<task_id>
+curl http://localhost:5000/api/forecast/inventory/retrain/status/<task_id> \
+  -H "X-Service-Key: $INTERNAL_SERVICE_KEY"
 ```
 
-Status: STARTING -> RUNNING -> DONE (atau ERROR).
+Status: `queued` -> `running` -> `success` / `partial_success` / `failed`.
 
 ### 4. Forecasting
-Gunakan endpoint `POST /api/forecast/inventory/preview` (atau `/run` untuk sekaligus menyimpan ke DB) dengan body JSON.
+Gunakan endpoint `POST /api/forecast/inventory/preview` (atau `/save` untuk generate sekaligus menyimpan ke DB) dengan body JSON.
 
 Parameter opsional `start_date` (format "YYYY-MM-DD") dapat ditambahkan jika Anda ingin memulai prediksi dari tanggal tertentu. Jika dikosongkan, prediksi akan mengambil patokan **hari ini** dan otomatis bergeser maju jika tipe peramalan adalah mingguan/bulanan (memulai hari Senin depan atau tanggal 1 bulan depan).
 
-Contoh harian (7 hari ke depan):
+Contoh harian single ingredient (7 hari ke depan):
 
 ```bash
 curl -X POST http://localhost:5000/api/forecast/inventory/preview   -H "Content-Type: application/json"   -H "X-Service-Key: <INTERNAL_SERVICE_KEY>"   -d '{
@@ -229,6 +225,18 @@ curl -X POST http://localhost:5000/api/forecast/inventory/preview   -H "Content-
     "start_date": "2026-07-01"
   }'
 ```
+
+Contoh harian semua ingredient dalam store, tanpa `ingredient_id`:
+
+```bash
+curl -X POST http://localhost:5000/api/forecast/inventory/save   -H "Content-Type: application/json"   -H "X-Service-Key: <INTERNAL_SERVICE_KEY>"   -d '{
+    "store_id": "b4e2f559-9615-4263-84fe-9ee97780748f",
+    "horizon_label": "daily",
+    "horizon_count": 30
+  }'
+```
+
+Untuk `/save` tanpa `ingredient_id`, default-nya partial-tolerant. Jika sebagian ingredient ada di master tetapi belum punya histori stok, ingredient tersebut dilaporkan sebagai `warnings`/`skipped_ingredients`. Ingredient yang berhasil tetap disimpan sebagai satu `forecast_run`. Field `errors` hanya untuk kegagalan runtime yang benar-benar gagal. Gunakan `"allow_partial": false` jika ingin mode strict all-or-nothing.
 
 Contoh mingguan (4 minggu ke depan):
 
@@ -320,7 +328,7 @@ curl -X POST http://localhost:5000/api/inventory/save-all-existing
 ```
 curl -X POST http://localhost:5000/api/inventory/save-all-forecasts   -H "Content-Type: application/json"   -H "X-Service-Key: <INTERNAL_SERVICE_KEY>"   -d '{"store_id":"b4e2f559-...","ingredient_id":"b98b5042-...","periods":4,"freq":"W"}'
 ```
-Data akan masuk ke tabel forecast_predictions (dashboard) dan forecast_runs (tracking).
+Data akan masuk ke tabel forecast_runs dan forecast_results.
 
 
 ## TROUBLESHOOTING CEPAT
@@ -352,7 +360,7 @@ Pastikan virtual environment aktif (`venv\Scriptsctivate`), lalu jalankan `pip 
 ### Masalah Umum (Semua OS)
 
 **FileNotFoundError: Model not found...**
-Training dulu: `curl -X POST http://localhost:5000/api/inventory/train/start`
+Training dulu: `curl -X POST http://localhost:5000/api/forecast/inventory/retrain -H "X-Service-Key: $INTERNAL_SERVICE_KEY" -H "Content-Type: application/json" -d '{"store_id":"<store_id>","force":true}'`
 
 **ConnectionError saat forecast**
 Pastikan backend Go berjalan dan file `.env` sudah benar.

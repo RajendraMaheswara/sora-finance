@@ -1688,17 +1688,29 @@ class SalesForecastService:
         forecast_start, forecast_end = self._response_date_bounds(forecasts, 'monthly')
         return MonthlyForecastResponse(store_id=store_id, generated_at=datetime.utcnow(), forecast_horizon_months=forecast_months, forecast_start_date=forecast_start, forecast_end_date=forecast_end, start_date_source=monthly_start_meta['start_date_source'] if monthly_start_meta else daily_response.start_date_source, last_actual_date=monthly_start_meta['last_actual_date'] if monthly_start_meta else daily_response.last_actual_date, business_cutoff_rule=monthly_start_meta['business_cutoff_rule'] if monthly_start_meta else daily_response.business_cutoff_rule, forecasts=forecasts, model_metadata=self._metadata_for_response(store_id=store_id, meta=trainer.load_model(store_id)[3], horizon_label='monthly'), status='success', message=f'Berhasil memprediksi {forecast_months} bulan ke depan dari agregasi daily forecast')
 
-    async def save_forecast_to_db(self, store_id: str, forecast_response: dict, backend_token: str=None) -> Tuple[bool, str]:
+    async def save_forecast_to_db(self, store_id: str, forecast_response: dict) -> Dict[str, Any]:
         horizon_label = forecast_response.get('request_meta', {}).get('horizon_label', 'daily')
         granularity = horizon_label
         results_list = forecast_response.get('forecasts', [])
         if not results_list:
-            return (False, 'Tidak ada data forecast untuk disimpan.')
-        horizon_days = len(results_list)
-        if horizon_label == 'weekly':
-            horizon_days = len(results_list) * 7
-        elif horizon_label == 'monthly':
-            horizon_days = len(results_list) * 30
+            return {
+                "status": "failed",
+                "message": "Tidak ada data forecast untuk disimpan.",
+                "saved_results": 0,
+            }
+
+        def _item_start_end(item: Dict[str, Any]) -> Tuple[date, date]:
+            start_raw = item.get('date') or item.get('period_start')
+            end_raw = item.get('date') or item.get('period_end') or start_raw
+            start_val = datetime.fromisoformat(str(start_raw)[:10]).date()
+            end_val = datetime.fromisoformat(str(end_raw)[:10]).date()
+            return start_val, end_val
+
+        period_dates = [_item_start_end(item) for item in results_list]
+        predict_start = min(start for start, _ in period_dates)
+        predict_end = max(end for _, end in period_dates)
+        horizon_days = (predict_end - predict_start).days + 1
+
         model_version = 'sales-rf-v2-aggregated'
         metadata = forecast_response.get('model_metadata', {})
         metadata_metrics = metadata.get('metrics', {})
@@ -1709,8 +1721,21 @@ class SalesForecastService:
         avg_prediction = max(1.0, float(np.mean([max(0, item.get('predicted_omzet', 0)) for item in results_list])))
         forecast_error_ratio = min(1.0, mae / avg_prediction) if mae > 0 else 0.0
         confidence_level = int(max(0, min(100, round(100.0 - forecast_error_ratio * 100.0))))
-        metrics = {'horizon_method': metadata.get('horizon_method'), 'metric_horizon': horizon_label, 'mae': mae, 'rmse': rmse, 'mape': None, 'confidence_level': confidence_level, 'forecast_error_ratio': round(forecast_error_ratio, 4), f'{horizon_label}_mae': mae, f'{horizon_label}_rmse': rmse, f'{horizon_label}_mae_percentage': metadata_metrics.get(f'{horizon_label}_mae_percentage'), f'{horizon_label}_error_ratio': metadata_metrics.get(f'{horizon_label}_error_ratio'), f'{horizon_label}_reliability': metadata_metrics.get(f'{horizon_label}_reliability')}
-        
+        metrics = {
+            'horizon_method': metadata.get('horizon_method'),
+            'metric_horizon': horizon_label,
+            'mae': mae,
+            'rmse': rmse,
+            'mape': None,
+            'confidence_level': confidence_level,
+            'forecast_error_ratio': round(forecast_error_ratio, 4),
+            f'{horizon_label}_mae': mae,
+            f'{horizon_label}_rmse': rmse,
+            f'{horizon_label}_mae_percentage': metadata_metrics.get(f'{horizon_label}_mae_percentage'),
+            f'{horizon_label}_error_ratio': metadata_metrics.get(f'{horizon_label}_error_ratio'),
+            f'{horizon_label}_reliability': metadata_metrics.get(f'{horizon_label}_reliability'),
+        }
+
         result_rows = []
         for item in results_list:
             target_date = item.get('date') or item.get('period_start')
@@ -1718,40 +1743,34 @@ class SalesForecastService:
                 target_date = target_date.isoformat()
             result_rows.append({
                 'target_date': target_date,
-                'predicted_value': float(item.get('predicted_omzet', 0)),
+                'predicted_value': float(item.get('predicted_omzet', item.get('predicted_value', 0))),
                 'lower_bound': float(item.get('lower_bound', 0)),
                 'upper_bound': float(item.get('upper_bound', 0)),
-                'confidence_level': confidence_level
+                'confidence_level': confidence_level,
             })
-            
-        start_date_str = result_rows[0]['target_date']
-        end_date_str = result_rows[-1]['target_date']
+
         now = datetime.now(timezone.utc)
-        
-        predict_start = datetime.fromisoformat(start_date_str).date() if isinstance(start_date_str, str) else start_date_str
-        predict_end = datetime.fromisoformat(end_date_str).date() if isinstance(end_date_str, str) else end_date_str
-        
         train_start, train_end, train_rows = db_client.get_training_range(store_id)
-        
         last_act_raw = forecast_response.get("last_actual_date")
         last_act_str = last_act_raw.isoformat() if hasattr(last_act_raw, 'isoformat') else str(last_act_raw) if last_act_raw else None
-        
+
         summary = {
             "module": "sales",
             "horizon_label": horizon_label,
             "horizon_count": len(results_list),
             "horizon_days": horizon_days,
-            "forecast_start_date": predict_start.isoformat() if hasattr(predict_start, 'isoformat') else str(predict_start),
-            "forecast_end_date": predict_end.isoformat() if hasattr(predict_end, 'isoformat') else str(predict_end),
+            "forecast_start_date": predict_start.isoformat(),
+            "forecast_end_date": predict_end.isoformat(),
             "start_date_source": forecast_response.get("start_date_source"),
             "last_actual_date": last_act_str,
             "business_cutoff_rule": forecast_response.get("business_cutoff_rule"),
             "prediction_count": len(result_rows),
             "total_predicted_omzet": int(sum(row["predicted_value"] for row in result_rows)),
+            "total_predicted_value": int(sum(row["predicted_value"] for row in result_rows)),
             "average_predicted_omzet": round(avg_prediction, 2),
             "generated_at": now.isoformat(),
         }
-        
+
         data_quality = {
             "training_rows": train_rows,
             "model_training_data_points": metadata.get("training_data_points", 0),
@@ -1761,9 +1780,8 @@ class SalesForecastService:
                 "end": train_end.isoformat() if train_end else now.date().isoformat(),
             },
         }
-        
+
         try:
-            # Prepare payload for /forecast-runs
             run_payload = {
                 "store_id": store_id,
                 "forecast_type": "sales",
@@ -1775,38 +1793,39 @@ class SalesForecastService:
                 "feature_version": "v2",
                 "train_start_date": train_start.isoformat() if train_start else "2020-01-01",
                 "train_end_date": train_end.isoformat() if train_end else now.date().isoformat(),
-                "predict_start_date": predict_start.isoformat() if predict_start else now.date().isoformat(),
-                "predict_end_date": predict_end.isoformat() if predict_end else now.date().isoformat(),
+                "predict_start_date": predict_start.isoformat(),
+                "predict_end_date": predict_end.isoformat(),
                 "metrics": json.dumps(metrics),
                 "summary": json.dumps(summary),
                 "data_quality": json.dumps(data_quality),
                 "status": "success",
                 "started_at": now.isoformat(),
-                "finished_at": now.isoformat()
+                "finished_at": now.isoformat(),
             }
-            
-            headers = {"Content-Type": "application/json"}
-            if Config.INTERNAL_SERVICE_KEY:
-                headers["X-Service-Key"] = Config.INTERNAL_SERVICE_KEY
-            if backend_token:
-                headers["Authorization"] = f"Bearer {backend_token}"
-            elif Config.INTERNAL_SERVICE_KEY:
-                headers["Authorization"] = f"Bearer {Config.INTERNAL_SERVICE_KEY}"
+
+            headers = Config.backend_headers()
+            headers["Content-Type"] = "application/json"
 
             resp = requests.post(
                 f"{Config.BACKEND_API_URL}/forecast-runs",
                 json=run_payload,
                 headers=headers,
-                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS
+                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS,
             )
             resp.raise_for_status()
-            run_data = resp.json()
-            run_id = run_data.get("run_id") or run_data.get("data", {}).get("id")
-            
-            if not run_id:
-                return False, "Berhasil insert forecast_runs tapi run_id tidak kembali dari API."
+            run_response = resp.json()
+            run_id = run_response.get("run_id") or run_response.get("data", {}).get("id")
 
-            # Prepare payload for /forecast-results
+            if not run_id:
+                return {
+                    "status": "failed",
+                    "message": "Berhasil insert forecast_runs tapi run_id tidak kembali dari API.",
+                    "saved_results": 0,
+                    "backend_run_response": run_response,
+                    "metrics": metrics,
+                    "summary": summary,
+                }
+
             results_data = []
             for item in result_rows:
                 results_data.append({
@@ -1815,23 +1834,52 @@ class SalesForecastService:
                     "lower_bound": item["lower_bound"],
                     "upper_bound": item["upper_bound"],
                     "item_type": "sales",
-                    "confidence_level": item.get("confidence_level", 90)
+                    "confidence_level": item.get("confidence_level", 90),
                 })
-            
+
             resp2 = requests.post(
                 f"{Config.BACKEND_API_URL}/forecast-results",
                 json={"run_id": run_id, "results": results_data},
                 headers=headers,
-                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS
+                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS,
             )
             if not resp2.ok:
                 logger.error(f"Gagal save_sales_forecast ke API backend: {resp2.status_code} - {resp2.text}")
-                return (False, f'Gagal simpan ke API backend: {resp2.status_code} - {resp2.text}')
-            
-            return (True, f'Semua data forecast {granularity} berhasil disimpan ke backend via API!')
+                return {
+                    "status": "failed",
+                    "message": f"Gagal simpan ke API backend: {resp2.status_code} - {resp2.text}",
+                    "run_id": run_id,
+                    "saved_results": 0,
+                    "backend_status": "failed",
+                    "metrics": metrics,
+                    "summary": summary,
+                }
+
+            results_response = resp2.json()
+            return {
+                "status": "saved",
+                "message": f"Forecast sales {granularity} berhasil disimpan ke backend.",
+                "run_id": run_id,
+                "forecast_type": "sales",
+                "horizon_label": horizon_label,
+                "horizon_days": horizon_days,
+                "predict_start_date": predict_start.isoformat(),
+                "predict_end_date": predict_end.isoformat(),
+                "saved_results": len(results_data),
+                "backend_status": "success",
+                "backend_run_response": run_response,
+                "backend_results_response": results_response,
+                "metrics": metrics,
+                "summary": summary,
+            }
         except Exception as e:
             logger.error(f"Gagal save_sales_forecast ke API backend exception: {e}")
-            return (False, f'Gagal simpan ke API backend exception: {e}')
+            return {
+                "status": "failed",
+                "message": f"Gagal simpan ke API backend exception: {e}",
+                "saved_results": 0,
+                "backend_status": "failed",
+            }
 
 
     def _empty_metric_block(self, prefix: str) -> Dict[str, Any]:

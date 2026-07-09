@@ -195,7 +195,7 @@ class GolangAPIClient:
                     raise
 
     def _headers(self) -> Dict[str, str]:
-        # Service-to-service auth. Jangan pakai JWT user/backend_token dari request.
+        # Service-to-service auth. Gunakan X-Service-Key dari env.
         return Config.backend_headers()
 
     async def _post(
@@ -266,7 +266,7 @@ class GolangAPIClient:
             "granularity": horizon_label,
             "model_name": "random forest",
             "model_version": model_version,
-            "feature_version": "visitors-backend-daily-history-v5",
+            "feature_version": "visitors-backend-daily-history-v6-pattern-aware",
             "train_start_date": train_start_date.isoformat(),
             "train_end_date": train_end_date.isoformat(),
             "predict_start_date": predict_start_date.isoformat(),
@@ -316,12 +316,16 @@ class GolangAPIClient:
         )
 
         return {
+            "status": "saved",
+            "message": f"Forecast visitors {horizon_label} berhasil disimpan ke backend.",
             "run_id": int(run_id),
-            "saved_results": len(result_rows),
+            "forecast_type": "visitors",
             "horizon_label": horizon_label,
             "horizon_days": horizon_days,
             "predict_start_date": predict_start_date.isoformat(),
             "predict_end_date": predict_end_date.isoformat(),
+            "saved_results": len(result_rows),
+            "backend_status": "success",
             "backend_run_response": run_response,
             "backend_results_response": results_response,
         }
@@ -1375,7 +1379,7 @@ class ForecastService:
                 "expanding_min_periods": 3,
             },
         }
-        self.feature_version = "visitors-backend-daily-history-v5"
+        self.feature_version = "visitors-backend-daily-history-v6-pattern-aware"
         self.data_source = "backend_visitors_daily_history_aggregated_from_t_orders_t_order_items_operational_hours"
 
     def _now_jakarta(self) -> datetime:
@@ -1388,6 +1392,172 @@ class ForecastService:
         if dates.empty:
             return None
         return dates.max().date()
+
+
+    def _clip_float(self, value: Any, minimum: float, maximum: float, default: float) -> float:
+        try:
+            val = float(value)
+            if not np.isfinite(val):
+                return default
+            return float(max(minimum, min(maximum, val)))
+        except Exception:
+            return default
+
+    def _build_daily_pattern_profile(self, df_daily: pd.DataFrame) -> Dict[str, Any]:
+        """Bangun profil pola aktual harian untuk post-processing forecast visitors.
+
+        Random Forest cenderung kembali ke mean ketika dipakai recursive multi-step.
+        Profil ini menjaga pola yang memang terlihat di histori: siklus 28 hari,
+        efek day-of-week, dan trend pendek. Outputnya hanya dipakai sebagai
+        penyesuaian terkontrol, bukan pengganti model utama.
+        """
+        profile: Dict[str, Any] = {
+            "enabled": False,
+            "version": "visitors-pattern-aware-v1",
+            "pattern_weight": 0.0,
+            "recent_level": 0.0,
+            "daily_slope_pct": 0.0,
+            "dow_sequences": {},
+            "dow_factor": {},
+            "dow_baseline": {},
+            "recent_min": 0.0,
+            "recent_max": 0.0,
+            "pattern_strength": 0.0,
+            "volatility_ratio": 0.0,
+        }
+
+        if df_daily is None or df_daily.empty or "date" not in df_daily.columns or "visitors" not in df_daily.columns:
+            return profile
+
+        hist = df_daily.copy()
+        hist["date"] = pd.to_datetime(hist["date"], errors="coerce")
+        hist["visitors"] = pd.to_numeric(hist["visitors"], errors="coerce")
+        hist = hist.dropna(subset=["date", "visitors"]).sort_values("date")
+        hist["visitors"] = hist["visitors"].clip(lower=0)
+        if "is_store_open" in hist.columns:
+            # Closed day tetap valid untuk model, tetapi jangan menekan profil pola open-day.
+            open_hist = hist[pd.to_numeric(hist["is_store_open"], errors="coerce").fillna(1.0) > 0]
+            if len(open_hist) >= 14:
+                hist = open_hist
+
+        if len(hist) < 14:
+            return profile
+
+        hist["day_of_week"] = hist["date"].dt.dayofweek
+        recent = hist.tail(min(len(hist), 56)).copy()
+        last_28 = hist.tail(min(len(hist), 28)).copy()
+        if last_28.empty:
+            return profile
+
+        recent_values = recent["visitors"].astype(float).values
+        recent_level = float(np.mean(last_28["visitors"].astype(float).values))
+        if not np.isfinite(recent_level) or recent_level <= 0:
+            recent_level = float(np.mean(recent_values)) if len(recent_values) else 0.0
+        if recent_level <= 0:
+            return profile
+
+        profile["enabled"] = True
+        profile["recent_level"] = round(recent_level, 4)
+        profile["recent_min"] = round(float(np.min(recent_values)), 4) if len(recent_values) else 0.0
+        profile["recent_max"] = round(float(np.max(recent_values)), 4) if len(recent_values) else 0.0
+
+        # Trend pendek. Dibuat konservatif agar tidak over-extrapolate.
+        trend_window = hist.tail(min(len(hist), 42))["visitors"].astype(float).values
+        daily_slope_pct = 0.0
+        if len(trend_window) >= 14 and recent_level > 0:
+            x = np.arange(len(trend_window), dtype=float)
+            try:
+                slope = float(np.polyfit(x, trend_window, 1)[0])
+                daily_slope_pct = self._clip_float(slope / recent_level, -0.012, 0.012, 0.0)
+            except Exception:
+                daily_slope_pct = 0.0
+        profile["daily_slope_pct"] = round(daily_slope_pct, 6)
+
+        dow_group = recent.groupby("day_of_week")["visitors"]
+        dow_means = dow_group.mean()
+        dow_means_array = dow_means.astype(float).values
+        pattern_strength = 0.0
+        if len(dow_means_array) >= 2 and recent_level > 0:
+            pattern_strength = float(np.std(dow_means_array) / recent_level)
+        volatility_ratio = float(np.std(recent_values) / recent_level) if len(recent_values) > 1 and recent_level > 0 else 0.0
+        profile["pattern_strength"] = round(pattern_strength, 4)
+        profile["volatility_ratio"] = round(volatility_ratio, 4)
+
+        # Semakin jelas pola dan volatilitas historis, semakin besar koreksi.
+        # Batas atas 0.58 menjaga RF tetap menjadi anchor utama.
+        weight = 0.28 + min(0.18, pattern_strength * 0.85) + min(0.12, volatility_ratio * 0.25)
+        profile["pattern_weight"] = round(self._clip_float(weight, 0.25, 0.58, 0.35), 4)
+
+        for dow in range(7):
+            dow_hist = recent[recent["day_of_week"] == dow]["visitors"].astype(float)
+            if dow_hist.empty:
+                profile["dow_sequences"][dow] = []
+                profile["dow_factor"][dow] = 1.0
+                profile["dow_baseline"][dow] = recent_level
+                continue
+
+            seq = [float(v) for v in dow_hist.tail(4).values]
+            dow_mean = float(np.mean(seq)) if seq else float(dow_hist.mean())
+            factor = dow_mean / recent_level if recent_level > 0 else 1.0
+            profile["dow_sequences"][dow] = seq
+            profile["dow_factor"][dow] = round(self._clip_float(factor, 0.55, 1.55, 1.0), 4)
+            profile["dow_baseline"][dow] = round(max(0.0, dow_mean), 4)
+
+        return profile
+
+    def _pattern_adjusted_daily_prediction(
+        self,
+        *,
+        rf_prediction: float,
+        target_date: pd.Timestamp,
+        day_offset: int,
+        pattern_profile: Dict[str, Any],
+    ) -> Tuple[float, Dict[str, float]]:
+        """Blend prediksi RF dengan pola aktual historis secara deterministik."""
+        rf_prediction = max(0.0, float(rf_prediction or 0.0))
+        if not pattern_profile or not pattern_profile.get("enabled") or rf_prediction <= 0:
+            return rf_prediction, {
+                "pattern_prediction": rf_prediction,
+                "pattern_weight": 0.0,
+                "trend_multiplier": 1.0,
+                "adjustment_delta": 0.0,
+            }
+
+        dow = int(target_date.dayofweek)
+        recent_level = max(1.0, float(pattern_profile.get("recent_level") or 1.0))
+        weight = self._clip_float(pattern_profile.get("pattern_weight"), 0.0, 0.65, 0.35)
+        dow_factor = self._clip_float((pattern_profile.get("dow_factor") or {}).get(dow), 0.55, 1.55, 1.0)
+        dow_baseline = max(0.0, float((pattern_profile.get("dow_baseline") or {}).get(dow, recent_level)))
+        seq = (pattern_profile.get("dow_sequences") or {}).get(dow, []) or []
+
+        if seq:
+            # Slot mingguan membuat 4 minggu ke depan mengikuti bentuk 4 minggu terakhir,
+            # bukan mengulang angka yang sama setiap minggu.
+            seq_index = (max(0, int(day_offset)) // 7) % len(seq)
+            analog_value = max(0.0, float(seq[seq_index]))
+        else:
+            analog_value = dow_baseline
+
+        level_dow_value = recent_level * dow_factor
+        pattern_prediction = (0.45 * analog_value) + (0.35 * dow_baseline) + (0.20 * level_dow_value)
+
+        slope_pct = self._clip_float(pattern_profile.get("daily_slope_pct"), -0.012, 0.012, 0.0)
+        trend_multiplier = self._clip_float(1.0 + slope_pct * float(day_offset + 1), 0.82, 1.18, 1.0)
+        pattern_prediction = max(0.0, pattern_prediction * trend_multiplier)
+
+        blended = (1.0 - weight) * rf_prediction + weight * pattern_prediction
+
+        # Guardrail: pola boleh membentuk grafik, tetapi tidak boleh membuat lompatan liar
+        # dari model utama kecuali histori benar-benar mendukung.
+        if rf_prediction > 0:
+            blended = self._clip_float(blended, rf_prediction * 0.55, rf_prediction * 1.55, rf_prediction)
+
+        return blended, {
+            "pattern_prediction": round(pattern_prediction, 4),
+            "pattern_weight": round(weight, 4),
+            "trend_multiplier": round(trend_multiplier, 4),
+            "adjustment_delta": round(blended - rf_prediction, 4),
+        }
 
     def _is_known_24h_store_on_date(self, target_date: date, operational_hours: List[Dict[str, Any]]) -> bool:
         if not operational_hours:
@@ -2205,7 +2375,7 @@ class ForecastService:
         mae = float(mae_value or 0.0)
         rmse = float(rmse_value or 0.0)
         mape = None
-        model_version = "visitors-rf-v3-items-capped"
+        model_version = "visitors-rf-v4-pattern-aware"
 
         avg_prediction = max(
             1.0,
@@ -2413,6 +2583,8 @@ class ForecastService:
         running_history = df_daily[history_cols].copy()
         running_history["date"] = pd.to_datetime(running_history["date"])
         operational_map = self.preprocessor._parse_operational_hours(raw_data.get("operational_hours", []))
+        pattern_profile = self._build_daily_pattern_profile(df_daily)
+        pattern_adjustments: List[Dict[str, float]] = []
 
         for day_offset in range(forecast_days):
             target_date = pd.Timestamp(resolved_start_date) + timedelta(days=day_offset)
@@ -2432,10 +2604,26 @@ class ForecastService:
                 predicted_visitors = 0
                 lower = 0
                 upper = 0
+                pattern_adjustments.append({
+                    "pattern_prediction": 0.0,
+                    "pattern_weight": 0.0,
+                    "trend_multiplier": 1.0,
+                    "adjustment_delta": 0.0,
+                })
             else:
-                predicted_visitors = max(0, round(pred_mean))
-                lower = max(0, round(pred_mean - ci_multiplier * (pred_std + hist_std * 0.3)))
-                upper = max(predicted_visitors, round(pred_mean + ci_multiplier * (pred_std + hist_std * 0.3)))
+                adjusted_mean, adjustment_meta = self._pattern_adjusted_daily_prediction(
+                    rf_prediction=pred_mean,
+                    target_date=target_date,
+                    day_offset=day_offset,
+                    pattern_profile=pattern_profile,
+                )
+                pattern_adjustments.append(adjustment_meta)
+                adjustment_gap = abs(float(adjusted_mean) - float(pred_mean))
+                uncertainty = pred_std + hist_std * 0.3 + adjustment_gap * 0.35
+
+                predicted_visitors = max(0, round(adjusted_mean))
+                lower = max(0, round(adjusted_mean - ci_multiplier * uncertainty))
+                upper = max(predicted_visitors, round(adjusted_mean + ci_multiplier * uncertainty))
 
             day_name = HARI_INDONESIA.get(target_date.dayofweek, "")
             is_weekend = target_date.dayofweek in [5, 6]
@@ -2460,6 +2648,23 @@ class ForecastService:
             running_history = pd.concat([running_history, pd.DataFrame([new_history])], ignore_index=True)
 
         forecast_start, forecast_end = self._response_date_bounds(forecasts, "daily")
+        response_metadata = self._metadata_for_response(
+            store_id=store_id,
+            meta=meta,
+            horizon_label="daily",
+            raw_data=raw_data,
+        )
+        response_metadata.metrics["forecast_postprocess_version"] = pattern_profile.get("version")
+        response_metadata.metrics["forecast_postprocess_method"] = "rf_blend_with_recent_28d_dow_pattern"
+        response_metadata.metrics["forecast_pattern_weight"] = pattern_profile.get("pattern_weight")
+        response_metadata.metrics["forecast_pattern_strength"] = pattern_profile.get("pattern_strength")
+        response_metadata.metrics["forecast_volatility_ratio"] = pattern_profile.get("volatility_ratio")
+        response_metadata.metrics["forecast_daily_slope_pct"] = pattern_profile.get("daily_slope_pct")
+        if pattern_adjustments:
+            response_metadata.metrics["avg_pattern_adjustment_delta"] = self._round_metric(
+                float(np.mean([item.get("adjustment_delta", 0.0) for item in pattern_adjustments])),
+                4,
+            )
 
         return ForecastResponse(
             store_id=store_id,
@@ -2471,12 +2676,7 @@ class ForecastService:
             last_actual_date=start_meta["last_actual_date"],
             business_cutoff_rule=start_meta["business_cutoff_rule"],
             forecasts=forecasts,
-            model_metadata=self._metadata_for_response(
-                store_id=store_id,
-                meta=meta,
-                horizon_label="daily",
-                raw_data=raw_data,
-            ),
+            model_metadata=response_metadata,
             status="success",
             message=(
                 f"Berhasil memprediksi {forecast_days} hari ke depan "
@@ -2748,6 +2948,22 @@ class ForecastService:
             forecast_weeks=forecast_weeks,
         )
         forecast_start, forecast_end = self._response_date_bounds(forecasts, "weekly")
+        response_metadata = self._metadata_for_response(
+            store_id=store_id,
+            meta=trainer.load_model(store_id)[3],
+            horizon_label="weekly",
+        )
+        for key in [
+            "forecast_postprocess_version",
+            "forecast_postprocess_method",
+            "forecast_pattern_weight",
+            "forecast_pattern_strength",
+            "forecast_volatility_ratio",
+            "forecast_daily_slope_pct",
+            "avg_pattern_adjustment_delta",
+        ]:
+            if key in daily_response.model_metadata.metrics:
+                response_metadata.metrics[key] = daily_response.model_metadata.metrics[key]
 
         return WeeklyForecastResponse(
             store_id=store_id,
@@ -2759,11 +2975,7 @@ class ForecastService:
             last_actual_date=(weekly_start_meta["last_actual_date"] if weekly_start_meta else daily_response.last_actual_date),
             business_cutoff_rule=(weekly_start_meta["business_cutoff_rule"] if weekly_start_meta else daily_response.business_cutoff_rule),
             forecasts=forecasts,
-            model_metadata=self._metadata_for_response(
-                store_id=store_id,
-                meta=trainer.load_model(store_id)[3],
-                horizon_label="weekly",
-            ),
+            model_metadata=response_metadata,
             status="success",
             message=(
                 f"Berhasil memprediksi {forecast_weeks} minggu ke depan "
@@ -2821,6 +3033,22 @@ class ForecastService:
         )
 
         forecast_start, forecast_end = self._response_date_bounds(forecasts, "monthly")
+        response_metadata = self._metadata_for_response(
+            store_id=store_id,
+            meta=trainer.load_model(store_id)[3],
+            horizon_label="monthly",
+        )
+        for key in [
+            "forecast_postprocess_version",
+            "forecast_postprocess_method",
+            "forecast_pattern_weight",
+            "forecast_pattern_strength",
+            "forecast_volatility_ratio",
+            "forecast_daily_slope_pct",
+            "avg_pattern_adjustment_delta",
+        ]:
+            if key in daily_response.model_metadata.metrics:
+                response_metadata.metrics[key] = daily_response.model_metadata.metrics[key]
 
         return MonthlyForecastResponse(
             store_id=store_id,
@@ -2832,11 +3060,7 @@ class ForecastService:
             last_actual_date=(monthly_start_meta["last_actual_date"] if monthly_start_meta else daily_response.last_actual_date),
             business_cutoff_rule=(monthly_start_meta["business_cutoff_rule"] if monthly_start_meta else daily_response.business_cutoff_rule),
             forecasts=forecasts,
-            model_metadata=self._metadata_for_response(
-                store_id=store_id,
-                meta=trainer.load_model(store_id)[3],
-                horizon_label="monthly",
-            ),
+            model_metadata=response_metadata,
             status="success",
             message=(
                 f"Berhasil memprediksi {forecast_months} bulan ke depan "

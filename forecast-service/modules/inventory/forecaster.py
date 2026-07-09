@@ -14,7 +14,22 @@ from prophet import Prophet
 from prophet.diagnostics import cross_validation, performance_metrics
 
 from config import Config
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date, timedelta
+
+
+class InventoryModelNotAvailableError(ValueError):
+    """Raised when an ingredient exists but no trained inventory model is available.
+
+    This usually means the ingredient had no usable stock/usage history during
+    the latest retrain, so the trainer could not include it in the store model.
+    """
+
+    def __init__(self, store_id: str, ingredient_id: str, reason_code: str = "no_training_history_or_model"):
+        self.store_id = store_id
+        self.ingredient_id = ingredient_id
+        self.reason_code = reason_code
+        message = "Belum ada histori stok; model forecast belum tersedia."
+        super().__init__(message)
 
 
 class InventoryForecaster:
@@ -337,10 +352,10 @@ class InventoryForecaster:
             )
         all_models = joblib.load(self.store_model_path)
         if self.ingredient_id not in all_models:
-            raise ValueError(f"Ingredient {self.ingredient_id} tidak ada di model toko.")
+            raise InventoryModelNotAvailableError(self.store_id, self.ingredient_id)
         self.model = all_models[self.ingredient_id]
         if self.model is None:
-            raise ValueError(f"Model untuk ingredient {self.ingredient_id} adalah None.")
+            raise InventoryModelNotAvailableError(self.store_id, self.ingredient_id, reason_code="training_failed")
         return self.model
 
     def _load_metrics(self):
@@ -351,146 +366,192 @@ class InventoryForecaster:
             return json.load(f)
 
     # =========================================================================
+    # HORIZON / DATE HELPERS
+    # =========================================================================
+    @staticmethod
+    def _horizon_label_from_freq(freq):
+        mapping = {'D': 'daily', 'W': 'weekly', 'M': 'monthly'}
+        if freq not in mapping:
+            raise ValueError("freq harus 'D', 'W', atau 'M'")
+        return mapping[freq]
+
+    @staticmethod
+    def _normalize_timestamp(value):
+        if value is None:
+            return None
+        return pd.to_datetime(value).tz_localize(None).normalize()
+
+    @staticmethod
+    def _next_monday_after(value):
+        value = pd.Timestamp(value).normalize()
+        days = (7 - value.dayofweek) % 7
+        if days == 0:
+            days = 7
+        return value + pd.Timedelta(days=days)
+
+    @staticmethod
+    def _first_day_next_month_after(value):
+        value = pd.Timestamp(value).normalize()
+        return (value.replace(day=1) + pd.DateOffset(months=1)).normalize()
+
+    def _auto_target_start_from_history(self, freq, last_hist_date):
+        last_hist_date = pd.Timestamp(last_hist_date).normalize()
+        if freq == 'D':
+            return last_hist_date + pd.Timedelta(days=1)
+        if freq == 'W':
+            return self._next_monday_after(last_hist_date)
+        if freq == 'M':
+            return self._first_day_next_month_after(last_hist_date)
+        raise ValueError("freq harus 'D', 'W', atau 'M'")
+
+    def _minimum_target_start_after_history(self, freq, last_hist_date):
+        return self._auto_target_start_from_history(freq, last_hist_date)
+
+    def _calendar_days_for_horizon(self, freq, periods, target_start):
+        periods = int(periods)
+        if periods < 1:
+            raise ValueError("periods/horizon_count minimal 1")
+        target_start = pd.Timestamp(target_start).normalize()
+        if freq == 'D':
+            return periods
+        if freq == 'W':
+            return periods * 7
+        if freq == 'M':
+            first_month = target_start.replace(day=1).normalize()
+            last_month_start = (first_month + pd.DateOffset(months=periods - 1)).normalize()
+            last_day = (last_month_start + pd.offsets.MonthEnd(0)).normalize()
+            return int((last_day - target_start).days) + 1
+        raise ValueError("freq harus 'D', 'W', atau 'M'")
+
+    def _forecast_date_bounds(self, forecast_array, freq):
+        if not forecast_array:
+            return None, None
+        if freq == 'D':
+            return forecast_array[0].get('date'), forecast_array[-1].get('date')
+        return forecast_array[0].get('period_start'), forecast_array[-1].get('period_end')
+
+    # =========================================================================
     # PREDICTION
     # =========================================================================
-    def predict(self, periods=1, freq='W', start_date=None):
-        """Jalankan prediksi inventory menggunakan model Prophet yang sudah di-train.
-
-        Parameters
-        ----------
-        periods : int
-            Jumlah periode ke depan (hari/minggu/bulan tergantung freq).
-        freq : str
-            'D' = daily, 'W' = weekly, 'M' = monthly.
-        start_date : str or date or None
-            Tanggal mulai prediksi (YYYY-MM-DD). Jika None, auto-resolve:
-              - Daily  : hari setelah actual complete terakhir di histori.
-              - Weekly : Senin setelah Minggu complete terakhir di histori.
-              - Monthly: tanggal 1 bulan berikutnya setelah bulan complete.
-
-            Catatan: histori sudah dipotong via Period Complete saat training
-            (_get_historical_data), jadi last_hist_date untuk freq='W' selalu
-            Minggu, dan untuk freq='M' selalu akhir bulan.
-
-        Returns
-        -------
-        dict – Berisi forecasts, model_metadata, summary, horizon, dll.
-        """
+    def predict(
+        self,
+        periods=1,
+        freq='W',
+        start_date=None,
+        start_date_source=None,
+        business_cutoff_rule=None,
+    ):
         if not self.model:
             self.load_model()
 
-        if freq == 'W':
-            future_periods = periods * 7
-        elif freq == 'M':
-            future_periods = periods * 30
-        elif freq == 'D':
-            future_periods = periods
-        else:
-            raise ValueError("freq harus 'D', 'W', atau 'M'")
+        periods = int(periods)
+        if periods < 1:
+            raise ValueError("horizon_count minimal 1")
 
-        import pandas as pd
+        horizon_label = self._horizon_label_from_freq(freq)
         last_hist_date = self.model.history['ds'].max()
-        
-        if start_date:
-            target_start = pd.to_datetime(start_date)
-            start_date_source = "manual_body"
-        else:
-            # Auto-resolve: berdasarkan tanggal akhir data historis (last actual)
-            next_after_actual = last_hist_date + pd.Timedelta(days=1)
-            if freq == 'W':
-                # Weekly: mulai hari Senin setelah Minggu complete
-                # Cari Senin berikutnya dari last_hist_date
-                days_until_monday = (7 - last_hist_date.dayofweek) % 7
-                if days_until_monday == 0:
-                    days_until_monday = 7
-                target_start = last_hist_date + pd.Timedelta(days=days_until_monday)
-                start_date_source = "auto_weekly_complete_period"
-            elif freq == 'M':
-                # Monthly: mulai tanggal 1 bulan berikutnya
-                target_start = (last_hist_date + pd.offsets.MonthBegin(1))
-                if target_start <= last_hist_date:
-                    target_start = last_hist_date + pd.offsets.MonthBegin(1)
-                start_date_source = "auto_monthly_complete_period"
-            else:
-                # Daily: mulai dari hari setelah actual complete terakhir
-                target_start = next_after_actual
-                start_date_source = "auto_daily_after_complete"
+        last_hist_date = pd.Timestamp(last_hist_date).tz_localize(None).normalize()
 
-        days_diff = (target_start - last_hist_date).days
-        if days_diff > 0:
-            total_periods = days_diff + future_periods
+        if start_date:
+            target_start = self._normalize_timestamp(start_date)
+            source = start_date_source or 'manual_body'
+            cutoff_rule = business_cutoff_rule or 'manual_start_date'
         else:
-            total_periods = future_periods
+            target_start = self._auto_target_start_from_history(freq, last_hist_date)
+            source = f'auto_{horizon_label}_after_model_history_complete_period'
+            cutoff_rule = 'inventory_after_model_history_complete_period'
+
+        # Guard standar: jangan mulai forecast pada tanggal yang masih masuk history model.
+        min_start = self._minimum_target_start_after_history(freq, last_hist_date)
+        if target_start < min_start:
+            target_start = min_start
+            if not start_date_source:
+                source = f'auto_{horizon_label}_after_model_history_complete_period'
+
+        future_periods = self._calendar_days_for_horizon(freq, periods, target_start)
+        days_diff = (target_start - last_hist_date).days
+        total_periods = max(future_periods, days_diff + future_periods)
 
         future = self.model.make_future_dataframe(periods=total_periods)
         future = self._add_regressors(future)
         forecast = self.model.predict(future)
 
         daily_rows = forecast[forecast['ds'] >= target_start].head(future_periods).copy()
+        if daily_rows.empty:
+            raise ValueError('Forecast kosong setelah target_start diterapkan')
 
         daily_rows['yhat']       = daily_rows['yhat'].clip(lower=0)
         daily_rows['yhat_lower'] = daily_rows['yhat_lower'].clip(lower=0)
         daily_rows['yhat_upper'] = daily_rows['yhat_upper'].clip(lower=0)
 
-        # Nama hari Indonesia
         _day_names = ['Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu', 'Minggu']
-        horizon_label = {'D': 'daily', 'W': 'weekly', 'M': 'monthly'}[freq]
 
         if freq == 'D':
             forecast_array = [
-                {"date": row['ds'].strftime('%Y-%m-%d'),
-                 "day_of_week": _day_names[row['ds'].dayofweek],
-                 "is_weekend": row['ds'].dayofweek >= 5,
-                 "predicted_usage": round(row['yhat'], 2),
-                 "lower_bound": round(row['yhat_lower'], 2),
-                 "upper_bound": round(row['yhat_upper'], 2)}
+                {
+                    "date": row['ds'].strftime('%Y-%m-%d'),
+                    "day_of_week": _day_names[row['ds'].dayofweek],
+                    "is_weekend": row['ds'].dayofweek >= 5,
+                    "predicted_usage": round(row['yhat'], 2),
+                    "predicted_value": round(row['yhat'], 2),
+                    "lower_bound": round(row['yhat_lower'], 2),
+                    "upper_bound": round(row['yhat_upper'], 2),
+                }
                 for _, row in daily_rows.iterrows()
             ]
-            date_key_start = 'date'
-            date_key_end   = 'date'
         elif freq == 'W':
-            daily_rows['period_start'] = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
-            daily_rows['period_end']   = daily_rows['ds'].dt.to_period('W').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
+            daily_rows['period_start'] = daily_rows['ds'].dt.to_period('W-SUN').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
+            daily_rows['period_end']   = daily_rows['ds'].dt.to_period('W-SUN').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
             daily_rows['week_of_year'] = daily_rows['ds'].dt.isocalendar().week.astype(int)
-            grouped = daily_rows.groupby(['period_start', 'period_end', 'week_of_year']).agg(
-                total_yhat=('yhat', 'sum'), total_yhat_lower=('yhat_lower', 'sum'),
-                total_yhat_upper=('yhat_upper', 'sum')
+            grouped = daily_rows.groupby(['period_start', 'period_end', 'week_of_year'], sort=True).agg(
+                total_yhat=('yhat', 'sum'),
+                total_yhat_lower=('yhat_lower', 'sum'),
+                total_yhat_upper=('yhat_upper', 'sum'),
             ).reset_index()
             forecast_array = [
-                {"period_start": row['period_start'], "period_end": row['period_end'],
-                 "week_of_year": int(row['week_of_year']),
-                 "predicted_usage": round(row['total_yhat'], 2),
-                 "lower_bound": round(row['total_yhat_lower'], 2),
-                 "upper_bound": round(row['total_yhat_upper'], 2)}
-                for _, row in grouped.iterrows()
+                {
+                    "period_start": row['period_start'],
+                    "period_end": row['period_end'],
+                    "week_of_year": int(row['week_of_year']),
+                    "predicted_usage": round(row['total_yhat'], 2),
+                    "predicted_value": round(row['total_yhat'], 2),
+                    "lower_bound": round(row['total_yhat_lower'], 2),
+                    "upper_bound": round(row['total_yhat_upper'], 2),
+                }
+                for _, row in grouped.head(periods).iterrows()
             ]
-            date_key_start = 'period_start'
-            date_key_end   = 'period_end'
-        elif freq == 'M':
+        else:
             daily_rows['period_start'] = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.start_time.strftime('%Y-%m-%d'))
             daily_rows['period_end']   = daily_rows['ds'].dt.to_period('M').apply(lambda r: r.end_time.strftime('%Y-%m-%d'))
             daily_rows['month_num']    = daily_rows['ds'].dt.month
-            grouped = daily_rows.groupby(['period_start', 'period_end', 'month_num']).agg(
-                total_yhat=('yhat', 'sum'), total_yhat_lower=('yhat_lower', 'sum'),
-                total_yhat_upper=('yhat_upper', 'sum')
+            grouped = daily_rows.groupby(['period_start', 'period_end', 'month_num'], sort=True).agg(
+                total_yhat=('yhat', 'sum'),
+                total_yhat_lower=('yhat_lower', 'sum'),
+                total_yhat_upper=('yhat_upper', 'sum'),
             ).reset_index()
             forecast_array = [
-                {"period_start": row['period_start'], "period_end": row['period_end'],
-                 "month": int(row['month_num']),
-                 "predicted_usage": round(row['total_yhat'], 2),
-                 "lower_bound": round(row['total_yhat_lower'], 2),
-                 "upper_bound": round(row['total_yhat_upper'], 2)}
-                for _, row in grouped.iterrows()
+                {
+                    "period_start": row['period_start'],
+                    "period_end": row['period_end'],
+                    "month": int(row['month_num']),
+                    "predicted_usage": round(row['total_yhat'], 2),
+                    "predicted_value": round(row['total_yhat'], 2),
+                    "lower_bound": round(row['total_yhat_lower'], 2),
+                    "upper_bound": round(row['total_yhat_upper'], 2),
+                }
+                for _, row in grouped.head(periods).iterrows()
             ]
-            date_key_start = 'period_start'
-            date_key_end   = 'period_end'
 
-        total_all = round(daily_rows['yhat'].sum(), 2)
-        avg_all   = round(daily_rows['yhat'].mean(), 2)
+        if not forecast_array:
+            raise ValueError('Forecast kosong untuk horizon yang diminta')
+
+        fc_start, fc_end = self._forecast_date_bounds(forecast_array, freq)
+        actual_daily_rows = daily_rows[(daily_rows['ds'] >= pd.to_datetime(fc_start)) & (daily_rows['ds'] <= pd.to_datetime(fc_end))].copy()
+        total_all = round(actual_daily_rows['yhat'].sum(), 2)
+        avg_all   = round(actual_daily_rows['yhat'].mean(), 2)
 
         metrics = self._load_metrics()
         if metrics:
-            # Blended confidence: gabungan sMAPE, R², EV, dan bias penalty
             scores = []
             smape = metrics.get('smape')
             if smape is not None:
@@ -507,37 +568,22 @@ class InventoryForecaster:
             ev = metrics.get('explained_variance')
             if ev is not None and ev >= 0.10:
                 scores.append(ev * 100.0)
-
-            # Penalti bias: skor turun proporsional jika bias_ratio jauh dari 1.0
             bias_ratio = metrics.get('bias_ratio')
             if bias_ratio is not None:
                 bias_penalty = max(0.0, (1 - abs(1 - bias_ratio) * 2)) * 100
                 scores.append(bias_penalty)
-
-            if scores:
-                confidence_score = max(0.0, min(100.0, sum(scores) / len(scores)))
-            else:
-                confidence_score = 0.0
+            confidence_score = max(0.0, min(100.0, sum(scores) / len(scores))) if scores else 0.0
         else:
             metrics = {}
             confidence_score = 0.0
 
         confidence_level = int(round(confidence_score))
-
-        # Hitung error_percentage dari sMAPE atau MAPE
         _smape = metrics.get('smape')
         if _smape is not None:
             error_pct = round((_smape * 100 if _smape < 1.0 else _smape), 2)
         else:
             _mape = metrics.get('mape')
-            error_pct = round((_mape * 100 if _mape is not None and _mape < 1.0 else (_mape or 0)) , 2)
-
-        # Tentukan forecast start/end date
-        if forecast_array:
-            fc_start = forecast_array[0].get(date_key_start)
-            fc_end   = forecast_array[-1].get(date_key_end)
-        else:
-            fc_start = fc_end = None
+            error_pct = round((_mape * 100 if _mape is not None and _mape < 1.0 else (_mape or 0)), 2)
 
         result = {
             "store_id": self.store_id,
@@ -546,11 +592,12 @@ class InventoryForecaster:
             "forecast_end_date": fc_end,
             "last_actual_date": last_hist_date.strftime('%Y-%m-%d'),
             "generated_at": datetime.now(timezone.utc).isoformat(),
-            "start_date_source": start_date_source,
+            "start_date_source": source,
+            "business_cutoff_rule": cutoff_rule,
             "horizon": {
                 "count": periods,
-                "days": future_periods,
-                "label": horizon_label
+                "days": int((pd.to_datetime(fc_end) - pd.to_datetime(fc_start)).days) + 1,
+                "label": horizon_label,
             },
             "model_metadata": {
                 "confidence_level": confidence_level,
@@ -571,163 +618,195 @@ class InventoryForecaster:
             "summary": {
                 "average_predicted_usage": avg_all,
                 "forecast_count": len(forecast_array),
-                "total_predicted_usage": total_all
+                "total_predicted_usage": total_all,
+                "total_predicted_value": total_all,
             },
-            "forecasts": forecast_array
+            "forecasts": forecast_array,
         }
         return result
 
     # =========================================================================
     # SAVE TO DATABASE
     # =========================================================================
-    def save_all_forecasts(self, periods=4, freq='W', start_date=None):
-        """Prediksi dan simpan ke database via backend Golang.
-
-        Returns
-        -------
-        dict  – Berisi run_id, saved_results, predict_range, backend_status.
-               Jika gagal, dict tetap dikembalikan dengan status "failed".
-        """
+    def save_all_forecasts(
+        self,
+        periods=4,
+        freq='W',
+        start_date=None,
+        forecast_result=None,
+        start_date_source=None,
+        business_cutoff_rule=None,
+        last_actual_date=None,
+    ):
         try:
-            result = self.predict(periods=periods, freq=freq, start_date=start_date)
+            result = forecast_result or self.predict(
+                periods=periods,
+                freq=freq,
+                start_date=start_date,
+                start_date_source=start_date_source,
+                business_cutoff_rule=business_cutoff_rule,
+            )
         except Exception as e:
             print(f"[ERROR] Gagal prediksi: {e}")
             return {
                 "status": "failed",
-                "run_id": None,
+                "message": f"Gagal prediksi: {e}",
                 "saved_results": 0,
-                "predict_range": None,
-                "backend_status": None,
-                "message": str(e),
             }
 
-        model_meta = result.get('model_metadata', {})
-        metrics = {}
-        if model_meta:
-            metrics = {
-                'mae': model_meta.get('cv_mae'),
-                'rmse': model_meta.get('cv_rmse'),
-                'mape': model_meta.get('mape'),
-            }
-        summary = result.get('summary', {})
+        if last_actual_date:
+            result['last_actual_date'] = last_actual_date.isoformat() if hasattr(last_actual_date, 'isoformat') else str(last_actual_date)
+
+        model_meta = result.get('model_metadata', {}) or {}
+        metrics = {
+            'mae': model_meta.get('cv_mae'),
+            'rmse': model_meta.get('cv_rmse'),
+            'mape': model_meta.get('mape'),
+            'confidence_level': model_meta.get('confidence_level'),
+            'error_percentage': model_meta.get('error_percentage'),
+            'smape': model_meta.get('smape'),
+        }
+        summary = result.get('summary', {}) or {}
+        summary.update({
+            "module": "inventory",
+            "ingredient_id": self.ingredient_id,
+            "horizon_label": result.get('horizon', {}).get('label', 'daily'),
+            "forecast_start_date": result.get('forecast_start_date'),
+            "forecast_end_date": result.get('forecast_end_date'),
+            "start_date_source": result.get('start_date_source'),
+            "last_actual_date": result.get('last_actual_date'),
+            "business_cutoff_rule": result.get('business_cutoff_rule'),
+        })
 
         forecast_array = result.get('forecasts', [])
         horizon_label = result.get('horizon', {}).get('label', 'daily')
         horizon_days  = result.get('horizon', {}).get('days', periods)
-
-        if freq == 'D':
-            date_key = 'date'
-        else:
-            date_key = 'period_start'
+        date_key = 'date' if freq == 'D' else 'period_start'
+        end_key = 'date' if freq == 'D' else 'period_end'
 
         if not forecast_array:
             return {
                 "status": "failed",
-                "run_id": None,
+                "message": "Forecast kosong, tidak ada data untuk disimpan.",
                 "saved_results": 0,
-                "predict_range": None,
-                "backend_status": None,
-                "message": "forecast_array kosong",
             }
 
         if self.model and hasattr(self.model, 'history') and not self.model.history.empty:
             hist = self.model.history
             train_start = hist['ds'].min().strftime('%Y-%m-%d')
             train_end   = hist['ds'].max().strftime('%Y-%m-%d')
+            training_rows = int(len(hist))
         else:
-            train_start = train_end = 'unknown'
+            train_start = train_end = datetime.now(timezone.utc).date().isoformat()
+            training_rows = 0
 
-        model_version = "1.0.0"
-
+        model_version = "inventory-prophet-v2-calendar"
         predict_start = forecast_array[0][date_key]
-        predict_end   = forecast_array[-1][date_key]
-
+        predict_end   = forecast_array[-1].get(end_key, forecast_array[-1][date_key])
         now = datetime.now(timezone.utc).isoformat()
-        metrics_str = json.dumps(metrics) if metrics else "{}"
-        summary_str = json.dumps(summary) if summary else "{}"
         data_quality = {
             "date_range": {"start": train_start, "end": train_end},
-            "training_rows": len(self.model.history) if self.model and hasattr(self.model, 'history') else 0,
-            "missing_dates_filled": 0
+            "training_rows": training_rows,
+            "model_training_data_points": model_meta.get('data_days') or training_rows,
+            "last_actual_date": result.get('last_actual_date') or train_end,
+            "missing_dates_filled": 0,
+            "zero_ratio": model_meta.get('zero_ratio'),
+            "outliers_nullified": model_meta.get('outliers_nullified'),
+            "stockout_days_nullified": model_meta.get('stockout_days_nullified'),
         }
-        data_quality_str = json.dumps(data_quality)
 
         run_payload = {
             "store_id": self.store_id,
             "forecast_type": "inventory",
             "horizon_label": horizon_label,
             "horizon_days": horizon_days,
-            "granularity": "daily",
+            "granularity": horizon_label,
             "model_name": "prophet",
             "model_version": model_version,
-            "feature_version": "v1",
+            "feature_version": "v2",
             "train_start_date": train_start,
             "train_end_date": train_end,
             "predict_start_date": predict_start,
             "predict_end_date": predict_end,
-            "metrics": metrics_str,
-            "summary": summary_str,
-            "data_quality": data_quality_str,
+            "metrics": json.dumps(metrics),
+            "summary": json.dumps(summary),
+            "data_quality": json.dumps(data_quality),
             "status": "success",
             "started_at": now,
-            "finished_at": now
+            "finished_at": now,
         }
 
         url_runs = f"{Config.BACKEND_API_URL}/forecast-runs"
-        run_id = None
         try:
-            resp = requests.post(url_runs, json=run_payload,
-                                 headers=Config.backend_headers(),
-                                 timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
+            resp = requests.post(
+                url_runs,
+                json=run_payload,
+                headers=Config.backend_headers(),
+                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS,
+            )
             resp.raise_for_status()
-            run_id = resp.json().get('run_id')
+            run_response = resp.json()
+            run_id = run_response.get('run_id') or run_response.get('data', {}).get('id')
+            if not run_id:
+                return {
+                    "status": "failed",
+                    "message": "Berhasil insert forecast_runs tapi run_id tidak kembali dari API.",
+                    "saved_results": 0,
+                    "backend_run_response": run_response,
+                }
             print(f"[SAVED] forecast_runs run_id={run_id}")
         except Exception as e:
             print(f"[ERROR] forecast_runs: {e}")
             return {
                 "status": "failed",
-                "run_id": None,
+                "message": f"Gagal simpan forecast_runs: {e}",
                 "saved_results": 0,
-                "predict_range": {"start": predict_start, "end": predict_end},
-                "backend_status": getattr(resp, 'status_code', None) if 'resp' in dir() else None,
-                "message": f"forecast_runs gagal: {e}",
             }
 
-        fc_results = []
-        conf_level = result.get('model_metadata', {}).get('confidence_level', 0)
+        conf_level = int(model_meta.get('confidence_level') or 0)
+        results = []
         for item in forecast_array:
-            fc_results.append({
+            results.append({
                 "target_date": item[date_key],
-                "predicted_value": item.get('predicted_usage', 0.0),
+                "predicted_value": float(item.get('predicted_usage', item.get('predicted_value', 0.0))),
                 "lower_bound": item.get('lower_bound'),
                 "upper_bound": item.get('upper_bound'),
                 "confidence_level": conf_level,
                 "item_id": self.ingredient_id,
-                "item_type": "ingredient"
+                "item_type": "ingredient",
             })
 
         url_results = f"{Config.BACKEND_API_URL}/forecast-results"
         try:
-            resp = requests.post(url_results, json={"run_id": run_id, "results": fc_results},
-                                 headers=Config.backend_headers(),
-                                 timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS)
+            resp = requests.post(
+                url_results,
+                json={"run_id": run_id, "results": results},
+                headers=Config.backend_headers(),
+                timeout=Config.BACKEND_REQUEST_TIMEOUT_SECONDS,
+            )
             resp.raise_for_status()
-            print(f"[SAVED] {len(fc_results)} baris → forecast_results run_id={run_id}")
+            results_response = resp.json()
+            print(f"[SAVED] {len(results)} baris → forecast_results run_id={run_id}")
             return {
                 "status": "saved",
+                "message": f"Forecast inventory {horizon_label} berhasil disimpan ke backend.",
                 "run_id": run_id,
-                "saved_results": len(fc_results),
-                "predict_range": {"start": predict_start, "end": predict_end},
-                "backend_status": resp.status_code,
-                "message": f"{len(fc_results)} hasil disimpan",
+                "forecast_type": "inventory",
+                "horizon_label": horizon_label,
+                "horizon_days": horizon_days,
+                "predict_start_date": predict_start,
+                "predict_end_date": predict_end,
+                "saved_results": len(results),
+                "backend_status": "success",
+                "backend_run_response": run_response,
+                "backend_results_response": results_response,
             }
         except Exception as e:
             print(f"[ERROR] forecast_results: {e}")
             return {
                 "status": "failed",
+                "message": f"Gagal simpan forecast_results: {e}",
                 "run_id": run_id,
                 "saved_results": 0,
-                "predict_range": {"start": predict_start, "end": predict_end},
-                "backend_status": getattr(resp, 'status_code', None) if 'resp' in dir() else None,
-                "message": f"forecast_results gagal: {e}",
+                "backend_status": "failed",
             }

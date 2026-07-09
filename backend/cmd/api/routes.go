@@ -271,6 +271,7 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 			r.Get("/", deps.SalesMonthlySummaryHandler.GetAll)
 			r.Get("/{id}", deps.SalesMonthlySummaryHandler.GetByID)
 		})
+		r.Post("/internal/forecast/save", deps.ForecastSaveHandler.Save)
 		r.Route("/internal/forecast/forecast-runs", func(r chi.Router) {
 			r.Get("/{id}", deps.ForecastRunHandler.GetByID)
 			r.Post("/", deps.ForecastRunHandler.Create)
@@ -384,12 +385,10 @@ func setupRouter(deps *AppDependencies) *chi.Mux {
 		r.Route("/api/forecast-results", func(r chi.Router) {
 			r.Get("/", deps.ForecastResultHandler.GetAll)
 			r.Get("/{id}", deps.ForecastResultHandler.GetByID)
-			r.Post("/", deps.ForecastResultHandler.BulkCreate)
 		})
 
 		r.Route("/api/forecast-runs", func(r chi.Router) {
 			r.Get("/{id}", deps.ForecastRunHandler.GetByID)
-			r.Post("/", deps.ForecastRunHandler.Create)
 		})
 
 		r.Route("/api/finance-monthly-summaries", func(r chi.Router) {

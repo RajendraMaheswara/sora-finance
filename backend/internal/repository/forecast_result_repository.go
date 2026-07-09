@@ -112,10 +112,23 @@ func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, 
 	}
 	defer tx.Rollback(ctx)
 
-	// Forecast result adalah detail milik satu run. Saat run yang sama disave ulang,
-	// detail lama diganti agar hasil tidak dobel.
-	if _, err := tx.Exec(ctx, `DELETE FROM public.forecast_results WHERE run_id = $1`, runID); err != nil {
+	if err := insertForecastResultsTx(ctx, tx, runID, items, true); err != nil {
 		return err
+	}
+	if err := finalizeLatestForecastRunTx(ctx, tx, runID); err != nil {
+		return err
+	}
+
+	return tx.Commit(ctx)
+}
+
+func insertForecastResultsTx(ctx context.Context, tx pgx.Tx, runID int64, items []models.ForecastResultCreateData, replaceExisting bool) error {
+	if replaceExisting {
+		// Forecast result adalah detail milik satu run. Saat run yang sama disave ulang,
+		// detail lama diganti agar hasil tidak dobel.
+		if _, err := tx.Exec(ctx, `DELETE FROM public.forecast_results WHERE run_id = $1`, runID); err != nil {
+			return err
+		}
 	}
 
 	batch := &pgx.Batch{}
@@ -142,8 +155,7 @@ func (r *ForecastResultRepository) BulkInsert(ctx context.Context, runID int64, 
 	if err := br.Close(); err != nil {
 		return err
 	}
-
-	return tx.Commit(ctx)
+	return nil
 }
 
 func (r *ForecastResultRepository) GetLatestForecast(ctx context.Context, forecastType string, horizonLabel string, requestedStoreID string) (*models.ForecastLatestResponse, error) {
@@ -183,6 +195,11 @@ func (r *ForecastResultRepository) GetLatestForecast(ctx context.Context, foreca
 		  AND run.horizon_label = $2
 		  AND run.status = 'success'
 		  AND run.is_latest = true
+		  AND EXISTS (
+			SELECT 1
+			FROM public.forecast_results result_guard
+			WHERE result_guard.run_id = run.id
+		  )
 	`
 	args := []interface{}{forecastType, horizonLabel}
 	if storeID != "" {

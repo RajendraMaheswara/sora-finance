@@ -1,0 +1,261 @@
+openapi: 3.0.3
+info:
+  title: Sora Forecast Service API
+  version: "2.4"
+  description: Forecast-service endpoints after /run removal. Use /save for generate + save.
+servers:
+  - url: http://localhost:5000
+security:
+  - ServiceKeyHeader: []
+  - ServiceKeyBearer: []
+components:
+  securitySchemes:
+    ServiceKeyHeader:
+      type: apiKey
+      in: header
+      name: X-Service-Key
+    ServiceKeyBearer:
+      type: http
+      scheme: bearer
+  schemas:
+    StandardForecastRequest:
+      type: object
+      required: [store_id, horizon_label, horizon_count]
+      properties:
+        store_id:
+          type: string
+          format: uuid
+        horizon_label:
+          type: string
+          enum: [daily, weekly, monthly]
+        horizon_count:
+          type: integer
+          minimum: 1
+          description: daily max 90, weekly max 52, monthly max 24
+        start_date:
+          type: string
+          format: date
+          nullable: true
+    InventoryForecastRequest:
+      allOf:
+        - $ref: '#/components/schemas/StandardForecastRequest'
+        - type: object
+          properties:
+            ingredient_id:
+              type: string
+              format: uuid
+              nullable: true
+              description: Optional. If omitted, forecast runs for all ingredients in the store.
+            allow_partial:
+              type: boolean
+              default: true
+              description: Only used by /save without ingredient_id. Default true saves successful ingredients and reports ingredients without history/model as warnings/skipped_ingredients. Runtime failures are reported in errors. Set false for strict all-or-nothing.
+    ForecastEnvelope:
+      type: object
+      properties:
+        status:
+          type: string
+          example: partial_success
+        message:
+          type: string
+        request:
+          type: object
+        save_result:
+          type: object
+        data:
+          type: object
+    RetrainRequest:
+      type: object
+      required: [store_id]
+      properties:
+        store_id:
+          type: string
+          format: uuid
+        force:
+          type: boolean
+          default: false
+    InventoryRetrainJob:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [queued, running, success, partial_success, failed]
+        message:
+          type: string
+        task_id:
+          type: string
+          format: uuid
+        request:
+          type: object
+        data:
+          type: object
+          properties:
+            task_id:
+              type: string
+              format: uuid
+            job_type:
+              type: string
+              example: inventory_retrain
+            forecast_type:
+              type: string
+              example: inventory
+            store_id:
+              type: string
+              format: uuid
+            status:
+              type: string
+              enum: [queued, running, success, partial_success, failed]
+            progress:
+              type: object
+              properties:
+                total: {type: integer, example: 3}
+                processed: {type: integer, example: 1}
+                failed: {type: integer, example: 0}
+                percentage: {type: number, example: 33.33}
+            current_horizon:
+              type: string
+              nullable: true
+              example: weekly
+            result:
+              type: object
+              nullable: true
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: OK
+  /api/forecast/visitors/preview:
+    post:
+      summary: Preview visitors forecast without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/visitors/save:
+    post:
+      summary: Generate visitors forecast and save to backend/database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '201': {description: Saved}
+  /api/forecast/visitors/retrain:
+    post:
+      summary: Retrain visitors model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrainRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/sales/preview:
+    post:
+      summary: Preview sales forecast without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/sales/save:
+    post:
+      summary: Generate sales forecast and save to backend/database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StandardForecastRequest'
+      responses:
+        '201': {description: Saved}
+  /api/forecast/sales/retrain:
+    post:
+      summary: Retrain sales model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrainRequest'
+      responses:
+        '200': {description: OK}
+  /api/forecast/inventory/preview:
+    post:
+      summary: Preview inventory forecast without saving
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryForecastRequest'
+      responses:
+        '200': {description: OK}
+        '207': {description: Partial success when some ingredients fail in all-store mode}
+  /api/forecast/inventory/save:
+    post:
+      summary: Generate inventory forecast and save to backend/database
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryForecastRequest'
+      responses:
+        '201': {description: Saved. Response status may be success or partial_success.}
+        '400': {description: Some ingredients failed and allow_partial=false, or no ingredient can be forecasted.}
+  /api/forecast/inventory/retrain:
+    post:
+      summary: Start async inventory retrain job for one store across daily, weekly, monthly
+      description: Inventory retrain can take several minutes. This endpoint returns task_id immediately; use the status endpoint to monitor progress.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetrainRequest'
+      responses:
+        '202':
+          description: Job started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryRetrainJob'
+        '200':
+          description: Existing queued/running job for the same store returned
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryRetrainJob'
+  /api/forecast/inventory/retrain/status/{task_id}:
+    get:
+      summary: Get async inventory retrain job status
+      parameters:
+        - in: path
+          name: task_id
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryRetrainJob'
+        '400': {description: Invalid task_id}
+        '404': {description: Task not found}

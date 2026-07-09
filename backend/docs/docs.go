@@ -6,9 +6,9 @@ import "github.com/swaggo/swag"
 const docTemplate = `{
     "swagger": "2.0",
     "info": {
-        "description": "Forecast-only API documentation. Forecast source of truth: forecast_runs + forecast_results.",
+        "description": "Forecast-only API documentation. Forecast source of truth: forecast_runs + forecast_results. Forecast write endpoints are internal-service only. Latest forecast is only exposed after a successful run has saved at least one forecast_result.",
         "title": "Sora Finance Forecast API",
-        "version": "1.1"
+        "version": "1.3"
     },
     "host": "localhost:8080",
     "basePath": "/",
@@ -19,7 +19,7 @@ const docTemplate = `{
         "/api/forecast/latest": {
             "get": {
                 "summary": "Get latest forecast",
-                "description": "Mengambil latest successful forecast dari forecast_runs + forecast_results.",
+                "description": "Mengambil latest successful forecast dari forecast_runs + forecast_results. It never returns a run that has zero forecast_results.",
                 "tags": [
                     "Forecast Core"
                 ],
@@ -104,7 +104,7 @@ const docTemplate = `{
         "/api/forecast/visitors/latest": {
             "get": {
                 "summary": "Get latest visitors forecast",
-                "description": "Shortcut latest forecast untuk forecast_type=visitors.",
+                "description": "Shortcut latest forecast untuk forecast_type=visitors. It never returns a run that has zero forecast_results.",
                 "tags": [
                     "Forecast Core"
                 ],
@@ -234,70 +234,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/forecast-runs": {
-            "post": {
-                "summary": "Create forecast run",
-                "description": "Membuat metadata forecast run. is_latest hanya true untuk status success; run success lama untuk store/type/horizon yang sama otomatis dibuat false.",
-                "tags": [
-                    "Forecast Core"
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Bearer JWT token",
-                        "name": "Authorization",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/ForecastRunInput"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/ForecastRunCreateResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/api/forecast-results": {
             "get": {
                 "summary": "Get forecast results",
@@ -329,74 +265,6 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    }
-                }
-            },
-            "post": {
-                "summary": "Bulk save forecast results",
-                "description": "Mengganti detail forecast_results untuk satu run_id. Field results wajib ada dan tidak boleh kosong.",
-                "tags": [
-                    "Forecast Core"
-                ],
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Bearer JWT token",
-                        "name": "Authorization",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "name": "body",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/ForecastResultsBulkRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/ForecastResultsBulkResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/ErrorResponse"
                         }
@@ -470,6 +338,77 @@ const docTemplate = `{
                 }
             }
         },
+        "/internal/forecast/save": {
+            "post": {
+                "summary": "Save forecast run and results atomically (internal service)",
+                "description": "Recommended internal endpoint for forecast-service. Validates run + non-empty results, inserts forecast_runs and forecast_results in one transaction, then marks the run as latest only after results are saved successfully.",
+                "tags": [
+                    "Forecast Core"
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Internal forecast service key. Backend also accepts Authorization: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "X-Service-Key",
+                        "in": "header",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional alternative to X-Service-Key: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": false
+                    },
+                    {
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/ForecastSaveInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/ForecastSaveResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "Forbidden",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/internal/forecast/visitors-daily-history": {
             "get": {
                 "summary": "Get visitors daily history",
@@ -483,10 +422,17 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Internal forecast service key",
+                        "description": "Internal forecast service key. Backend also accepts Authorization: Bearer <INTERNAL_SERVICE_KEY>.",
                         "name": "X-Service-Key",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional alternative to X-Service-Key: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": false
                     },
                     {
                         "name": "store_id",
@@ -534,10 +480,17 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Internal forecast service key",
+                        "description": "Internal forecast service key. Backend also accepts Authorization: Bearer <INTERNAL_SERVICE_KEY>.",
                         "name": "X-Service-Key",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional alternative to X-Service-Key: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": false
                     },
                     {
                         "name": "id",
@@ -583,8 +536,8 @@ const docTemplate = `{
         },
         "/internal/forecast/forecast-runs": {
             "post": {
-                "summary": "Create forecast run",
-                "description": "Membuat metadata forecast run. is_latest hanya true untuk status success; run success lama untuk store/type/horizon yang sama otomatis dibuat false.",
+                "summary": "Create forecast run header only (internal service)",
+                "description": "Compatibility endpoint for older forecast-service flow. It creates forecast_runs with is_latest=false even when status=success. The run becomes latest only after /internal/forecast/forecast-results successfully saves at least one result.",
                 "tags": [
                     "Forecast Core"
                 ],
@@ -597,10 +550,17 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Internal forecast service key",
+                        "description": "Internal forecast service key. Backend also accepts Authorization: Bearer <INTERNAL_SERVICE_KEY>.",
                         "name": "X-Service-Key",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional alternative to X-Service-Key: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": false
                     },
                     {
                         "name": "body",
@@ -658,10 +618,17 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Internal forecast service key",
+                        "description": "Internal forecast service key. Backend also accepts Authorization: Bearer <INTERNAL_SERVICE_KEY>.",
                         "name": "X-Service-Key",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional alternative to X-Service-Key: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": false
                     }
                 ],
                 "responses": {
@@ -689,8 +656,8 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "summary": "Bulk save forecast results",
-                "description": "Mengganti detail forecast_results untuk satu run_id. Field results wajib ada dan tidak boleh kosong.",
+                "summary": "Bulk save forecast results and finalize latest (internal service)",
+                "description": "Compatibility endpoint for older two-step forecast-service flow. Replaces forecast_results for one run_id. Field results is required and must not be empty. After results are committed, a successful run is marked latest in the same transaction.",
                 "tags": [
                     "Forecast Core"
                 ],
@@ -703,10 +670,17 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Internal forecast service key",
+                        "description": "Internal forecast service key. Backend also accepts Authorization: Bearer <INTERNAL_SERVICE_KEY>.",
                         "name": "X-Service-Key",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional alternative to X-Service-Key: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": false
                     },
                     {
                         "name": "body",
@@ -770,10 +744,17 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Internal forecast service key",
+                        "description": "Internal forecast service key. Backend also accepts Authorization: Bearer <INTERNAL_SERVICE_KEY>.",
                         "name": "X-Service-Key",
                         "in": "header",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Optional alternative to X-Service-Key: Bearer <INTERNAL_SERVICE_KEY>.",
+                        "name": "Authorization",
+                        "in": "header",
+                        "required": false
                     },
                     {
                         "name": "id",
@@ -943,6 +924,13 @@ const docTemplate = `{
                     "format": "int64"
                 },
                 "status": {
+                    "type": "string"
+                },
+                "is_latest": {
+                    "type": "boolean",
+                    "description": "Always false on create-only endpoint. Latest is finalized after results are saved."
+                },
+                "message": {
                     "type": "string"
                 }
             }
@@ -1199,22 +1187,57 @@ const docTemplate = `{
                     "type": "number"
                 }
             }
+        },
+        "ForecastSaveInput": {
+            "type": "object",
+            "required": [
+                "run",
+                "results"
+            ],
+            "properties": {
+                "run": {
+                    "$ref": "#/definitions/ForecastRunInput"
+                },
+                "results": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 1000,
+                    "items": {
+                        "$ref": "#/definitions/ForecastResultInput"
+                    }
+                }
+            }
+        },
+        "ForecastSaveResponse": {
+            "type": "object",
+            "properties": {
+                "status": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "run_id": {
+                    "type": "integer",
+                    "format": "int64"
+                },
+                "count": {
+                    "type": "integer"
+                }
+            }
         }
     }
 }`
 
-// SwaggerInfo holds exported Swagger Info so clients can modify it.
 var SwaggerInfo = &swag.Spec{
-	Version:          "1.1",
+	Version:          "1.3",
 	Host:             "localhost:8080",
 	BasePath:         "/",
 	Schemes:          []string{"http"},
 	Title:            "Sora Finance Forecast API",
-	Description:      "Forecast-only API documentation. Forecast source of truth: forecast_runs + forecast_results.",
+	Description:      "Forecast-only API documentation. Forecast source of truth: forecast_runs + forecast_results. Forecast write endpoints are internal-service only. Latest forecast is only exposed after a successful run has saved at least one forecast_result.",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
-	LeftDelim:        "{{",
-	RightDelim:       "}}",
 }
 
 func init() {
