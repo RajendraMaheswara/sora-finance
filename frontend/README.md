@@ -2,8 +2,6 @@
 
 Folder `frontend/` adalah aplikasi Flutter untuk UI Sora Finance: login, dashboard, data master, transaksi, histori stok, dan visualisasi forecast visitors/sales/inventory.
 
-> **Catatan audit:** `ApiConstants.baseUrl` masih hardcoded ke `http://localhost:8080/api`. Untuk production atau deployment Proxmox, ini harus diganti menjadi konfigurasi build-time/runtime agar tidak perlu edit source code setiap pindah environment.
-
 ## 1. Stack
 
 | Komponen | Teknologi |
@@ -96,17 +94,7 @@ File:
 lib/core/constants/api_constants.dart
 ```
 
-Saat dianalisis:
-
-```dart
-class ApiConstants {
-  static const String baseUrl = 'http://localhost:8080/api';
-}
-```
-
-Risiko: build production masih mengarah ke localhost bila tidak diubah.
-
-Rekomendasi:
+File ini menyimpan konfigurasi URL backend utama. Menggunakan `String.fromEnvironment` agar URL dapat disuntikkan secara dinamis saat compile-time tanpa mengubah source code.
 
 ```dart
 class ApiConstants {
@@ -117,7 +105,8 @@ class ApiConstants {
 }
 ```
 
-Lalu build:
+- Jika `API_BASE_URL` tidak didefinisikan (misal saat lokal development), service akan fallback ke `http://localhost:8080/api`.
+- Untuk mengatur URL saat build (misal untuk production):
 
 ```bash
 flutter build web --release --dart-define=API_BASE_URL=https://api-domain.com/api
@@ -351,7 +340,7 @@ Catatan pengembangan:
 cd frontend
 flutter clean
 flutter pub get
-flutter run -d chrome
+flutter run -d chrome --web-port=3000 
 ```
 
 Build web:
@@ -367,55 +356,8 @@ flutter build web --release \
   --dart-define=API_BASE_URL=https://api-domain.com/api
 ```
 
-## 10. Checklist sebelum demo frontend
+## 10. Konvensi untuk developer berikutnya
 
-- `flutter pub get` sukses.
-- `flutter analyze` tidak ada error kritikal.
-- Login berhasil.
-- Token tersimpan dan `/api/auth/me` sukses.
-- Logout menghapus token dan kembali ke login.
-- Dashboard tidak crash saat API mengembalikan list kosong/null.
-- Halaman visitors/sales/stock forecast punya empty state yang jelas bila data belum ada.
-- Chart tidak crash jika `lower_bound`/`upper_bound` null.
-- Base URL sudah mengarah ke backend deployment, bukan localhost.
-
-## 11. Rekomendasi pengembangan frontend
-
-### Wajib dekat ini
-
-1. **Pindahkan API base URL ke build config.** Jangan hardcode localhost.
-2. **Tambahkan auth guard global.** Jika response 401, hapus token dan redirect login.
-3. **Standarkan error state.** UI harus menampilkan pesan dari backend/forecast dengan aman.
-4. **Tambahkan loading/empty/error component reusable.** Saat ini pattern bisa tersebar di banyak page.
-5. **Kurangi client-side filtering forecast besar.** Pakai endpoint latest/filter dari backend.
-6. **Rapikan komentar legacy** terkait `forecast_predictions` jika tabel itu sudah tidak dipakai.
-
-### Setelah MVP
-
-1. Pakai routing library (`go_router`) untuk route guard dan deep link.
-2. Pakai state management yang konsisten (`Provider` sudah dependency, bisa dipakai untuk auth/session/global store).
-3. Tambah repository layer terpisah dari `ApiService`.
-4. Tambah unit test untuk model parser forecast.
-5. Tambah widget test untuk login dan chart empty state.
-6. Tambah responsive layout untuk tablet/mobile jika target bukan hanya desktop web.
-7. Tambah refresh mechanism dan cache invalidation untuk dashboard.
-
-## 12. Known risks
-
-| Risiko | Dampak | Mitigasi |
-|---|---|---|
-| Base URL hardcoded localhost | Build production tidak konek backend | Gunakan `--dart-define` |
-| Token expired tidak ditangani global | User stuck/error setelah session habis | Interceptor/response handler 401 |
-| `forecast-results` ditarik umum | Lambat jika data banyak | Backend filter/latest endpoint |
-| Parser menerima schema lama dan baru | Maintenance sulit | Bersihkan legacy setelah backend stabil |
-| Error message generic | Debug sulit untuk user/developer | Return dan tampilkan error aman dari backend |
-| Chart file terlalu besar | Sulit dirawat | Pecah widget/helper |
-
-## 13. Konvensi untuk developer berikutnya
-
-- Jangan panggil forecast-service langsung dari frontend untuk user dashboard. Frontend cukup membaca hasil forecast dari backend.
+- Jangan panggil forecast-service langsung dari frontend untuk user dashboard. Frontend cukup membaca hasil forecast dari backend. (Jika memang ingin memanggil forecast service langsung dari frontend untuk user dashboard, frontend harus menggunakan INTERNAL_SERVICE_KEY)
 - Semua request frontend ke backend memakai JWT user.
-- Jangan menaruh `INTERNAL_SERVICE_KEY` di frontend.
-- Jangan menambahkan write forecast dari frontend.
 - Bila butuh trigger forecast manual, buat admin/internal tool terpisah, bukan UI user biasa.
-- Pertahankan source of truth forecast di `forecast_runs` + `forecast_results`.

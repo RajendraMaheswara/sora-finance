@@ -2,8 +2,6 @@
 
 Folder `backend/` adalah API utama Sora Finance. Backend bertanggung jawab untuk auth, store scoping, data master/transaksi, dashboard read, dan gateway write forecast internal.
 
-> **Catatan audit:** kode backend v1.5 sudah memiliki route internal forecast dengan `ServiceKeyMiddleware`, validasi forecast service-layer, atomic save, migration hardening latest, dan Swagger forecast-only. Namun `go.mod` masih memakai `go 1.25.0`; pastikan versi ini tersedia di server atau turunkan ke versi Go yang benar-benar digunakan tim.
-
 ## 1. Stack
 
 | Komponen | Teknologi |
@@ -262,79 +260,7 @@ Aturan penting:
 - Run lama untuk store/type/horizon yang sama diubah menjadi `is_latest=false`.
 - `GetLatestForecast()` hanya mengambil run `status='success'`, `is_latest=true`, dan punya results.
 
-## 8. Migration
-
-Folder:
-
-```text
-backend/migrations/
-```
-
-Migration penting:
-
-| File | Tujuan |
-|---|---|
-| `20260618_security_hardening_indexes.sql` | Index umum untuk query data master, order, sales, finance, forecast |
-| `20260625_forecast_core_p1_indexes.sql` | Index latest lookup dan result lookup |
-| `20260625_forecast_runs_results_core.sql` | Deprecate/drop `forecast_predictions`, unique latest, index forecast |
-| `20260707_forecast_latest_requires_results.sql` | Pastikan latest tidak orphan tanpa results |
-| `20260707_forecast_write_security_latest_success.sql` | Constraint latest hanya success dan revoke write anon/authenticated |
-
-Catatan deployment: migration di repo berupa SQL manual. Developer berikutnya perlu memastikan urutan eksekusi migration terdokumentasi di deployment checklist.
-
-## 9. Swagger
-
-File generated:
-
-```text
-backend/docs/swagger.json
-backend/docs/swagger.yaml
-backend/docs/docs.go
-```
-
-Paths yang terlihat pada Swagger v1.5:
-
-```text
-GET  /api/forecast-results
-GET  /api/forecast-results/{id}
-GET  /api/forecast-runs/{id}
-GET  /api/forecast/latest
-GET  /api/forecast/visitors/latest
-GET  /internal/forecast/forecast-results
-POST /internal/forecast/forecast-results
-GET  /internal/forecast/forecast-results/{id}
-POST /internal/forecast/forecast-runs
-GET  /internal/forecast/forecast-runs/{id}
-POST /internal/forecast/save
-GET  /internal/forecast/visitors-daily-history
-```
-
-Swagger sudah cukup fokus forecast. Tetap pastikan setiap perubahan route internal/public diikuti regenerate docs.
-
-## 10. Environment
-
-Gunakan `.env.example` sebagai template:
-
-```env
-APP_ENV=development
-SERVER_PORT=8080
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=sora_app
-DB_PASSWORD=change-me
-DB_NAME=postgres
-DB_SSLMODE=disable
-JWT_SECRET=change-me-use-at-least-32-random-characters
-REDIS_URL=
-ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
-ENABLE_SWAGGER=true
-ENABLE_TEST_ROUTES=false
-INTERNAL_SERVICE_KEY=change-me
-```
-
-Jangan commit `.env` asli. Zip v1.5 berisi `.env`; itu harus dibersihkan di repo final.
-
-## 11. Cara menjalankan
+## 8. Cara menjalankan
 
 ```bash
 cd backend
@@ -363,47 +289,3 @@ Health check:
 ```bash
 curl http://localhost:8080/health
 ```
-
-## 12. Checklist sebelum merge backend
-
-- `go test ./...` pass.
-- `go.mod` memakai versi Go yang tersedia di CI/server.
-- `.env` tidak ikut commit.
-- `api.exe` atau binary build tidak ikut commit.
-- Migration sudah dijalankan di database target.
-- Swagger regenerate jika route/handler forecast berubah.
-- `POST /internal/forecast/save` sukses dengan key valid.
-- Request invalid menghasilkan 400, bukan 500.
-- Latest forecast tidak orphan.
-- Public route tidak punya POST write forecast.
-- CORS production tidak wildcard.
-
-## 13. Saran pengembangan backend
-
-### Wajib dekat ini
-
-1. **Rapikan Go version.** `go 1.25.0` berisiko di server Proxmox jika toolchain belum tersedia.
-2. **Tambahkan migration runner/prosedur.** Saat ini migration SQL manual; developer baru bisa lupa menjalankan file tertentu.
-3. **Tambahkan query filter/pagination.** `GET /api/forecast-results` dibatasi 500 row dan frontend filtering client-side; untuk data tumbuh, buat query berdasarkan `forecast_type`, `horizon_label`, `store_id`, `item_type`, `limit`, `offset`.
-4. **Audit error response.** Beberapa route non-forecast mungkin masih mengembalikan error generik atau detail internal. Standarkan format error.
-5. **Pisahkan route internal dari public di Nginx.** Idealnya `/internal/*` hanya bisa diakses dari localhost/private network.
-
-### Setelah MVP
-
-1. Tambah observability: request ID, structured log, slow query log.
-2. Tambah integration test dengan test database.
-3. Tambah role/permission granular untuk resource selain forecast.
-4. Tambah health check DB/Redis detail untuk deployment.
-5. Tambah graceful migration/rollback strategy.
-6. Tambah audit log untuk forecast save/retrain.
-
-## 14. Known risks
-
-| Risiko | Dampak | Mitigasi |
-|---|---|---|
-| `.env` ikut zip/repo | Secret bocor | Commit `.env.example` saja, rotate secret jika sudah tersebar |
-| `go.mod` terlalu baru | Build gagal di server | Pin ke versi Go yang dipakai server |
-| Route internal terekspos public | Data integrity forecast rusak | Network restrict + service key + Nginx rule |
-| Save dua langkah run/results gagal di tengah | Latest kosong atau run orphan | Gunakan `/internal/forecast/save` atomik |
-| Query forecast-results terlalu umum | Frontend lambat saat data besar | Tambah filter/pagination/latest endpoint |
-| Migration tidak dijalankan | Constraint/index/security tidak aktif | Deployment checklist + migration runner |

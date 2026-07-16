@@ -2,8 +2,6 @@
 
 Folder `forecast-service/` adalah microservice Python untuk generate forecast, retrain model, dan menjalankan scheduler otomatis untuk modul visitors, sales, dan inventory.
 
-> **Catatan audit:** service v1.5 memakai Flask `app.py` sebagai entry point utama, tetapi `requirements.txt` masih memuat dependency FastAPI/Uvicorn. Ini tidak fatal untuk MVP, tetapi menambah berat instalasi. Bersihkan dependency yang tidak dipakai saat stabilisasi.
-
 ## 1. Peran dalam sistem
 
 Forecast-service bertugas:
@@ -75,50 +73,7 @@ python app.py
 4. Menginisialisasi scheduler jika `FORECAST_MODE=scheduler`.
 5. Menjalankan service di port yang ditentukan environment.
 
-## 5. Environment
-
-Gunakan `.env.example` sebagai template:
-
-```env
-SERVICE_HOST=0.0.0.0
-SERVICE_PORT=5000
-SERVICE_ENV=development
-LOG_LEVEL=INFO
-
-BACKEND_API_URL=http://localhost:8080/internal/forecast
-GOLANG_API_BASE_URL=http://localhost:8080/internal/forecast
-GOLANG_INTERNAL_API_BASE_URL=http://localhost:8080/internal/forecast
-INTERNAL_SERVICE_KEY=change-me
-BACKEND_REQUEST_TIMEOUT_SECONDS=30
-
-DB_HOST=localhost
-DB_PORT=5432
-DB_USER=postgres
-DB_PASSWORD=postgres
-DB_NAME=postgres
-DB_SSLMODE=disable
-# DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres
-
-FORECAST_MODE=manual
-FORECAST_SCHEDULER_TIMEZONE=Asia/Jakarta
-FORECAST_AFTER_CLOSE_SCHEDULER_MINUTES=60
-FORECAST_24H_RUN_SCHEDULER_MINUTES=120
-FORECAST_SCHEDULER_CHECK_INTERVAL_MINUTES=15
-SCHEDULER_RETRAIN=true
-
-FORECAST_HORIZON_DAYS=30
-RETRAIN_INTERVAL_DAYS=7
-TRAINING_MAX_WORKERS=4
-```
-
-Catatan penting:
-
-- `BACKEND_API_URL` harus menunjuk ke `http://localhost:8080/internal/forecast`, bukan `/api`.
-- Default di `config.py` masih fallback ke `http://localhost:8080/api`. Jangan mengandalkan default ini untuk save forecast.
-- `INTERNAL_SERVICE_KEY` harus sama dengan backend.
-- `.env` asli tidak boleh commit/zip.
-
-## 6. Authentication antar-service
+## 5. Authentication antar-service
 
 Semua endpoint dengan prefix `/api/forecast/` memerlukan service key jika `INTERNAL_SERVICE_KEY` diset.
 
@@ -136,9 +91,9 @@ Authorization: Bearer <INTERNAL_SERVICE_KEY>
 
 Health check `/health` tidak memakai service key.
 
-## 7. Endpoint aktif
+## 6. Endpoint aktif
 
-### 7.1 Health
+### 6.1 Health
 
 ```text
 GET /health
@@ -146,7 +101,7 @@ GET /health
 
 Response memberi status service, reachability backend Go, daftar model visitors loaded, dan timestamp.
 
-### 7.2 Visitors
+### 6.2 Visitors
 
 ```text
 GET  /api/forecast/visitors/models
@@ -157,7 +112,7 @@ POST /api/forecast/visitors/retrain
 
 Visitors memakai Random Forest/scikit-learn dengan feature engineering time-series seperti lag, rolling window, day-of-week/weekend, dan metadata metrics.
 
-### 7.3 Sales
+### 6.3 Sales
 
 ```text
 POST /api/forecast/sales/preview
@@ -167,7 +122,7 @@ POST /api/forecast/sales/retrain
 
 Sales memprediksi omzet. Output item tetap mempertahankan field domain seperti `predicted_omzet`, lalu menambahkan alias standar `predicted_value`.
 
-### 7.4 Inventory
+### 6.4 Inventory
 
 ```text
 POST /api/forecast/inventory/preview
@@ -185,7 +140,7 @@ Default `/save` inventory all-store bersifat partial tolerant:
 - Runtime failure dilaporkan sebagai `errors`.
 - Kirim `allow_partial=false` untuk strict all-or-nothing.
 
-## 8. Request body standar
+## 7. Request body standar
 
 ### Visitors/Sales
 
@@ -231,7 +186,7 @@ Default `/save` inventory all-store bersifat partial tolerant:
 
 `start_date` harus format `YYYY-MM-DD`. Bila kosong, service memilih start date otomatis.
 
-## 9. Horizon dan start date
+## 8. Horizon dan start date
 
 Validasi standar berada di:
 
@@ -262,7 +217,7 @@ Field metadata yang membantu debugging:
 - `business_cutoff_rule`
 - `latest_complete_day` / `last_actual_date`
 
-## 10. Response envelope standar
+## 9. Response envelope standar
 
 Preview:
 
@@ -324,7 +279,7 @@ Retrain:
 }
 ```
 
-## 11. Save ke backend
+## 10. Save ke backend
 
 Save ideal menggunakan backend internal route:
 
@@ -375,7 +330,7 @@ Payload:
 
 Catatan teknis: beberapa save path lama di modul sales/inventory masih terlihat menggunakan dua langkah `/forecast-runs` lalu `/forecast-results`. Untuk konsistensi dan atomicity, developer berikutnya sebaiknya memigrasikan semua modul ke `/save` atomik.
 
-## 12. Scheduler
+## 11. Scheduler
 
 Aktif jika:
 
@@ -396,7 +351,7 @@ Scheduler menggunakan:
 
 DB idempotency check membaca `forecast_runs` dan `forecast_results` langsung via `psycopg2`; karena itu env DB perlu valid jika scheduler aktif.
 
-## 13. Model storage
+## 12. Model storage
 
 Folder model:
 
@@ -418,7 +373,7 @@ Untuk MVP, filesystem lokal cukup. Untuk production serius:
 - pertimbangkan object storage,
 - tambahkan model version registry minimal.
 
-## 14. Cara menjalankan lokal
+## 13. Cara menjalankan lokal
 
 ```bash
 cd forecast-service
@@ -459,61 +414,3 @@ Cek retrain inventory:
 curl http://localhost:5000/api/forecast/inventory/retrain/status/<task_id> \
   -H "X-Service-Key: $INTERNAL_SERVICE_KEY"
 ```
-
-## 15. Test otomatis
-
-Script tersedia:
-
-```text
-scripts/test_forecast_standard_endpoints.py
-```
-
-Cara pakai:
-
-```bash
-python scripts/test_forecast_standard_endpoints.py \
-  --base-url http://localhost:5000 \
-  --service-key "$INTERNAL_SERVICE_KEY" \
-  --store-id <uuid-store> \
-  --ingredient-id <uuid-ingredient-optional>
-```
-
-Script memeriksa:
-
-- preview dan save untuk visitors/sales/inventory,
-- daily/weekly/monthly,
-- status response envelope,
-- `save_result.status == saved`,
-- endpoint `/run` harus 404.
-
-## 16. Saran pengembangan forecast-service
-
-### Wajib dekat ini
-
-1. **Konsolidasikan save path.** Semua modul sebaiknya memakai `/internal/forecast/save` atomik.
-2. **Bersihkan dependency.** Hapus FastAPI/Uvicorn jika tidak digunakan.
-3. **Jangan commit model/cache.** Pindahkan `.joblib`, metadata generated, `__pycache__` ke storage/volume atau artifact release.
-4. **Buat config validation saat startup.** Jika `BACKEND_API_URL` masih `/api`, fail-fast agar tidak salah save.
-5. **Buat logging konsisten.** Pakai logger, bukan campuran `print()` dan `traceback.print_exc()`.
-6. **Tambahkan retry/backoff** untuk request save ke backend.
-
-### Setelah MVP
-
-1. Pisahkan retrain ke worker queue karena training inventory bisa lama.
-2. Tambah model registry dan semantic model versioning.
-3. Tambah endpoint batch all-store yang eksplisit jika dibutuhkan manual run.
-4. Tambah dashboard monitoring job scheduler/retrain.
-5. Tambah data quality report per modul.
-6. Tambah test unit untuk helper horizon/start-date.
-
-## 17. Known risks
-
-| Risiko | Dampak | Mitigasi |
-|---|---|---|
-| `BACKEND_API_URL` salah ke `/api` | Save gagal 404/401 | Wajib isi `/internal/forecast` di `.env` |
-| `.env` asli ikut repo | Secret bocor | Commit `.env.example` saja |
-| Model `.joblib` ikut repo | Repo besar, model stale | Simpan di volume/artifact storage |
-| Scheduler dalam proses Flask | Job berat mengganggu API | Worker queue untuk production |
-| Save dua langkah | Run orphan jika insert results gagal | Gunakan atomic `/save` |
-| Data sedikit tapi confidence ditampilkan | User salah percaya forecast | Tampilkan `data_quality` dan reliability jelas |
-| Inventory partial success disalahartikan | Ingredient tanpa model dianggap sukses semua | Baca `skipped_ingredients`, `failed_ingredients`, `partial_success` |
